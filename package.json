@@ -1,6 +1,6 @@
 {
   "name": "pi-deepseek-cache-optimizer",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "重组 Pi system prompt 使 DeepSeek KV Cache 命中率最大化 — 将稳定指令放前缀、动态上下文放后缀",
   "keywords": [
     "pi-package",
@@ -12,6 +12,9 @@
   ],
   "author": "freescheme",
   "license": "MIT",
+  "files": [
+    "extension.ts"
+  ],
   "pi": {
     "extensions": ["./extension.ts"],
     "image": "https://img.shields.io/badge/DeepSeek-Cache%20Optimizer-4A90D9"
