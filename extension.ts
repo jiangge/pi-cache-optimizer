@@ -11,7 +11,7 @@ import type { BuildSystemPromptOptions, ExtensionAPI, ExtensionContext } from "@
  * 1. Reorders Pi's system prompt so stable content is sent before dynamic context.
  * 2. Sets PI_CACHE_RETENTION=long at extension load time.
  * 3. Warns once per DeepSeek-like provider/model when cache-related compat flags are missing.
- * 4. Adds /deepseek-cache-debug for one-shot sanitized provider-payload diagnostics.
+ * 4. Adds /deepseek-cache-debug for one-shot sanitized request/response cache diagnostics.
  *
  * DeepSeek prompt/KV cache is provider-side, automatic, and best-effort. This extension
  * improves the odds of cache hits; it cannot guarantee hits, especially through proxies.
@@ -26,6 +26,9 @@ if (!process.env.PI_CACHE_RETENTION || process.env.PI_CACHE_RETENTION !== "long"
 
 type PiModel = NonNullable<ExtensionContext["model"]>;
 type UnknownRecord = Record<string, unknown>;
+
+const DEBUG_WIDGET_KEY = "deepseek-cache-debug";
+const DEBUG_FILE = join(tmpdir(), "pi-deepseek-cache-debug.txt");
 
 type CacheCompat = {
   sendSessionAffinityHeaders?: boolean;
@@ -213,18 +216,18 @@ function summarizeSecretLikeField(value: unknown): string {
   return `present (${Array.isArray(value) ? "array" : typeof value})`;
 }
 
-function textLength(value: unknown): number {
-  if (typeof value === "string") return value.length;
-  if (!Array.isArray(value)) return 0;
+function textForDiagnostics(value: unknown): string {
+  if (typeof value === "string") return value;
+  if (!Array.isArray(value)) return "";
 
-  let total = 0;
+  const chunks: string[] = [];
   for (const part of value) {
     const record = asRecord(part);
     if (record?.type === "text" && typeof record.text === "string") {
-      total += record.text.length;
+      chunks.push(record.text);
     }
   }
-  return total;
+  return chunks.join("\n");
 }
 
 function recordsFromArray(value: unknown): UnknownRecord[] {
@@ -251,16 +254,34 @@ function getFirstMessageRole(messages: UnknownRecord[]): string {
   return typeof role === "string" ? role : "unknown";
 }
 
-function getRoughSystemPromptLength(payload: UnknownRecord, messages: UnknownRecord[]): number {
-  if (typeof payload.instructions === "string") return payload.instructions.length;
+function safeRole(value: unknown): string {
+  if (typeof value !== "string") return "unknown";
+  const normalized = value.toLowerCase();
+  return /^[a-z0-9_-]{1,32}$/.test(normalized) ? normalized : "unknown";
+}
 
+function getMessageRoles(messages: UnknownRecord[]): string[] {
+  return messages.map((message) => safeRole(message.role));
+}
+
+function formatRoleSequence(roles: string[]): string {
+  if (roles.length === 0) return "none";
+  if (roles.length <= 24) return roles.join(" > ");
+  return `${roles.slice(0, 24).join(" > ")} > ... (+${roles.length - 24} more)`;
+}
+
+function getSystemPromptDiagnosticText(payload: UnknownRecord, messages: UnknownRecord[]): string {
+  if (typeof payload.instructions === "string") return payload.instructions;
+
+  const systemParts: string[] = [];
   for (const message of messages) {
     if (message.role === "system" || message.role === "developer") {
-      return textLength(message.content);
+      const text = textForDiagnostics(message.content);
+      if (text.length > 0) systemParts.push(text);
     }
   }
 
-  return 0;
+  return systemParts.join("\n\n");
 }
 
 function yesNo(value: boolean): string {
@@ -276,9 +297,25 @@ function hasSessionAffinityConfigured(model: PiModel | undefined, compat: CacheC
   return compat.sendSessionAffinityHeaders === true;
 }
 
+function getNumber(value: unknown): number | undefined {
+  return typeof value === "number" && Number.isFinite(value) ? value : undefined;
+}
+
+function formatNumber(value: number | undefined): string {
+  return value === undefined ? "unavailable" : String(value);
+}
+
+function formatPercent(numerator: number | undefined, denominator: number | undefined): string {
+  if (numerator === undefined || denominator === undefined || denominator <= 0) return "unavailable";
+  return `${((numerator / denominator) * 100).toFixed(1)}%`;
+}
+
 function buildPayloadDebugSummary(payload: unknown, model: PiModel | undefined): string[] {
   const record = asRecord(payload);
   const messages = record ? getMessages(record) : [];
+  const roles = getMessageRoles(messages);
+  const roleSequence = roles.join("|");
+  const systemPrompt = record ? getSystemPromptDiagnosticText(record, messages) : "";
   const compat = getCompat(model);
   const providerModel = model ? modelKey(model) : "unknown";
   const payloadModel = record && typeof record.model === "string" ? record.model : "unknown";
@@ -287,15 +324,19 @@ function buildPayloadDebugSummary(payload: unknown, model: PiModel | undefined):
 
   return [
     "DeepSeek cache debug (sanitized, one-shot)",
+    "Request summary",
     `provider/model: ${providerModel}`,
     `payload model: ${payloadModel}`,
     `prompt_cache_key: ${record && hasSendableField(record, "prompt_cache_key") ? summarizeSecretLikeField(promptCacheKey) : "absent"}`,
     `prompt_cache_retention: ${yesNo(!!record && hasSendableField(record, "prompt_cache_retention"))}`,
     `thinking field: ${yesNo(!!record && hasSendableField(record, "thinking"))}`,
     `reasoning_effort field: ${yesNo(!!record && hasSendableField(record, "reasoning_effort"))}`,
+    "Request stability diagnostics",
+    `system prompt: length=${systemPrompt.length} chars, sha256=${systemPrompt.length > 0 ? hashForDiagnostics(systemPrompt) : "empty"}`,
     `message count: ${messages.length}`,
+    `message roles: ${formatRoleSequence(roles)}`,
+    `message roles sha256: ${roleSequence.length > 0 ? hashForDiagnostics(roleSequence) : "empty"}`,
     `first message role: ${getFirstMessageRole(messages)}`,
-    `rough system prompt length: ${record ? getRoughSystemPromptLength(record, messages) : 0} chars`,
     `compat.thinkingFormat: ${compat.thinkingFormat ?? "unset"}`,
     `compat.supportsLongCacheRetention: ${boolOrUnset(compat.supportsLongCacheRetention)}`,
     `compat.sendSessionAffinityHeaders: ${boolOrUnset(compat.sendSessionAffinityHeaders)}`,
@@ -306,18 +347,58 @@ function buildPayloadDebugSummary(payload: unknown, model: PiModel | undefined):
   ];
 }
 
+function buildResponseDebugSummary(message: unknown): string[] {
+  const record = asRecord(message);
+  const usage = asRecord(record?.usage);
+  const input = getNumber(usage?.input);
+  const output = getNumber(usage?.output);
+  const cacheRead = getNumber(usage?.cacheRead);
+  const cacheWrite = getNumber(usage?.cacheWrite);
+  const totalTokens = getNumber(usage?.totalTokens);
+  const approximateMiss = input !== undefined && cacheRead !== undefined && input >= cacheRead ? input - cacheRead : undefined;
+  const provider = typeof record?.provider === "string" ? record.provider : "unknown";
+  const model = typeof record?.model === "string" ? record.model : "unknown";
+  const responseModel = typeof record?.responseModel === "string" ? record.responseModel : "unavailable";
+
+  return [
+    "Response usage (assistant message_end)",
+    `provider/model: ${provider}/${model}`,
+    `responseModel: ${responseModel}`,
+    `input tokens: ${formatNumber(input)}`,
+    `output tokens: ${formatNumber(output)}`,
+    `cacheRead tokens: ${formatNumber(cacheRead)}`,
+    `cacheWrite tokens: ${formatNumber(cacheWrite)}`,
+    `totalTokens: ${formatNumber(totalTokens)}`,
+    `approximate cache miss tokens (input - cacheRead): ${formatNumber(approximateMiss)}`,
+    `cache hit rate (cacheRead / input): ${formatPercent(cacheRead, input)}`,
+  ];
+}
+
+function publishDebugSummary(ctx: ExtensionContext, lines: string[]): void {
+  writeFileSync(DEBUG_FILE, lines.join("\n") + "\n", "utf-8");
+  ctx.ui.setWidget(DEBUG_WIDGET_KEY, lines);
+}
+
 export default function (pi: ExtensionAPI) {
   const warnedModels = new Set<string>();
   let debugNextProviderRequest = false;
+  let activeDebugLines: string[] | undefined;
+  let clearDebugWidgetOnNextAgentStart = false;
 
   pi.registerCommand("deepseek-cache-debug", {
     description: "Toggle one-shot sanitized DeepSeek cache diagnostics for the next provider request",
     handler: async (_args, ctx) => {
       debugNextProviderRequest = !debugNextProviderRequest;
 
+      if (!debugNextProviderRequest) {
+        activeDebugLines = undefined;
+        clearDebugWidgetOnNextAgentStart = false;
+        ctx.ui.setWidget(DEBUG_WIDGET_KEY, undefined);
+      }
+
       ctx.ui.notify(
         debugNextProviderRequest
-          ? "DeepSeek cache debug enabled for the next provider request only. It will auto-disable after printing a sanitized summary."
+          ? "DeepSeek cache debug enabled for the next provider request only. It will auto-disable after printing a sanitized request summary, then append response usage when available."
           : "DeepSeek cache debug disabled.",
         "info",
       );
@@ -342,28 +423,56 @@ export default function (pi: ExtensionAPI) {
     return {};
   });
 
+  pi.on("agent_start", (_event, ctx) => {
+    if (!clearDebugWidgetOnNextAgentStart) return;
+    clearDebugWidgetOnNextAgentStart = false;
+    ctx.ui.setWidget(DEBUG_WIDGET_KEY, undefined);
+  });
+
   pi.on("before_provider_request", (event, ctx) => {
     if (!debugNextProviderRequest) return;
     debugNextProviderRequest = false;
+    clearDebugWidgetOnNextAgentStart = false;
 
     const lines = buildPayloadDebugSummary(event.payload, ctx.model);
-    const summary = lines.join("\n");
-
-    // Write the sanitized summary to a predictable temp file.
-    const debugFile = join(tmpdir(), "pi-deepseek-cache-debug.txt");
-    writeFileSync(debugFile, summary + "\n", "utf-8");
-
-    // Show the summary as a widget above the editor so it is visible in the TUI.
-    ctx.ui.setWidget("deepseek-cache-debug", lines);
+    activeDebugLines = lines;
+    publishDebugSummary(ctx, lines);
 
     ctx.ui.notify(
-      `DeepSeek cache debug: sanitized summary written to ${debugFile} and shown above the editor. Debug is now off.`,
+      `DeepSeek cache debug: sanitized request summary written to ${DEBUG_FILE} and shown above the editor. Response usage will be appended after the assistant message if available. Debug is now off.`,
       "info",
     );
   });
 
-  // Clear the debug widget after the next turn so it doesn't linger.
-  pi.on("turn_start", (_event, ctx) => {
-    ctx.ui.setWidget("deepseek-cache-debug", undefined);
+  pi.on("message_end", (event, ctx) => {
+    if (!activeDebugLines || event.message.role !== "assistant") return;
+
+    const lines = [
+      ...activeDebugLines,
+      "",
+      ...buildResponseDebugSummary(event.message),
+    ];
+    activeDebugLines = undefined;
+    clearDebugWidgetOnNextAgentStart = true;
+    publishDebugSummary(ctx, lines);
+
+    ctx.ui.notify(
+      `DeepSeek cache debug: response usage appended to ${DEBUG_FILE} and the existing widget.`,
+      "info",
+    );
+  });
+
+  pi.on("agent_end", (_event, ctx) => {
+    if (!activeDebugLines) return;
+
+    const lines = [
+      ...activeDebugLines,
+      "",
+      "Response usage (assistant message_end)",
+      "unavailable: no assistant message_end was captured after the debugged provider request.",
+    ];
+    activeDebugLines = undefined;
+    clearDebugWidgetOnNextAgentStart = true;
+    publishDebugSummary(ctx, lines);
   });
 }
