@@ -1,0 +1,27 @@
+# Dependencies and build output
+node_modules/
+dist/
+build/
+coverage/
+*.tsbuildinfo
+
+# Environment / secrets
+.env
+.env.*
+*.pem
+*.key
+
+# Pi/Trellis local runtime state
+.trellis/.developer
+.trellis/.current-task
+.trellis/.runtime/
+.trellis/.ralph-state.json
+.trellis/workspace/
+.trellis/tasks/*/implement.jsonl
+.trellis/tasks/*/check.jsonl
+.trellis/tasks/*/.plan-log
+
+# Logs / temporary files
+*.log
+*.tmp
+.DS_Store

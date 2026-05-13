@@ -1,0 +1,26 @@
+{
+  "name": "pi-deepseek-cache-optimizer",
+  "version": "1.0.0",
+  "description": "重组 Pi system prompt 使 DeepSeek KV Cache 命中率最大化 — 将稳定指令放前缀、动态上下文放后缀",
+  "keywords": [
+    "pi-package",
+    "deepseek",
+    "cache",
+    "kv-cache",
+    "prompt-cache",
+    "optimizer"
+  ],
+  "author": "freescheme",
+  "license": "MIT",
+  "pi": {
+    "extensions": ["./extension.ts"],
+    "image": "https://img.shields.io/badge/DeepSeek-Cache%20Optimizer-4A90D9"
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": "*"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/jiangge/pi-deepseek-cache-optimizer.git"
+  }
+}
