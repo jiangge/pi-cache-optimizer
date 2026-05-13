@@ -1,4 +1,7 @@
 import { createHash } from "node:crypto";
+import { writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import type { BuildSystemPromptOptions, ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 
 /**
@@ -346,10 +349,21 @@ export default function (pi: ExtensionAPI) {
     const lines = buildPayloadDebugSummary(event.payload, ctx.model);
     const summary = lines.join("\n");
 
-    console.log(`\n${summary}\n`);
+    // Write the sanitized summary to a predictable temp file.
+    const debugFile = join(tmpdir(), "pi-deepseek-cache-debug.txt");
+    writeFileSync(debugFile, summary + "\n", "utf-8");
+
+    // Show the summary as a widget above the editor so it is visible in the TUI.
+    ctx.ui.setWidget("deepseek-cache-debug", lines);
+
     ctx.ui.notify(
-      "DeepSeek cache debug captured the next provider payload. Sanitized summary was printed; debug is now off.",
+      `DeepSeek cache debug: sanitized summary written to ${debugFile} and shown above the editor. Debug is now off.`,
       "info",
     );
+  });
+
+  // Clear the debug widget after the next turn so it doesn't linger.
+  pi.on("turn_start", (_event, ctx) => {
+    ctx.ui.setWidget("deepseek-cache-debug", undefined);
   });
 }

@@ -58,7 +58,12 @@ pi install npm:pi-deepseek-cache-optimizer
 
 它会切换一个**一次性** debug 模式：只检查下一次 provider request，然后自动关闭。选择一次性是为了避免长期输出诊断信息、降低误泄露风险和刷屏。
 
-下一次发起模型请求时，扩展会通过 `before_provider_request` 打印一个安全摘要，包括：
+下一次发起模型请求时，扩展会通过 `before_provider_request` 输出一个安全摘要。摘要会**同时**显示在：
+
+1. **编辑器上方 widget** — Pi TUI 内直接可见，下一个 turn 后自动清除
+2. **`/tmp/pi-deepseek-cache-debug.txt`** — 写入临时文件方便拷贝/查看
+
+摘要包括：
 
 - provider/model、payload model
 - `prompt_cache_key` 是否存在（只显示长度和短 hash，不显示原值）
@@ -68,7 +73,7 @@ pi install npm:pi-deepseek-cache-optimizer
 - rough system prompt length
 - cache/session-affinity 相关 compat flags 是否设置（包括 `sendSessionAffinityHeaders` / `sendSessionIdHeader`）
 
-不会打印：
+不会输出：
 
 - API key
 - header 值
