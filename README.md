@@ -2,18 +2,31 @@
 
 [中文说明](./README.zh-CN.md)
 
-A plug-and-play Pi extension that improves DeepSeek KV Cache / Prompt Cache hit rates.
+A plug-and-play Pi extension that improves provider-side KV Cache / Prompt Cache hit rates, with conservative provider-specific footer stats.
 
-> Important: DeepSeek caching is server-side, automatic, and best-effort. This extension can improve the odds of cache hits by stabilizing prompt prefixes, requesting long retention, warning about session-affinity config, and showing lightweight footer stats. It cannot guarantee cache hits. Third-party proxies may hide, drop, or reduce cache effectiveness.
+> Important: prompt/KV caching is provider-side and best-effort. This extension can improve the odds of cache hits by stabilizing prompt prefixes, requesting long retention through Pi when supported, warning about obvious compat gaps, and showing lightweight footer stats for providers that expose reliable cache usage. It cannot guarantee cache hits. Third-party proxies may hide, drop, reroute, or reinterpret cache behavior.
 
 ## What it does
 
 | Feature | How | Manual action required |
 |---|---|:---:|
 | 🔄 Reorders the system prompt | `before_agent_start` hook: stable prefix first, dynamic context later | ❌ Automatic |
-| ⏳ Requests long cache retention | Sets `PI_CACHE_RETENTION=long` when the extension loads | ❌ Automatic |
-| 🔗 Session-affinity reminders | Checks DeepSeek-like model id/name and merged compat flags | ⚠️ See below |
-| 📊 Footer cache stats | Shows DeepSeek cache hit requests and cache-read token ratio in Pi footer/status | ❌ Automatic |
+| ⏳ Requests long cache retention | Sets `PI_CACHE_RETENTION=long` when the extension loads; Pi/provider compat decides what is sent | ❌ Automatic |
+| 🔗 Conservative compat reminders | DeepSeek session-affinity reminders, plus obvious Claude cache-control guidance for compatible endpoints | ⚠️ See below |
+| 📊 Provider-specific footer stats | Shows read-only cache stats for supported provider families in Pi footer/status | ❌ Automatic |
+
+## Supported stats adapters
+
+This release keeps the original DeepSeek behavior and adds read-only stats adapters for provider families that Pi or the provider can expose safely:
+
+| Adapter | Detection | Footer label | Usage fields |
+|---|---|---|---|
+| DeepSeek | Model id/name contains `deepseek` | `DS cache` | Pi `usage.cacheRead`/`usage.input`, or raw `prompt_cache_hit_tokens`, `prompt_cache_miss_tokens`, `prompt_tokens` when visible |
+| OpenAI official | Provider is clearly official OpenAI/ChatGPT (`openai`, `openai-codex`, `chatgpt`) | `OpenAI cache` | Pi-normalized usage, or raw `prompt_tokens_details.cached_tokens` / `input_tokens_details.cached_tokens` with prompt/input totals |
+| Anthropic / Claude | Provider/id/name contains `anthropic` or `claude`, Anthropic API, or Anthropic cache-control compat | `Claude cache` | Pi-normalized usage, or raw `cache_read_input_tokens`, `cache_creation_input_tokens`, `input_tokens` |
+| Gemini / Vertex | Google/Gemini/Vertex provider, API, id, or name signals | `Gemini cache` | Pi-normalized usage, or raw Gemini/Vertex cached-content token metadata when visible |
+
+Generic OpenAI-compatible proxies are **not** treated as official OpenAI just because they use an OpenAI-shaped API. If the upstream provider is ambiguous, the extension hides the footer stats instead of guessing.
 
 ## Install
 
@@ -21,7 +34,7 @@ A plug-and-play Pi extension that improves DeepSeek KV Cache / Prompt Cache hit 
 pi install npm:pi-deepseek-cache-optimizer
 ```
 
-After installation, `PI_CACHE_RETENTION=long` is applied automatically, the system prompt is reordered automatically, and the footer shows cache stats after DeepSeek-like model responses.
+After installation, `PI_CACHE_RETENTION=long` is applied automatically, the system prompt is reordered automatically, and the footer shows cache stats after supported provider-family responses with exposed usage.
 
 ## Uninstall
 
@@ -49,32 +62,38 @@ rm ~/.pi/agent/deepseek-cache-optimizer-stats.json
 
 ## Footer cache stats
 
-The Pi footer displays stats like:
+The Pi footer displays stats for the **active model family** only, for example:
 
 ```text
 DS cache 3/5 · 0.77M/0.80M tok (96%)
+OpenAI cache 2/4 · 0.25M/0.70M tok (36%)
+Claude cache 1/3 · 0.10M/0.45M tok (22%) · write 0.20M tok
+Gemini cache 1/2 · 0.18M/0.50M tok (36%)
 ```
 
 Meaning:
 
-- `3/5`: 3 of 5 DeepSeek-like assistant responses had `cacheRead > 0`.
+- `3/5`: 3 of 5 supported assistant responses for that provider family had cache-read tokens.
 - `0.77M/0.80M tok`: cumulative cache-read input tokens / cumulative prompt input tokens, shown in millions.
 - Percentage: `cacheRead / total prompt input`.
+- `write ... tok` appears for Claude when cache-write tokens are nonzero, because Anthropic cache writes have distinct cost/accounting semantics.
 
 Stats rules:
 
-- Counts only assistant responses whose model id or model name contains `deepseek`.
-- Counts only responses where Pi/provider exposes usage.
-- `cacheRead` comes from Pi-normalized `usage.cacheRead`.
-- Total prompt input is `usage.input + usage.cacheRead + usage.cacheWrite`. In common DeepSeek usage, `usage.input` is uncached/missed input and `usage.cacheRead` is cached input; if the provider exposes `cacheWrite`, it is included so the denominator is not too small.
+- Counters are separate per provider family. DeepSeek, OpenAI, Claude, and Gemini stats are not combined into one global hit rate.
+- The footer shows only the active model family's label and counters; it clears/hides for unsupported or ambiguous models.
+- Counts only assistant responses where Pi/provider exposes usage. Missing usage means no counter update.
+- Pi-normalized `usage.input`, `usage.cacheRead`, and `usage.cacheWrite` are preferred. Known raw provider fields are used only defensively when visible on the assistant message.
+- Total prompt input is `input + cacheRead + cacheWrite` for Pi-normalized usage. Provider raw normalizers use each provider's documented total/input fields when available.
 - Stats update only the footer/status. The extension does not create extra TUI widgets or diagnostic files.
-- Stats are persisted in a small local JSON state file at `~/.pi/agent/deepseek-cache-optimizer-stats.json`. The file stores only counters and the local day; it does not store API keys, prompts, messages, or model output.
+- Stats are persisted in a small local JSON state file at `~/.pi/agent/deepseek-cache-optimizer-stats.json`. The file stores only counters and the local day; it does not store API keys, prompts, messages, headers, or model output.
+- Existing v1 state files from DeepSeek-only releases are migrated into the DeepSeek adapter counters automatically.
 
 Reset behavior:
 
 - Pi restarts do **not** clear stats; the persisted counters are restored.
 - `/reload` / extension reload resets the persisted counters because Pi exposes `session_start` with reason `reload`.
-- Crossing the local natural-day boundary resets counters on the next status update or DeepSeek-like response.
+- Crossing the local natural-day boundary resets counters on the next status update or supported-provider response.
 
 ## Suggested compat config
 
@@ -96,16 +115,18 @@ For direct DeepSeek or DeepSeek-like OpenAI-compatible proxies, configure the pr
 
 If your provider id is not `deepseek` (for example a company proxy or OpenRouter-style proxy), you can put the same fields on that provider or the specific DeepSeek model. The extension detects DeepSeek-like models only by checking whether the model id/name contains `deepseek`; it does not infer this from provider id, base URL, or `thinkingFormat`. The currently recommended verification path covers the official direct `deepseek/deepseek-v4-pro` model.
 
-The extension warns at most once per provider/model per session when:
+The extension warns at most once per provider/model per session when a DeepSeek-like OpenAI-compatible model is missing:
 
-- `supportsLongCacheRetention: true` is missing, so Pi may not send `prompt_cache_retention: "24h"`.
-- `sendSessionAffinityHeaders: true` is missing for OpenAI Completions-compatible APIs, or `sendSessionIdHeader: true` is missing for OpenAI Responses-compatible APIs, so Pi may not send session-affinity headers such as `session_id`, `x-client-request-id`, or `x-session-affinity`.
+- `supportsLongCacheRetention: true`, so Pi may not send `prompt_cache_retention: "24h"`.
+- `sendSessionAffinityHeaders: true` for OpenAI Completions-compatible APIs, or `sendSessionIdHeader: true` for OpenAI Responses-compatible APIs, so Pi may not send session-affinity headers such as `session_id`, `x-client-request-id`, or `x-session-affinity`.
 
-> Reminder: only enable session-affinity headers when your endpoint or proxy supports them.
+For Claude/Anthropic models behind an OpenAI-compatible endpoint, the extension may warn when the model is clearly Claude-like but `cacheControlFormat: "anthropic"` is missing. Only enable that compat flag if your endpoint supports Anthropic-style cache-control markers.
+
+> Reminder: only enable session-affinity headers or cache-control compat when your endpoint or proxy supports them.
 
 ## How it works
 
-DeepSeek KV Cache is based on exact prefix matching. Pi's system prompt contains stable content that is likely shared across sessions (tools, skills, guidelines) and dynamic content that changes frequently (git status, task context).
+Provider caches are usually based on exact or near-exact prefix matching. Pi's system prompt contains stable content that is likely shared across sessions (tools, skills, guidelines) and dynamic content that changes frequently (git status, task context).
 
 ```text
 Before: [dynamic git status | task context | stable tools + rules]
@@ -117,29 +138,31 @@ After:  [stable tools + rules | dynamic git status | task context]
 
 Pi itself decides whether to send cache-related fields such as `prompt_cache_key`, `prompt_cache_retention`, session-affinity headers, or Anthropic-style `cache_control` based on model compat and `PI_CACHE_RETENTION`. This extension does not fake cache hits; it helps configuration, improves stable-prefix probability, and summarizes exposed usage in the footer.
 
-## Can it be extended to other models or providers?
+## Provider-specific limitations
 
-Possibly, but it should **not** be generalized blindly. Cache controls, cache-hit accounting, TTL behavior, and prompt-prefix rules differ by provider and sometimes by model family. The current implementation is intentionally DeepSeek-focused:
+This package now has provider-family stats adapters, but it still avoids blind generalization:
 
-- Detection and compatibility warnings only target models whose id or name contains `deepseek`.
-- Footer stats currently count DeepSeek-like assistant responses only. Non-DeepSeek models can still benefit from the stable-prefix prompt ordering, but they will not appear in the `DS cache ...` counters today.
-- Cache usage fields are provider-specific. DeepSeek/OpenAI-compatible providers may expose prompt-cache hits as `prompt_cache_hit_tokens`, `prompt_cache_miss_tokens`, or Pi-normalized `usage.cacheRead` / `usage.input`; other providers may use different names or omit cache usage entirely.
+- DeepSeek cache is automatic and prefix/KV-cache based. Hits are best-effort and proxies can hide DeepSeek usage fields.
+- OpenAI prompt caching is automatic for supported official OpenAI models and long enough prompts. The adapter is intentionally conservative and does not count generic OpenAI-compatible proxies as OpenAI official.
+- Claude prompt caching depends on explicit Anthropic cache-control breakpoints. This release only reports stats exposed by Pi/provider; it does not insert breakpoints or mutate request bodies.
+- Gemini/Vertex may expose implicit cached-content token counts. This release does not create, store, update, or delete explicit Gemini cached-content resources.
+- Proxies/aggregators can route the same model name to different upstream providers. Use upstream routing constraints and verify exposed usage before trusting cache behavior.
 
-Future expansion should be done with explicit provider/model-family adapters, for example:
+## Out of scope for this release
 
-- A DeepSeek adapter for automatic prefix caching, DeepSeek thinking parameters, and DeepSeek/OpenAI-compatible usage fields.
-- An Anthropic adapter for explicit `cache_control` placement and Anthropic TTL/cache accounting semantics.
-- An OpenAI-compatible adapter only for models/providers that expose reliable cached-input usage and support the relevant retention or cache-key controls.
-
-Each adapter should own its provider detection, cache-control strategy, usage normalization, footer label, and documentation. Until such adapters exist, treat this package as a DeepSeek optimizer with a generally useful prompt-ordering side effect.
+- Mutating request bodies.
+- Injecting Anthropic `cache_control` markers.
+- Sending or overriding OpenAI `prompt_cache_key` / `prompt_cache_retention` outside Pi's own compat handling.
+- Creating Gemini explicit `cachedContents` resources or persisting cache resource names.
+- Claiming stats for providers that do not expose reliable cache usage.
 
 ## Verify effect
 
 ### In Pi
 
-- Watch the footer `DS cache ...` status for the current local day.
-- Use Pi's built-in `/stats` to confirm `cacheRead` tokens grow.
-- DeepSeek API usage may also expose `prompt_cache_hit_tokens` / `prompt_cache_miss_tokens`; Pi normalizes these where possible to `usage.cacheRead` / `usage.input`.
+- Watch the footer label for the active family, such as `DS cache ...`, `OpenAI cache ...`, `Claude cache ...`, or `Gemini cache ...`.
+- Use Pi's built-in `/stats` to confirm `cacheRead` tokens grow when Pi normalizes provider usage.
+- For provider raw APIs, compare with documented usage fields such as DeepSeek `prompt_cache_hit_tokens`, OpenAI `cached_tokens`, Anthropic `cache_read_input_tokens`, or Gemini/Vertex cached-content token counts.
 
 ### Official DeepSeek baseline (recommended)
 

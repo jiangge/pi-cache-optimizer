@@ -9,11 +9,11 @@ import type { BuildSystemPromptOptions, ExtensionAPI, ExtensionContext } from "@
  * What it does:
  * 1. Reorders Pi's system prompt so stable content is sent before dynamic context.
  * 2. Sets PI_CACHE_RETENTION=long at extension load time.
- * 3. Warns once per DeepSeek-like provider/model when cache-related compat flags are missing.
- * 4. Shows lightweight persisted DeepSeek cache hit/token stats in Pi's footer.
+ * 3. Warns once for provider/model cache compat gaps where the signal is conservative.
+ * 4. Shows lightweight persisted provider-specific cache stats in Pi's footer.
  *
- * DeepSeek prompt/KV cache is provider-side, automatic, and best-effort. This extension
- * improves the odds of cache hits; it cannot guarantee hits, especially through proxies.
+ * Provider prompt/KV caches are provider-side and best-effort. This extension improves
+ * the odds of cache hits; it cannot guarantee hits, especially through proxies.
  */
 
 // ============================================================
@@ -25,10 +25,15 @@ if (!process.env.PI_CACHE_RETENTION || process.env.PI_CACHE_RETENTION !== "long"
 
 type PiModel = NonNullable<ExtensionContext["model"]>;
 type UnknownRecord = Record<string, unknown>;
+type CacheProviderId = "deepseek" | "openai" | "claude" | "gemini";
 
 const STATUS_KEY = "deepseek-cache-stats";
 const STATE_DIR = join(homedir(), ".pi", "agent");
 const STATE_FILE_PATH = join(STATE_DIR, "deepseek-cache-optimizer-stats.json");
+
+const CACHE_PROVIDER_IDS: CacheProviderId[] = ["deepseek", "openai", "claude", "gemini"];
+
+const MODEL_ONLY_TOKEN_KEYS = ["provider", "id", "name", "api", "model", "responseModel"];
 
 type CacheCompat = {
   sendSessionAffinityHeaders?: boolean;
@@ -36,6 +41,36 @@ type CacheCompat = {
   supportsLongCacheRetention?: boolean;
   thinkingFormat?: string;
   cacheControlFormat?: string;
+};
+
+type CacheStats = {
+  day: string;
+  totalRequests: number;
+  hitRequests: number;
+  cachedInputTokens: number;
+  cacheWriteInputTokens: number;
+  totalInputTokens: number;
+};
+
+type PersistedCacheStatsV2 = {
+  version: 2;
+  statsByProvider: Partial<Record<CacheProviderId, CacheStats>>;
+};
+
+type UsageSnapshot = {
+  cacheRead: number;
+  cacheWrite: number;
+  totalInput: number;
+};
+
+type CacheProviderAdapter = {
+  id: CacheProviderId;
+  label: string;
+  showCacheWrite?: boolean;
+  matchesModel(model: PiModel | undefined): boolean;
+  matchesAssistantMessage(message: unknown, model: PiModel | undefined): boolean;
+  normalizeUsage(message: unknown): UsageSnapshot | undefined;
+  warningText?(model: PiModel): string | undefined;
 };
 
 function escapeXml(value: string): string {
@@ -141,22 +176,231 @@ function lower(value: unknown): string {
   return typeof value === "string" ? value.toLowerCase() : "";
 }
 
+function getNumber(value: unknown): number | undefined {
+  return typeof value === "number" && Number.isFinite(value) ? value : undefined;
+}
+
+function getNonNegativeNumber(record: UnknownRecord, key: string): number | undefined {
+  const value = getNumber(record[key]);
+  return value !== undefined && value >= 0 ? value : undefined;
+}
+
 function getCompat(model: PiModel | undefined): CacheCompat {
   return (model?.compat ?? {}) as CacheCompat;
 }
 
+function isAssistantMessage(message: unknown): boolean {
+  return asRecord(message)?.role === "assistant";
+}
+
+function getAssistantRecord(message: unknown): UnknownRecord | undefined {
+  const record = asRecord(message);
+  return record?.role === "assistant" ? record : undefined;
+}
+
+function getModelTokenValues(model: PiModel | undefined): string[] {
+  if (!model) return [];
+  return [model.provider, model.id, model.name, model.api].map(lower).filter(Boolean);
+}
+
+function getMessageModelTokenValues(message: unknown): string[] {
+  const record = asRecord(message);
+  if (!record) return [];
+
+  return MODEL_ONLY_TOKEN_KEYS.map((key) => lower(record[key])).filter(Boolean);
+}
+
+function hasAnyTokenContaining(tokens: string[], needles: string[]): boolean {
+  return tokens.some((token) => needles.some((needle) => token.includes(needle)));
+}
+
+function modelOrMessageHas(message: unknown, model: PiModel | undefined, needles: string[]): boolean {
+  return hasAnyTokenContaining([...getModelTokenValues(model), ...getMessageModelTokenValues(message)], needles);
+}
+
 function isDeepSeekLikeModel(model: PiModel | undefined): boolean {
   if (!model) return false;
-
-  return lower(model.id).includes("deepseek") || lower(model.name).includes("deepseek");
+  return hasAnyTokenContaining([lower(model.id), lower(model.name)], ["deepseek"]);
 }
 
-function shouldWarnForCacheCompat(model: PiModel | undefined): boolean {
-  if (!model || !isDeepSeekLikeModel(model)) return false;
-  return model.api === "openai-completions" || model.api === "openai-responses";
+function isOpenAICompatibleApi(api: unknown): boolean {
+  const value = lower(api);
+  return value === "openai-completions" || value === "openai-responses";
 }
 
-function describeMissingCacheCompat(model: PiModel): string[] {
+function isOfficialOpenAIProvider(value: unknown): boolean {
+  const normalized = lower(value);
+  return normalized === "openai" || normalized === "openai-codex" || normalized === "chatgpt";
+}
+
+function isOfficialOpenAIModel(model: PiModel | undefined): boolean {
+  if (!model) return false;
+  return isOfficialOpenAIProvider(model.provider);
+}
+
+function isClaudeLikeModel(model: PiModel | undefined): boolean {
+  if (!model) return false;
+  const tokens = getModelTokenValues(model);
+  return (
+    hasAnyTokenContaining(tokens, ["anthropic", "claude"]) ||
+    model.api === "anthropic-messages" ||
+    getCompat(model).cacheControlFormat === "anthropic"
+  );
+}
+
+function isGeminiLikeModel(model: PiModel | undefined): boolean {
+  if (!model) return false;
+
+  const provider = lower(model.provider);
+  const api = lower(model.api);
+  const idAndName = [lower(model.id), lower(model.name)];
+
+  if (api === "google-generative-ai" || api === "google-vertex") return true;
+  if (provider === "google" || provider === "google-vertex") return true;
+  if (provider.includes("vertex") || provider.includes("google")) {
+    return hasAnyTokenContaining(idAndName, ["gemini"]);
+  }
+  return hasAnyTokenContaining([...idAndName, provider], ["gemini"]);
+}
+
+function modelKey(model: PiModel): string {
+  return `${model.provider}/${model.id}`;
+}
+
+function usageRecordFromAssistant(message: unknown): UnknownRecord | undefined {
+  return asRecord(getAssistantRecord(message)?.usage);
+}
+
+function getNestedRecord(record: UnknownRecord | undefined, key: string): UnknownRecord | undefined {
+  return asRecord(record?.[key]);
+}
+
+function getFirstNonNegativeNumber(...values: unknown[]): number | undefined {
+  for (const value of values) {
+    const number = getNumber(value);
+    if (number !== undefined && number >= 0) return number;
+  }
+  return undefined;
+}
+
+function readCachedTokensFromDetails(details: UnknownRecord | undefined): number | undefined {
+  return getFirstNonNegativeNumber(details?.cached_tokens, details?.cachedTokens);
+}
+
+function readCacheWriteFromDetails(details: UnknownRecord | undefined): number | undefined {
+  return getFirstNonNegativeNumber(details?.cache_write_tokens, details?.cacheWriteTokens);
+}
+
+function getPiNormalizedUsage(message: unknown, allowInputOnly = false): UsageSnapshot | undefined {
+  const usage = usageRecordFromAssistant(message);
+  if (!usage) return undefined;
+
+  const input = getNonNegativeNumber(usage, "input");
+  const cacheRead = getNonNegativeNumber(usage, "cacheRead");
+  const cacheWrite = getNonNegativeNumber(usage, "cacheWrite");
+  const hasCacheSignal = cacheRead !== undefined || cacheWrite !== undefined;
+
+  if (!hasCacheSignal && (input === undefined || !allowInputOnly)) return undefined;
+
+  return {
+    cacheRead: cacheRead ?? 0,
+    cacheWrite: cacheWrite ?? 0,
+    totalInput: (input ?? 0) + (cacheRead ?? 0) + (cacheWrite ?? 0),
+  };
+}
+
+function getDeepSeekRawUsage(message: unknown): UsageSnapshot | undefined {
+  const usage = usageRecordFromAssistant(message);
+  if (!usage) return undefined;
+
+  const cacheRead = getFirstNonNegativeNumber(usage.prompt_cache_hit_tokens);
+  if (cacheRead === undefined) return undefined;
+
+  const cacheMiss = getFirstNonNegativeNumber(usage.prompt_cache_miss_tokens);
+  const promptTokens = getFirstNonNegativeNumber(usage.prompt_tokens);
+  const totalInput = promptTokens ?? cacheRead + (cacheMiss ?? 0);
+
+  return { cacheRead, cacheWrite: 0, totalInput };
+}
+
+function getOpenAIRawUsage(message: unknown): UsageSnapshot | undefined {
+  const usage = usageRecordFromAssistant(message);
+  if (!usage) return undefined;
+
+  const promptDetails = getNestedRecord(usage, "prompt_tokens_details") ?? getNestedRecord(usage, "promptTokensDetails");
+  const inputDetails = getNestedRecord(usage, "input_tokens_details") ?? getNestedRecord(usage, "inputTokensDetails");
+  const cacheRead = readCachedTokensFromDetails(promptDetails) ?? readCachedTokensFromDetails(inputDetails);
+  if (cacheRead === undefined) return undefined;
+
+  const cacheWrite = readCacheWriteFromDetails(promptDetails) ?? readCacheWriteFromDetails(inputDetails) ?? 0;
+  const totalInput = getFirstNonNegativeNumber(
+    usage.prompt_tokens,
+    usage.promptTokens,
+    usage.input_tokens,
+    usage.inputTokens,
+  ) ?? cacheRead + cacheWrite;
+
+  return { cacheRead, cacheWrite, totalInput };
+}
+
+function getAnthropicRawUsage(message: unknown): UsageSnapshot | undefined {
+  const usage = usageRecordFromAssistant(message);
+  if (!usage) return undefined;
+
+  const cacheRead = getFirstNonNegativeNumber(usage.cache_read_input_tokens, usage.cacheReadInputTokens);
+  const cacheWrite = getFirstNonNegativeNumber(usage.cache_creation_input_tokens, usage.cacheCreationInputTokens);
+  if (cacheRead === undefined && cacheWrite === undefined) return undefined;
+
+  const input = getFirstNonNegativeNumber(usage.input_tokens, usage.inputTokens) ?? 0;
+  return {
+    cacheRead: cacheRead ?? 0,
+    cacheWrite: cacheWrite ?? 0,
+    totalInput: input + (cacheRead ?? 0) + (cacheWrite ?? 0),
+  };
+}
+
+function getGeminiRawUsage(message: unknown): UsageSnapshot | undefined {
+  const record = getAssistantRecord(message);
+  if (!record) return undefined;
+
+  const usage = asRecord(record.usage);
+  const metadata =
+    getNestedRecord(record, "usageMetadata") ??
+    getNestedRecord(record, "usage_metadata") ??
+    getNestedRecord(usage, "usageMetadata") ??
+    getNestedRecord(usage, "usage_metadata") ??
+    usage;
+  if (!metadata) return undefined;
+
+  const cacheRead = getFirstNonNegativeNumber(
+    metadata.cachedContentTokenCount,
+    metadata.cached_content_token_count,
+  );
+  if (cacheRead === undefined) return undefined;
+
+  const totalInput = getFirstNonNegativeNumber(
+    metadata.promptTokenCount,
+    metadata.prompt_token_count,
+    metadata.inputTokenCount,
+    metadata.input_token_count,
+    usage?.input_tokens,
+    usage?.inputTokens,
+    usage?.prompt_tokens,
+    usage?.promptTokens,
+  ) ?? cacheRead;
+
+  return { cacheRead, cacheWrite: 0, totalInput };
+}
+
+function normalizeWithFallback(
+  message: unknown,
+  rawNormalizer: (message: unknown) => UsageSnapshot | undefined,
+  options: { allowInputOnlyPiUsage?: boolean } = {},
+): UsageSnapshot | undefined {
+  return getPiNormalizedUsage(message, options.allowInputOnlyPiUsage) ?? rawNormalizer(message);
+}
+
+function describeMissingDeepSeekCompat(model: PiModel): string[] {
   const compat = getCompat(model);
   const missing: string[] = [];
 
@@ -174,8 +418,88 @@ function describeMissingCacheCompat(model: PiModel): string[] {
   return missing;
 }
 
-function modelKey(model: PiModel): string {
-  return `${model.provider}/${model.id}`;
+const CACHE_PROVIDER_ADAPTERS: CacheProviderAdapter[] = [
+  {
+    id: "deepseek",
+    label: "DS cache",
+    matchesModel: isDeepSeekLikeModel,
+    matchesAssistantMessage(message, model) {
+      if (!isAssistantMessage(message)) return false;
+      return lower(asRecord(message)?.model).includes("deepseek") || isDeepSeekLikeModel(model);
+    },
+    normalizeUsage(message) {
+      return normalizeWithFallback(message, getDeepSeekRawUsage, { allowInputOnlyPiUsage: true });
+    },
+    warningText(model) {
+      if (!isDeepSeekLikeModel(model) || !isOpenAICompatibleApi(model.api)) return undefined;
+
+      const missing = describeMissingDeepSeekCompat(model);
+      if (missing.length === 0) return undefined;
+
+      const key = modelKey(model);
+      return (
+        `💡 DeepSeek cache optimizer: ${key} is DeepSeek-like but merged compat lacks ${missing.join(" and ")}. ` +
+        "Proxies may reduce or hide cache hits; add these compat flags in ~/.pi/agent/models.json when the endpoint supports them."
+      );
+    },
+  },
+  {
+    id: "claude",
+    label: "Claude cache",
+    showCacheWrite: true,
+    matchesModel: isClaudeLikeModel,
+    matchesAssistantMessage(message, model) {
+      if (!isAssistantMessage(message)) return false;
+      return isClaudeLikeModel(model) || modelOrMessageHas(message, undefined, ["anthropic", "claude"]);
+    },
+    normalizeUsage(message) {
+      return normalizeWithFallback(message, getAnthropicRawUsage);
+    },
+    warningText(model) {
+      if (!isClaudeLikeModel(model) || !isOpenAICompatibleApi(model.api)) return undefined;
+      if (getCompat(model).cacheControlFormat === "anthropic") return undefined;
+
+      return (
+        `💡 Cache optimizer: ${modelKey(model)} looks Claude/Anthropic-like but OpenAI-compatible compat lacks cacheControlFormat: "anthropic". ` +
+        "Pi may not place Anthropic cache_control breakpoints unless this endpoint supports and enables that compat flag."
+      );
+    },
+  },
+  {
+    id: "openai",
+    label: "OpenAI cache",
+    matchesModel: isOfficialOpenAIModel,
+    matchesAssistantMessage(message, model) {
+      if (!isAssistantMessage(message)) return false;
+      if (isOfficialOpenAIModel(model)) return true;
+
+      const record = asRecord(message);
+      return isOfficialOpenAIProvider(record?.provider);
+    },
+    normalizeUsage(message) {
+      return normalizeWithFallback(message, getOpenAIRawUsage);
+    },
+  },
+  {
+    id: "gemini",
+    label: "Gemini cache",
+    matchesModel: isGeminiLikeModel,
+    matchesAssistantMessage(message, model) {
+      if (!isAssistantMessage(message)) return false;
+      return isGeminiLikeModel(model) || modelOrMessageHas(message, undefined, ["gemini", "google", "vertex"]);
+    },
+    normalizeUsage(message) {
+      return normalizeWithFallback(message, getGeminiRawUsage);
+    },
+  },
+];
+
+function selectAdapterForModel(model: PiModel | undefined): CacheProviderAdapter | undefined {
+  return CACHE_PROVIDER_ADAPTERS.find((adapter) => adapter.matchesModel(model));
+}
+
+function selectAdapterForAssistantMessage(message: unknown, model: PiModel | undefined): CacheProviderAdapter | undefined {
+  return CACHE_PROVIDER_ADAPTERS.find((adapter) => adapter.matchesAssistantMessage(message, model));
 }
 
 function notifyCacheCompatIfNeeded(
@@ -183,45 +507,18 @@ function notifyCacheCompatIfNeeded(
   ctx: ExtensionContext,
   warnedModels: Set<string>,
 ): void {
-  if (!model || !shouldWarnForCacheCompat(model)) return;
+  if (!model) return;
 
-  const key = modelKey(model);
+  const adapter = selectAdapterForModel(model);
+  const text = adapter?.warningText?.(model);
+  if (!adapter || !text) return;
+
+  const key = `${adapter.id}:${modelKey(model)}`;
   if (warnedModels.has(key)) return;
   warnedModels.add(key);
 
-  const missing = describeMissingCacheCompat(model);
-  if (missing.length === 0) return;
-
-  ctx.ui.notify(
-    "💡 DeepSeek cache optimizer: " +
-      `${key} is DeepSeek-like but merged compat lacks ${missing.join(" and ")}. ` +
-      "Proxies may reduce or hide cache hits; add these compat flags in ~/.pi/agent/models.json when the endpoint supports them.",
-    "warning",
-  );
+  ctx.ui.notify(text, "warning");
 }
-
-function getNumber(value: unknown): number | undefined {
-  return typeof value === "number" && Number.isFinite(value) ? value : undefined;
-}
-
-type CacheStats = {
-  day: string;
-  totalRequests: number;
-  hitRequests: number;
-  cachedInputTokens: number;
-  totalInputTokens: number;
-};
-
-type PersistedCacheStats = {
-  version: 1;
-  stats: CacheStats;
-};
-
-type UsageSnapshot = {
-  input: number;
-  cacheRead: number;
-  cacheWrite: number;
-};
 
 function currentLocalDay(): string {
   const now = new Date();
@@ -237,39 +534,21 @@ function emptyCacheStats(day = currentLocalDay()): CacheStats {
     totalRequests: 0,
     hitRequests: 0,
     cachedInputTokens: 0,
+    cacheWriteInputTokens: 0,
     totalInputTokens: 0,
   };
 }
 
-function getAssistantUsage(message: unknown): UsageSnapshot | undefined {
-  const record = asRecord(message);
-  if (record?.role !== "assistant") return undefined;
-
-  const usage = asRecord(record.usage);
-  if (!usage) return undefined;
-
-  return {
-    input: getNumber(usage.input) ?? 0,
-    cacheRead: getNumber(usage.cacheRead) ?? 0,
-    cacheWrite: getNumber(usage.cacheWrite) ?? 0,
-  };
-}
-
-function isDeepSeekLikeAssistantMessage(message: unknown, model: PiModel | undefined): boolean {
-  const record = asRecord(message);
-  if (record?.role !== "assistant") return false;
-
-  return lower(record.model).includes("deepseek") || isDeepSeekLikeModel(model);
+function emptyAllCacheStats(day = currentLocalDay()): Partial<Record<CacheProviderId, CacheStats>> {
+  return Object.fromEntries(CACHE_PROVIDER_IDS.map((id) => [id, emptyCacheStats(day)])) as Partial<Record<CacheProviderId, CacheStats>>;
 }
 
 function addUsageToCacheStats(stats: CacheStats, usage: UsageSnapshot): void {
   stats.totalRequests += 1;
   if (usage.cacheRead > 0) stats.hitRequests += 1;
   stats.cachedInputTokens += usage.cacheRead;
-
-  // Pi's normalized usage splits prompt input into uncached input, cacheRead, and cacheWrite.
-  // Include cacheWrite when present so the denominator stays the full prompt-input token count.
-  stats.totalInputTokens += usage.input + usage.cacheRead + usage.cacheWrite;
+  stats.cacheWriteInputTokens += usage.cacheWrite;
+  stats.totalInputTokens += usage.totalInput;
 }
 
 function formatTokenCount(value: number): string {
@@ -281,12 +560,15 @@ function formatTokenCount(value: number): string {
   return `${millions.toFixed(2)}M`;
 }
 
-function formatCacheStats(stats: CacheStats): string {
+function formatCacheStats(adapter: CacheProviderAdapter, stats: CacheStats): string {
   const percent = stats.totalInputTokens > 0
     ? ` (${Math.round((stats.cachedInputTokens / stats.totalInputTokens) * 100)}%)`
     : "";
+  const writeText = adapter.showCacheWrite && stats.cacheWriteInputTokens > 0
+    ? ` · write ${formatTokenCount(stats.cacheWriteInputTokens)} tok`
+    : "";
 
-  return `DS cache ${stats.hitRequests}/${stats.totalRequests} · ${formatTokenCount(stats.cachedInputTokens)}/${formatTokenCount(stats.totalInputTokens)} tok${percent}`;
+  return `${adapter.label} ${stats.hitRequests}/${stats.totalRequests} · ${formatTokenCount(stats.cachedInputTokens)}/${formatTokenCount(stats.totalInputTokens)} tok${percent}${writeText}`;
 }
 
 function getErrorCode(error: unknown): string | undefined {
@@ -295,16 +577,8 @@ function getErrorCode(error: unknown): string | undefined {
     : undefined;
 }
 
-function getNonNegativeNumber(record: UnknownRecord, key: string): number | undefined {
-  const value = getNumber(record[key]);
-  return value !== undefined && value >= 0 ? value : undefined;
-}
-
-function parsePersistedCacheStats(value: unknown): CacheStats | undefined {
-  const record = asRecord(value);
-  if (!record || record.version !== 1) return undefined;
-
-  const stats = asRecord(record.stats);
+function parseCacheStats(value: unknown): CacheStats | undefined {
+  const stats = asRecord(value);
   if (!stats || typeof stats.day !== "string" || !/^\d{4}-\d{2}-\d{2}$/.test(stats.day)) {
     return undefined;
   }
@@ -312,6 +586,7 @@ function parsePersistedCacheStats(value: unknown): CacheStats | undefined {
   const totalRequests = getNonNegativeNumber(stats, "totalRequests");
   const hitRequests = getNonNegativeNumber(stats, "hitRequests");
   const cachedInputTokens = getNonNegativeNumber(stats, "cachedInputTokens");
+  const cacheWriteInputTokens = getNonNegativeNumber(stats, "cacheWriteInputTokens") ?? 0;
   const totalInputTokens = getNonNegativeNumber(stats, "totalInputTokens");
 
   if (
@@ -320,7 +595,8 @@ function parsePersistedCacheStats(value: unknown): CacheStats | undefined {
     cachedInputTokens === undefined ||
     totalInputTokens === undefined ||
     hitRequests > totalRequests ||
-    cachedInputTokens > totalInputTokens
+    cachedInputTokens > totalInputTokens ||
+    cacheWriteInputTokens > totalInputTokens
   ) {
     return undefined;
   }
@@ -330,11 +606,35 @@ function parsePersistedCacheStats(value: unknown): CacheStats | undefined {
     totalRequests,
     hitRequests,
     cachedInputTokens,
+    cacheWriteInputTokens,
     totalInputTokens,
   };
 }
 
-async function readPersistedCacheStats(): Promise<CacheStats | undefined> {
+function parsePersistedCacheStats(value: unknown): Partial<Record<CacheProviderId, CacheStats>> | undefined {
+  const record = asRecord(value);
+  if (!record) return undefined;
+
+  if (record.version === 1) {
+    const migrated = parseCacheStats(record.stats);
+    return migrated ? { deepseek: migrated } : undefined;
+  }
+
+  if (record.version !== 2) return undefined;
+
+  const statsByProvider = asRecord(record.statsByProvider);
+  if (!statsByProvider) return undefined;
+
+  const parsed: Partial<Record<CacheProviderId, CacheStats>> = {};
+  for (const id of CACHE_PROVIDER_IDS) {
+    const stats = parseCacheStats(statsByProvider[id]);
+    if (stats) parsed[id] = stats;
+  }
+
+  return parsed;
+}
+
+async function readPersistedCacheStats(): Promise<Partial<Record<CacheProviderId, CacheStats>> | undefined> {
   try {
     const raw = await readFile(STATE_FILE_PATH, "utf8");
     return parsePersistedCacheStats(JSON.parse(raw));
@@ -346,9 +646,9 @@ async function readPersistedCacheStats(): Promise<CacheStats | undefined> {
   }
 }
 
-async function writePersistedCacheStats(stats: CacheStats): Promise<void> {
+async function writePersistedCacheStats(statsByProvider: Partial<Record<CacheProviderId, CacheStats>>): Promise<void> {
   await mkdir(STATE_DIR, { recursive: true });
-  const payload: PersistedCacheStats = { version: 1, stats };
+  const payload: PersistedCacheStatsV2 = { version: 2, statsByProvider };
   const tempPath = `${STATE_FILE_PATH}.${process.pid}.${Date.now()}.tmp`;
 
   await writeFile(tempPath, JSON.stringify(payload, null, 2) + "\n", "utf8");
@@ -357,13 +657,22 @@ async function writePersistedCacheStats(stats: CacheStats): Promise<void> {
 
 export default function (pi: ExtensionAPI) {
   const warnedModels = new Set<string>();
-  let cacheStats = emptyCacheStats();
+  let cacheStatsByProvider: Partial<Record<CacheProviderId, CacheStats>> = emptyAllCacheStats();
   let lastStatusText: string | undefined;
   let persistenceWarningShown = false;
 
+  function getStatsForAdapter(adapter: CacheProviderAdapter): CacheStats {
+    const existing = cacheStatsByProvider[adapter.id];
+    if (existing) return existing;
+
+    const created = emptyCacheStats();
+    cacheStatsByProvider[adapter.id] = created;
+    return created;
+  }
+
   async function persistCacheStats(ctx?: ExtensionContext): Promise<void> {
     try {
-      await writePersistedCacheStats(cacheStats);
+      await writePersistedCacheStats(cacheStatsByProvider);
     } catch (error) {
       console.warn("DeepSeek cache optimizer: failed to persist cache stats", error);
       if (!persistenceWarningShown) {
@@ -376,32 +685,42 @@ export default function (pi: ExtensionAPI) {
     }
   }
 
+  async function rollOverStatsIfNeeded(ctx?: ExtensionContext): Promise<void> {
+    const day = currentLocalDay();
+    let changed = false;
+
+    for (const id of CACHE_PROVIDER_IDS) {
+      const stats = cacheStatsByProvider[id];
+      if (stats && stats.day !== day) {
+        cacheStatsByProvider[id] = emptyCacheStats(day);
+        changed = true;
+      }
+    }
+
+    if (changed) {
+      lastStatusText = undefined;
+      await persistCacheStats(ctx);
+    }
+  }
+
   async function restoreCacheStats(reason: string, ctx: ExtensionContext): Promise<void> {
     if (reason === "reload") {
-      cacheStats = emptyCacheStats();
+      cacheStatsByProvider = emptyAllCacheStats();
       lastStatusText = undefined;
       await persistCacheStats(ctx);
       return;
     }
 
-    cacheStats = (await readPersistedCacheStats()) ?? emptyCacheStats();
+    cacheStatsByProvider = (await readPersistedCacheStats()) ?? emptyAllCacheStats();
     lastStatusText = undefined;
     await rollOverStatsIfNeeded(ctx);
-  }
-
-  async function rollOverStatsIfNeeded(ctx?: ExtensionContext): Promise<void> {
-    const day = currentLocalDay();
-    if (cacheStats.day !== day) {
-      cacheStats = emptyCacheStats(day);
-      lastStatusText = undefined;
-      await persistCacheStats(ctx);
-    }
   }
 
   async function publishStatus(ctx: ExtensionContext, model: PiModel | undefined = ctx.model): Promise<void> {
     await rollOverStatsIfNeeded(ctx);
 
-    const statusText = isDeepSeekLikeModel(model) ? formatCacheStats(cacheStats) : undefined;
+    const adapter = selectAdapterForModel(model);
+    const statusText = adapter ? formatCacheStats(adapter, getStatsForAdapter(adapter)) : undefined;
     if (statusText === lastStatusText) return;
 
     lastStatusText = statusText;
@@ -430,13 +749,14 @@ export default function (pi: ExtensionAPI) {
   });
 
   pi.on("message_end", async (event, ctx) => {
-    if (!isDeepSeekLikeAssistantMessage(event.message, ctx.model)) return;
+    const adapter = selectAdapterForAssistantMessage(event.message, ctx.model);
+    if (!adapter) return;
 
-    const usage = getAssistantUsage(event.message);
+    const usage = adapter.normalizeUsage(event.message);
     if (!usage) return;
 
     await rollOverStatsIfNeeded(ctx);
-    addUsageToCacheStats(cacheStats, usage);
+    addUsageToCacheStats(getStatsForAdapter(adapter), usage);
     await persistCacheStats(ctx);
     await publishStatus(ctx);
   });
