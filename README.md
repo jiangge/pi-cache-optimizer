@@ -152,7 +152,7 @@ What the extension does automatically:
 Provider notes:
 
 - DeepSeek: current behavior remains the reference path. Stable prefix ordering plus long-retention/session-affinity compat gives the best chance of automatic KV prefix reuse.
-- OpenAI-family: prompt caching is automatic only on supported upstreams and sufficiently long prompts. Keep static instructions, tools, examples, and specs before changing user/task context. Pi owns any supported `prompt_cache_key` / `prompt_cache_retention` transport fields.
+- OpenAI-family: prompt caching is automatic only on supported upstreams and sufficiently long prompts. Keep static instructions, tools, examples, and specs before changing user/task context. Pi owns retention transport by default. If you explicitly opt in with `PI_CACHE_OPTIMIZER_OPENAI_CACHE_KEY=1`, the extension adds a top-level `prompt_cache_key` derived from a SHA-256 hash of the stable prompt prefix for OpenAI-family id/name matches only. The stable prompt text is not stored or printed, but unsupported OpenAI-compatible proxies may reject this field.
 - Claude: prompt caching depends on Anthropic `cache_control` breakpoints. This extension does not inject breakpoints itself; for compatible endpoints, configure Pi compat such as `cacheControlFormat: "anthropic"` only when the endpoint supports it.
 - Gemini/Vertex: implicit caching benefits from repeated large stable prefixes. This extension does not create explicit `cachedContents` resources or store cache resource names.
 - Proxies/aggregators: fix upstream routing/provider order where possible. Cache hit rates are unreliable if the same model id/name can route to different upstreams.
@@ -171,7 +171,8 @@ This package now has provider-family stats adapters, but it still avoids blind g
 
 - Mutating request bodies.
 - Injecting Anthropic `cache_control` markers.
-- Sending or overriding OpenAI `prompt_cache_key` / `prompt_cache_retention` outside Pi's own compat handling.
+- Sending OpenAI `prompt_cache_key` by default; it is only added when `PI_CACHE_OPTIMIZER_OPENAI_CACHE_KEY=1` is set and the payload does not already define one.
+- Overriding OpenAI `prompt_cache_retention` outside Pi's own compat handling.
 - Creating Gemini explicit `cachedContents` resources or persisting cache resource names.
 - Claiming stats for providers that do not expose reliable cache usage.
 

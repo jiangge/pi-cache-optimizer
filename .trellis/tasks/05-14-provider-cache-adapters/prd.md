@@ -28,6 +28,7 @@ Research how major model providers handle prompt/KV/context caching, then design
 * Produce an implementation plan and wait for user approval before coding.
 * User approved MVP: adapter architecture, DeepSeek migration, OpenAI/Anthropic/Gemini read-only stats, no request mutation/cache-control injection.
 * User approved cache-hit-rate improvement phase: preserve id/name-only adapter detection, improve provider-neutral stable-prefix extraction, document provider-specific safe actions, and avoid unsafe request-body mutation.
+* User approved provider-targeted follow-up: implement safe default actions and OpenAI-family opt-in `prompt_cache_key` injection via `PI_CACHE_OPTIMIZER_OPENAI_CACHE_KEY=1`; keep Claude/Gemini request mutation out of scope.
 * Avoid storing or printing API keys, prompts, messages, or headers.
 * Preserve current DeepSeek behavior unless an approved plan changes it.
 
@@ -41,6 +42,7 @@ Research how major model providers handle prompt/KV/context caching, then design
 * [ ] Footer stats are separate per provider family and only show the active supported family.
 * [ ] README and Chinese README document multi-provider read-only stats and limitations.
 * [ ] Stable-prefix optimization includes small stable project/spec instruction files without moving dynamic task/session context.
+* [ ] OpenAI-family `prompt_cache_key` injection is opt-in only, id/name-gated, hash-based, and does not override existing payload keys.
 
 ## Definition of Done
 
@@ -82,3 +84,5 @@ Research how major model providers handle prompt/KV/context caching, then design
 * Package version bumped to `1.0.3`.
 * Follow-up cache-hit improvement keeps adapter selection id/name-only and extends stable-prefix candidate extraction to stable project/spec instruction files such as `AGENTS.md` and `.trellis/spec/...`.
 * Package version bumped to `1.0.4` for the cache-hit improvement/docs update.
+* Provider-targeted follow-up adds opt-in OpenAI-family `prompt_cache_key` injection using a stable-prefix SHA-256 hash, enabled only by `PI_CACHE_OPTIMIZER_OPENAI_CACHE_KEY=1` and never overriding existing payload keys.
+* Package version bumped to `1.0.5` for the opt-in OpenAI cache-key support.

@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
@@ -32,6 +33,8 @@ const STATE_DIR = join(homedir(), ".pi", "agent");
 const STATE_FILE_PATH = join(STATE_DIR, "deepseek-cache-optimizer-stats.json");
 
 const CACHE_PROVIDER_IDS: CacheProviderId[] = ["deepseek", "openai", "claude", "gemini"];
+const OPENAI_CACHE_KEY_ENV = "PI_CACHE_OPTIMIZER_OPENAI_CACHE_KEY";
+const OPENAI_PROMPT_CACHE_KEY_PREFIX = "pi-dsco-";
 
 const ASSISTANT_MESSAGE_MODEL_TOKEN_KEYS = ["model", "name"];
 const OPENAI_REASONING_MODEL_PATTERN = /(^|[/\s:_-])o[1345]($|[-_.:/\s])/;
@@ -62,6 +65,12 @@ type UsageSnapshot = {
   cacheRead: number;
   cacheWrite: number;
   totalInput: number;
+};
+
+type OptimizedSystemPrompt = {
+  systemPrompt: string;
+  stablePrefix: string;
+  changed: boolean;
 };
 
 type CacheProviderAdapter = {
@@ -158,7 +167,7 @@ function buildStableCandidates(opts: BuildSystemPromptOptions): string[] {
 function optimizeSystemPrompt(
   original: string,
   opts: BuildSystemPromptOptions,
-): string {
+): OptimizedSystemPrompt {
   const stableParts: string[] = [];
   const seen = new Set<string>();
   let rest = original;
@@ -173,15 +182,30 @@ function optimizeSystemPrompt(
     rest = rest.replace(part, "");
   }
 
+  const stablePrefix = stableParts.join("\n\n");
+
   // Dynamic layer: git status, active task context, recent session context, etc.
   const dynamicRemainder = rest.trim();
 
-  if (stableParts.length === 0) return original;
+  if (stableParts.length === 0) {
+    return { systemPrompt: original, stablePrefix: "", changed: false };
+  }
 
-  return (
-    stableParts.join("\n\n") +
-    (dynamicRemainder.length > 0 ? "\n\n---\n\n" + dynamicRemainder : "")
-  );
+  return {
+    systemPrompt:
+      stablePrefix +
+      (dynamicRemainder.length > 0 ? "\n\n---\n\n" + dynamicRemainder : ""),
+    stablePrefix,
+    changed: true,
+  };
+}
+
+function buildPromptCacheKey(stablePrefix: string): string | undefined {
+  const normalized = stablePrefix.trim();
+  if (!normalized) return undefined;
+
+  const digest = createHash("sha256").update(normalized).digest("hex").slice(0, 24);
+  return `${OPENAI_PROMPT_CACHE_KEY_PREFIX}${digest}`;
 }
 
 function asRecord(value: unknown): UnknownRecord | undefined {
@@ -204,6 +228,16 @@ function getNonNegativeNumber(record: UnknownRecord, key: string): number | unde
 
 function getCompat(model: PiModel | undefined): CacheCompat {
   return (model?.compat ?? {}) as CacheCompat;
+}
+
+function isEnabledEnv(value: string | undefined): boolean {
+  if (!value) return false;
+  const normalized = value.trim().toLowerCase();
+  return normalized === "1" || normalized === "true" || normalized === "yes" || normalized === "on";
+}
+
+function hasOwn(record: UnknownRecord, key: string): boolean {
+  return Object.prototype.hasOwnProperty.call(record, key);
 }
 
 function isAssistantMessage(message: unknown): boolean {
@@ -411,6 +445,17 @@ function normalizeWithFallback(
   options: { allowInputOnlyPiUsage?: boolean } = {},
 ): UsageSnapshot | undefined {
   return getPiNormalizedUsage(message, options.allowInputOnlyPiUsage) ?? rawNormalizer(message);
+}
+
+function addOpenAIPromptCacheKey(payload: unknown, cacheKey: string | undefined): unknown | undefined {
+  const record = asRecord(payload);
+  if (!record || !cacheKey) return undefined;
+
+  if (hasOwn(record, "prompt_cache_key") || hasOwn(record, "promptCacheKey")) {
+    return undefined;
+  }
+
+  return { ...record, prompt_cache_key: cacheKey };
 }
 
 function describeMissingDeepSeekCompat(model: PiModel): string[] {
@@ -669,6 +714,7 @@ export default function (pi: ExtensionAPI) {
   const warnedModels = new Set<string>();
   let cacheStatsByProvider: Partial<Record<CacheProviderId, CacheStats>> = emptyAllCacheStats();
   let lastStatusText: string | undefined;
+  let latestPromptCacheKey: string | undefined;
   let persistenceWarningShown = false;
 
   function getStatsForAdapter(adapter: CacheProviderAdapter): CacheStats {
@@ -750,12 +796,20 @@ export default function (pi: ExtensionAPI) {
 
   pi.on("before_agent_start", async (event, _ctx) => {
     const optimized = optimizeSystemPrompt(event.systemPrompt, event.systemPromptOptions);
+    latestPromptCacheKey = buildPromptCacheKey(optimized.stablePrefix);
 
-    if (optimized !== event.systemPrompt && optimized.trim().length > 0) {
-      return { systemPrompt: optimized };
+    if (optimized.changed && optimized.systemPrompt.trim().length > 0) {
+      return { systemPrompt: optimized.systemPrompt };
     }
 
     return {};
+  });
+
+  pi.on("before_provider_request", (event, ctx) => {
+    if (!isEnabledEnv(process.env[OPENAI_CACHE_KEY_ENV])) return undefined;
+    if (!isOpenAIFamilyModel(ctx.model)) return undefined;
+
+    return addOpenAIPromptCacheKey(event.payload, latestPromptCacheKey);
   });
 
   pi.on("message_end", async (event, ctx) => {
