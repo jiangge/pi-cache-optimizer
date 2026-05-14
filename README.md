@@ -23,6 +23,30 @@ pi install npm:pi-deepseek-cache-optimizer
 
 After installation, `PI_CACHE_RETENTION=long` is applied automatically, the system prompt is reordered automatically, and the footer shows cache stats after DeepSeek-like model responses.
 
+## Uninstall
+
+Remove the same package source you installed. For the npm package:
+
+```bash
+pi remove npm:pi-deepseek-cache-optimizer
+```
+
+If you installed from a local path, remove that same path/source instead, for example:
+
+```bash
+pi remove /absolute/path/to/pi-deepseek-cache-optimizer
+# or, if that was the exact source you installed:
+pi remove ./relative/path/to/pi-deepseek-cache-optimizer
+```
+
+If you installed into project settings with `pi install -l ...`, use the matching project-scope remove command, for example `pi remove -l npm:pi-deepseek-cache-optimizer`.
+
+After removing the package, run `/reload` in Pi or restart Pi so the extension is unloaded. The footer counters are persisted separately; if you also want to delete that local state, remove:
+
+```bash
+rm ~/.pi/agent/deepseek-cache-optimizer-stats.json
+```
+
 ## Footer cache stats
 
 The Pi footer displays stats like:
@@ -92,6 +116,22 @@ After:  [stable tools + rules | dynamic git status | task context]
 ```
 
 Pi itself decides whether to send cache-related fields such as `prompt_cache_key`, `prompt_cache_retention`, session-affinity headers, or Anthropic-style `cache_control` based on model compat and `PI_CACHE_RETENTION`. This extension does not fake cache hits; it helps configuration, improves stable-prefix probability, and summarizes exposed usage in the footer.
+
+## Can it be extended to other models or providers?
+
+Possibly, but the current implementation is intentionally DeepSeek-focused:
+
+- Detection and compatibility warnings only target models whose id or name contains `deepseek`.
+- Footer stats currently count DeepSeek-like assistant responses only. Non-DeepSeek models can still benefit from the stable-prefix prompt ordering, but they will not appear in the `DS cache ...` counters today.
+- Cache usage fields are provider-specific. DeepSeek/OpenAI-compatible providers may expose prompt-cache hits as `prompt_cache_hit_tokens`, `prompt_cache_miss_tokens`, or Pi-normalized `usage.cacheRead` / `usage.input`; other providers may use different names or omit cache usage entirely.
+
+Likely expansion candidates:
+
+- OpenAI-compatible providers with prompt caching and exposed usage fields. These would need provider/model detection beyond the `deepseek` substring, plus stats parsing for their cache-hit and cache-miss fields.
+- Anthropic models that support `cache_control`. Anthropic caching has explicit cache-control placement and TTL semantics, so support would need cache-control-aware prompt construction instead of assuming DeepSeek-style automatic prefix caching.
+- Official OpenAI / ChatGPT-compatible models with automatic prompt caching. These may not expose the same controls or stats as DeepSeek, so support would depend on what Pi/provider surfaces for cached input tokens and cache retention.
+
+To support more providers safely, the extension would need provider-specific capability detection, cache usage normalization, cache-control or retention handling where applicable, and a stable-prefix strategy that matches each provider's cache semantics. Until then, treat this package as a DeepSeek optimizer with a generally useful prompt-ordering side effect.
 
 ## Verify effect
 
