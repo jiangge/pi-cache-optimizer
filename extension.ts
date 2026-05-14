@@ -33,7 +33,8 @@ const STATE_FILE_PATH = join(STATE_DIR, "deepseek-cache-optimizer-stats.json");
 
 const CACHE_PROVIDER_IDS: CacheProviderId[] = ["deepseek", "openai", "claude", "gemini"];
 
-const MODEL_ONLY_TOKEN_KEYS = ["provider", "id", "name", "api", "model", "responseModel"];
+const ASSISTANT_MESSAGE_MODEL_TOKEN_KEYS = ["model", "name"];
+const OPENAI_REASONING_MODEL_PATTERN = /(^|[/\s:_-])o[1345]($|[-_.:/\s])/;
 
 type CacheCompat = {
   sendSessionAffinityHeaders?: boolean;
@@ -198,29 +199,32 @@ function getAssistantRecord(message: unknown): UnknownRecord | undefined {
   return record?.role === "assistant" ? record : undefined;
 }
 
-function getModelTokenValues(model: PiModel | undefined): string[] {
+function getModelIdNameTokenValues(model: PiModel | undefined): string[] {
   if (!model) return [];
-  return [model.provider, model.id, model.name, model.api].map(lower).filter(Boolean);
+  return [model.id, model.name].map(lower).filter(Boolean);
 }
 
-function getMessageModelTokenValues(message: unknown): string[] {
+function getAssistantMessageModelTokenValues(message: unknown): string[] {
   const record = asRecord(message);
   if (!record) return [];
 
-  return MODEL_ONLY_TOKEN_KEYS.map((key) => lower(record[key])).filter(Boolean);
+  return ASSISTANT_MESSAGE_MODEL_TOKEN_KEYS.map((key) => lower(record[key])).filter(Boolean);
 }
 
 function hasAnyTokenContaining(tokens: string[], needles: string[]): boolean {
   return tokens.some((token) => needles.some((needle) => token.includes(needle)));
 }
 
-function modelOrMessageHas(message: unknown, model: PiModel | undefined, needles: string[]): boolean {
-  return hasAnyTokenContaining([...getModelTokenValues(model), ...getMessageModelTokenValues(message)], needles);
+function modelOrAssistantMessageHas(message: unknown, model: PiModel | undefined, needles: string[]): boolean {
+  return hasAnyTokenContaining([...getModelIdNameTokenValues(model), ...getAssistantMessageModelTokenValues(message)], needles);
 }
 
 function isDeepSeekLikeModel(model: PiModel | undefined): boolean {
-  if (!model) return false;
-  return hasAnyTokenContaining([lower(model.id), lower(model.name)], ["deepseek"]);
+  return hasAnyTokenContaining(getModelIdNameTokenValues(model), ["deepseek"]);
+}
+
+function isDeepSeekLikeAssistantMessage(message: unknown, model: PiModel | undefined): boolean {
+  return modelOrAssistantMessageHas(message, model, ["deepseek"]);
 }
 
 function isOpenAICompatibleApi(api: unknown): boolean {
@@ -228,39 +232,32 @@ function isOpenAICompatibleApi(api: unknown): boolean {
   return value === "openai-completions" || value === "openai-responses";
 }
 
-function isOfficialOpenAIProvider(value: unknown): boolean {
-  const normalized = lower(value);
-  return normalized === "openai" || normalized === "openai-codex" || normalized === "chatgpt";
+function isOpenAIFamilyToken(token: string): boolean {
+  return token.includes("gpt-") || token.includes("chatgpt") || OPENAI_REASONING_MODEL_PATTERN.test(token);
 }
 
-function isOfficialOpenAIModel(model: PiModel | undefined): boolean {
-  if (!model) return false;
-  return isOfficialOpenAIProvider(model.provider);
+function isOpenAIFamilyModel(model: PiModel | undefined): boolean {
+  return getModelIdNameTokenValues(model).some(isOpenAIFamilyToken);
+}
+
+function isOpenAIFamilyAssistantMessage(message: unknown, model: PiModel | undefined): boolean {
+  return [...getModelIdNameTokenValues(model), ...getAssistantMessageModelTokenValues(message)].some(isOpenAIFamilyToken);
 }
 
 function isClaudeLikeModel(model: PiModel | undefined): boolean {
-  if (!model) return false;
-  const tokens = getModelTokenValues(model);
-  return (
-    hasAnyTokenContaining(tokens, ["anthropic", "claude"]) ||
-    model.api === "anthropic-messages" ||
-    getCompat(model).cacheControlFormat === "anthropic"
-  );
+  return hasAnyTokenContaining(getModelIdNameTokenValues(model), ["anthropic", "claude"]);
+}
+
+function isClaudeLikeAssistantMessage(message: unknown, model: PiModel | undefined): boolean {
+  return modelOrAssistantMessageHas(message, model, ["anthropic", "claude"]);
 }
 
 function isGeminiLikeModel(model: PiModel | undefined): boolean {
-  if (!model) return false;
+  return hasAnyTokenContaining(getModelIdNameTokenValues(model), ["gemini", "vertex"]);
+}
 
-  const provider = lower(model.provider);
-  const api = lower(model.api);
-  const idAndName = [lower(model.id), lower(model.name)];
-
-  if (api === "google-generative-ai" || api === "google-vertex") return true;
-  if (provider === "google" || provider === "google-vertex") return true;
-  if (provider.includes("vertex") || provider.includes("google")) {
-    return hasAnyTokenContaining(idAndName, ["gemini"]);
-  }
-  return hasAnyTokenContaining([...idAndName, provider], ["gemini"]);
+function isGeminiLikeAssistantMessage(message: unknown, model: PiModel | undefined): boolean {
+  return modelOrAssistantMessageHas(message, model, ["gemini", "vertex"]);
 }
 
 function modelKey(model: PiModel): string {
@@ -425,7 +422,7 @@ const CACHE_PROVIDER_ADAPTERS: CacheProviderAdapter[] = [
     matchesModel: isDeepSeekLikeModel,
     matchesAssistantMessage(message, model) {
       if (!isAssistantMessage(message)) return false;
-      return lower(asRecord(message)?.model).includes("deepseek") || isDeepSeekLikeModel(model);
+      return isDeepSeekLikeAssistantMessage(message, model);
     },
     normalizeUsage(message) {
       return normalizeWithFallback(message, getDeepSeekRawUsage, { allowInputOnlyPiUsage: true });
@@ -450,7 +447,7 @@ const CACHE_PROVIDER_ADAPTERS: CacheProviderAdapter[] = [
     matchesModel: isClaudeLikeModel,
     matchesAssistantMessage(message, model) {
       if (!isAssistantMessage(message)) return false;
-      return isClaudeLikeModel(model) || modelOrMessageHas(message, undefined, ["anthropic", "claude"]);
+      return isClaudeLikeAssistantMessage(message, model);
     },
     normalizeUsage(message) {
       return normalizeWithFallback(message, getAnthropicRawUsage);
@@ -468,13 +465,10 @@ const CACHE_PROVIDER_ADAPTERS: CacheProviderAdapter[] = [
   {
     id: "openai",
     label: "OpenAI cache",
-    matchesModel: isOfficialOpenAIModel,
+    matchesModel: isOpenAIFamilyModel,
     matchesAssistantMessage(message, model) {
       if (!isAssistantMessage(message)) return false;
-      if (isOfficialOpenAIModel(model)) return true;
-
-      const record = asRecord(message);
-      return isOfficialOpenAIProvider(record?.provider);
+      return isOpenAIFamilyAssistantMessage(message, model);
     },
     normalizeUsage(message) {
       return normalizeWithFallback(message, getOpenAIRawUsage);
@@ -486,7 +480,7 @@ const CACHE_PROVIDER_ADAPTERS: CacheProviderAdapter[] = [
     matchesModel: isGeminiLikeModel,
     matchesAssistantMessage(message, model) {
       if (!isAssistantMessage(message)) return false;
-      return isGeminiLikeModel(model) || modelOrMessageHas(message, undefined, ["gemini", "google", "vertex"]);
+      return isGeminiLikeAssistantMessage(message, model);
     },
     normalizeUsage(message) {
       return normalizeWithFallback(message, getGeminiRawUsage);

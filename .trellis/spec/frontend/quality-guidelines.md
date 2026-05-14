@@ -53,8 +53,8 @@ Questions to answer:
 ## Scenario: Pi cache adapter footer stats
 
 ### 1. Scope / Trigger
-- Trigger: The Pi extension persists provider cache counters and displays footer status by provider/model family.
-- Applies when modifying `extension.ts` cache stats, provider detection, usage normalization, or state migration.
+- Trigger: The Pi extension persists provider-family cache counters and displays footer status by model family.
+- Applies when modifying `extension.ts` cache stats, model-family detection, usage normalization, or state migration.
 
 ### 2. Signatures
 - Extension hooks: `session_start`, `model_select`, `before_agent_start`, `message_end`.
@@ -63,7 +63,8 @@ Questions to answer:
 
 ### 3. Contracts
 - Persisted state must contain only counters and local dates; never API keys, prompts, messages, headers, or outputs.
-- Current state shape uses `version: 2` with `statsByProvider` keyed by provider-family adapter id.
+- Current state shape uses `version: 2` with `statsByProvider` keyed by adapter id.
+- Adapter selection must use only model id/name plus assistant message `model`/`name`; never provider id, API type, base URL, thinking format, or compat flags.
 - Old `version: 1` state migrates into the DeepSeek adapter counters.
 - `/reload` resets persisted counters; Pi process restart restores persisted counters; local natural-day rollover resets on next status/update.
 
@@ -74,9 +75,9 @@ Questions to answer:
 - Missing usage fields -> do not update counters for read-only non-DeepSeek adapters.
 
 ### 5. Good/Base/Bad Cases
-- Good: Official DeepSeek/OpenAI/Claude/Gemini usage with cache fields updates only that adapter's counters.
+- Good: DeepSeek/OpenAI-family/Claude/Gemini model id/name with cache usage fields updates only that adapter's counters.
 - Base: DeepSeek usage with no cache read increments total requests and records a miss, preserving legacy behavior.
-- Bad: Generic OpenAI-compatible proxy without explicit provider family is counted as official OpenAI.
+- Bad: Generic OpenAI-compatible API metadata selects the OpenAI adapter when model id/name does not match an OpenAI-family token.
 
 ### 6. Tests Required
 - Load extension through Pi/Jiti without type/runtime errors.
@@ -89,13 +90,13 @@ Questions to answer:
 
 #### Wrong
 ```typescript
-// Treats every OpenAI-shaped proxy as official OpenAI cache support.
+// Treats every OpenAI-shaped proxy as OpenAI-family cache support.
 if (model.api === "openai-completions") showOpenAIStats();
 ```
 
 #### Correct
 ```typescript
-// Adapter detection must be provider/model-family specific and conservative.
+// Adapter detection must be model id/name only and conservative.
 const adapter = selectAdapterForModel(model);
 ctx.ui.setStatus(STATUS_KEY, adapter ? formatCacheStats(adapter, stats) : undefined);
 ```

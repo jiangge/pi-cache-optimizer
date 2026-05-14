@@ -17,16 +17,16 @@ A plug-and-play Pi extension that improves provider-side KV Cache / Prompt Cache
 
 ## Supported stats adapters
 
-This release keeps the original DeepSeek behavior and adds read-only stats adapters for provider families that Pi or the provider can expose safely:
+This release keeps the original DeepSeek behavior and adds read-only stats adapters for model families that Pi or the provider can expose safely. Adapter selection is intentionally limited to the model id/name (and assistant message `model`/`name` on `message_end`); provider id, API type, base URL, `thinkingFormat`, and compat flags never select a stats adapter.
 
 | Adapter | Detection | Footer label | Usage fields |
 |---|---|---|---|
 | DeepSeek | Model id/name contains `deepseek` | `DS cache` | Pi `usage.cacheRead`/`usage.input`, or raw `prompt_cache_hit_tokens`, `prompt_cache_miss_tokens`, `prompt_tokens` when visible |
-| OpenAI official | Provider is clearly official OpenAI/ChatGPT (`openai`, `openai-codex`, `chatgpt`) | `OpenAI cache` | Pi-normalized usage, or raw `prompt_tokens_details.cached_tokens` / `input_tokens_details.cached_tokens` with prompt/input totals |
-| Anthropic / Claude | Provider/id/name contains `anthropic` or `claude`, Anthropic API, or Anthropic cache-control compat | `Claude cache` | Pi-normalized usage, or raw `cache_read_input_tokens`, `cache_creation_input_tokens`, `input_tokens` |
-| Gemini / Vertex | Google/Gemini/Vertex provider, API, id, or name signals | `Gemini cache` | Pi-normalized usage, or raw Gemini/Vertex cached-content token metadata when visible |
+| OpenAI-family | Model id/name contains conservative OpenAI-family tokens such as `gpt-`, `chatgpt`, `o1`, `o3`, `o4`, or `o5` | `OpenAI cache` | Pi-normalized usage, or raw `prompt_tokens_details.cached_tokens` / `input_tokens_details.cached_tokens` with prompt/input totals |
+| Anthropic / Claude | Model id/name contains `anthropic` or `claude` | `Claude cache` | Pi-normalized usage, or raw `cache_read_input_tokens`, `cache_creation_input_tokens`, `input_tokens` |
+| Gemini / Vertex | Model id/name contains `gemini` or `vertex` | `Gemini cache` | Pi-normalized usage, or raw Gemini/Vertex cached-content token metadata when visible |
 
-Generic OpenAI-compatible proxies are **not** treated as official OpenAI just because they use an OpenAI-shaped API. If the upstream provider is ambiguous, the extension hides the footer stats instead of guessing.
+Generic OpenAI-compatible proxies are **not** treated as OpenAI-family just because they use an OpenAI-shaped API or provider id. If the active model id/name is ambiguous, the extension hides the footer stats instead of guessing.
 
 ## Install
 
@@ -34,7 +34,7 @@ Generic OpenAI-compatible proxies are **not** treated as official OpenAI just be
 pi install npm:pi-deepseek-cache-optimizer
 ```
 
-After installation, `PI_CACHE_RETENTION=long` is applied automatically, the system prompt is reordered automatically, and the footer shows cache stats after supported provider-family responses with exposed usage.
+After installation, `PI_CACHE_RETENTION=long` is applied automatically, the system prompt is reordered automatically, and the footer shows cache stats after supported model-family responses with exposed usage.
 
 ## Uninstall
 
@@ -83,6 +83,7 @@ Stats rules:
 - Counters are separate per provider family. DeepSeek, OpenAI, Claude, and Gemini stats are not combined into one global hit rate.
 - The footer shows only the active model family's label and counters; it clears/hides for unsupported or ambiguous models.
 - Counts only assistant responses where Pi/provider exposes usage. Missing usage means no counter update.
+- Adapter matching uses only active model id/name plus assistant message `model`/`name`; broad provider/API/compat metadata is ignored for selection.
 - Pi-normalized `usage.input`, `usage.cacheRead`, and `usage.cacheWrite` are preferred. Known raw provider fields are used only defensively when visible on the assistant message.
 - Total prompt input is `input + cacheRead + cacheWrite` for Pi-normalized usage. Provider raw normalizers use each provider's documented total/input fields when available.
 - Stats update only the footer/status. The extension does not create extra TUI widgets or diagnostic files.
@@ -143,10 +144,10 @@ Pi itself decides whether to send cache-related fields such as `prompt_cache_key
 This package now has provider-family stats adapters, but it still avoids blind generalization:
 
 - DeepSeek cache is automatic and prefix/KV-cache based. Hits are best-effort and proxies can hide DeepSeek usage fields.
-- OpenAI prompt caching is automatic for supported official OpenAI models and long enough prompts. The adapter is intentionally conservative and does not count generic OpenAI-compatible proxies as OpenAI official.
+- OpenAI-family prompt caching is automatic only where the actual upstream supports it and prompts are long enough. The adapter is model-name based and intentionally conservative; it does not use provider/API/base URL metadata to infer official OpenAI support.
 - Claude prompt caching depends on explicit Anthropic cache-control breakpoints. This release only reports stats exposed by Pi/provider; it does not insert breakpoints or mutate request bodies.
 - Gemini/Vertex may expose implicit cached-content token counts. This release does not create, store, update, or delete explicit Gemini cached-content resources.
-- Proxies/aggregators can route the same model name to different upstream providers. Use upstream routing constraints and verify exposed usage before trusting cache behavior.
+- Proxies/aggregators can route the same model name to different upstream providers. Because detection is id/name-only, use unambiguous model names, upstream routing constraints, and exposed usage verification before trusting cache behavior.
 
 ## Out of scope for this release
 
