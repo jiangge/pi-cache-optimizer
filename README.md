@@ -137,7 +137,7 @@ After:  [stable tools + rules | dynamic git status | task context]
         ↓ stable prefix → higher chance of cache reuse
 ```
 
-Pi itself decides whether to send cache-related fields such as `prompt_cache_key`, `prompt_cache_retention`, session-affinity headers, or Anthropic-style `cache_control` based on model compat and `PI_CACHE_RETENTION`. This extension does not fake cache hits; it helps configuration, improves stable-prefix probability, and summarizes exposed usage in the footer.
+Pi itself decides whether to send cache-related fields such as `prompt_cache_retention`, session-affinity headers, or Anthropic-style `cache_control` based on model compat and `PI_CACHE_RETENTION`. By default this extension does not add request fields; the only opt-in request hint is OpenAI-family `prompt_cache_key` when `PI_CACHE_OPTIMIZER_OPENAI_CACHE_KEY=1` is set. The extension does not fake cache hits; it helps configuration, improves stable-prefix probability, and summarizes exposed usage in the footer.
 
 ## Improving cache hit rate
 
@@ -145,7 +145,7 @@ The cache-hit optimization is intentionally conservative and provider-neutral in
 
 What the extension does automatically:
 
-- Moves stable prompt material before dynamic task/git/session context. Besides tools, skills, custom prompts, appended prompts, and guideline bullets, this now also keeps small stable project/spec instruction files such as `AGENTS.md` and `.trellis/spec/...` in the early cacheable prefix.
+- Moves stable prompt material before dynamic task/git/session context. Besides tools, skills, custom prompts, appended prompts, and guideline bullets, this also keeps known-stable project/spec instruction files such as `AGENTS.md`, `CLAUDE.md`, `GEMINI.md`, `CURSOR.md`, and `.trellis/spec/...` in the early cacheable prefix. Arbitrary large context files are not lifted by size alone, because they may be task/session-specific.
 - Sets `PI_CACHE_RETENTION=long` so Pi can request longer retention where the selected model/provider compat supports it.
 - Keeps footer counters provider-family-specific so you can verify whether the active model family is actually reporting cache reads.
 
@@ -169,9 +169,9 @@ This package now has provider-family stats adapters, but it still avoids blind g
 
 ## Out of scope for this release
 
-- Mutating request bodies.
+- Broad/default request-body mutation or provider-agnostic cache-control injection.
 - Injecting Anthropic `cache_control` markers.
-- Sending OpenAI `prompt_cache_key` by default; it is only added when `PI_CACHE_OPTIMIZER_OPENAI_CACHE_KEY=1` is set and the payload does not already define one.
+- Sending OpenAI `prompt_cache_key` by default; it is only added when `PI_CACHE_OPTIMIZER_OPENAI_CACHE_KEY=1` is set, the active model id/name is OpenAI-family, and the payload does not already define one.
 - Overriding OpenAI `prompt_cache_retention` outside Pi's own compat handling.
 - Creating Gemini explicit `cachedContents` resources or persisting cache resource names.
 - Claiming stats for providers that do not expose reliable cache usage.

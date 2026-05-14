@@ -1,6 +1,6 @@
 {
   "name": "pi-deepseek-cache-optimizer",
-  "version": "1.0.5",
+  "version": "1.0.6",
   "description": "重组 Pi system prompt 使 DeepSeek KV Cache 命中率最大化 — 将稳定指令放前缀、动态上下文放后缀",
   "keywords": [
     "pi-package",

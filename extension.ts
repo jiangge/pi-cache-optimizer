@@ -101,6 +101,7 @@ function isStableContextFilePath(filePath: string): boolean {
     name === "claude.md" ||
     name === "gemini.md" ||
     name === "cursor.md" ||
+    normalized.startsWith(".trellis/spec/") ||
     normalized.includes("/.trellis/spec/")
   );
 }
@@ -150,9 +151,9 @@ function buildStableCandidates(opts: BuildSystemPromptOptions): string[] {
 
   for (const file of opts.contextFiles ?? []) {
     // Provider caches work best when stable instructions are part of the earliest prefix.
-    // Keep small stable project/spec instruction files cacheable too, while avoiding
-    // aggressive reordering of small dynamic task/session context files.
-    if (file.content.length <= 2000 && !isStableContextFilePath(file.path)) continue;
+    // Only lift known-stable project/spec instruction files. Dynamic task/session context
+    // can be large too, so size alone must never make a context file cache-prefix material.
+    if (!isStableContextFilePath(file.path)) continue;
     candidates.push(`## ${file.path}\n\n${file.content}`);
     candidates.push(file.content);
   }

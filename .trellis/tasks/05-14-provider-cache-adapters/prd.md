@@ -86,3 +86,5 @@ Research how major model providers handle prompt/KV/context caching, then design
 * Package version bumped to `1.0.4` for the cache-hit improvement/docs update.
 * Provider-targeted follow-up adds opt-in OpenAI-family `prompt_cache_key` injection using a stable-prefix SHA-256 hash, enabled only by `PI_CACHE_OPTIMIZER_OPENAI_CACHE_KEY=1` and never overriding existing payload keys.
 * Package version bumped to `1.0.5` for the opt-in OpenAI cache-key support.
+* Stable-prefix lifting tightened to known-stable instruction/spec files only; arbitrary large context files are not moved solely by size.
+* Package version bumped to `1.0.6` for the stable-prefix safety tightening.
