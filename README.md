@@ -119,19 +119,19 @@ Pi itself decides whether to send cache-related fields such as `prompt_cache_key
 
 ## Can it be extended to other models or providers?
 
-Possibly, but the current implementation is intentionally DeepSeek-focused:
+Possibly, but it should **not** be generalized blindly. Cache controls, cache-hit accounting, TTL behavior, and prompt-prefix rules differ by provider and sometimes by model family. The current implementation is intentionally DeepSeek-focused:
 
 - Detection and compatibility warnings only target models whose id or name contains `deepseek`.
 - Footer stats currently count DeepSeek-like assistant responses only. Non-DeepSeek models can still benefit from the stable-prefix prompt ordering, but they will not appear in the `DS cache ...` counters today.
 - Cache usage fields are provider-specific. DeepSeek/OpenAI-compatible providers may expose prompt-cache hits as `prompt_cache_hit_tokens`, `prompt_cache_miss_tokens`, or Pi-normalized `usage.cacheRead` / `usage.input`; other providers may use different names or omit cache usage entirely.
 
-Likely expansion candidates:
+Future expansion should be done with explicit provider/model-family adapters, for example:
 
-- OpenAI-compatible providers with prompt caching and exposed usage fields. These would need provider/model detection beyond the `deepseek` substring, plus stats parsing for their cache-hit and cache-miss fields.
-- Anthropic models that support `cache_control`. Anthropic caching has explicit cache-control placement and TTL semantics, so support would need cache-control-aware prompt construction instead of assuming DeepSeek-style automatic prefix caching.
-- Official OpenAI / ChatGPT-compatible models with automatic prompt caching. These may not expose the same controls or stats as DeepSeek, so support would depend on what Pi/provider surfaces for cached input tokens and cache retention.
+- A DeepSeek adapter for automatic prefix caching, DeepSeek thinking parameters, and DeepSeek/OpenAI-compatible usage fields.
+- An Anthropic adapter for explicit `cache_control` placement and Anthropic TTL/cache accounting semantics.
+- An OpenAI-compatible adapter only for models/providers that expose reliable cached-input usage and support the relevant retention or cache-key controls.
 
-To support more providers safely, the extension would need provider-specific capability detection, cache usage normalization, cache-control or retention handling where applicable, and a stable-prefix strategy that matches each provider's cache semantics. Until then, treat this package as a DeepSeek optimizer with a generally useful prompt-ordering side effect.
+Each adapter should own its provider detection, cache-control strategy, usage normalization, footer label, and documentation. Until such adapters exist, treat this package as a DeepSeek optimizer with a generally useful prompt-ordering side effect.
 
 ## Verify effect
 
@@ -180,12 +180,3 @@ DeepSeek cache prefixes are server-side and may be grouped by prefix/cache unit.
 ## License
 
 Released under the [MIT License](./LICENSE).
-
-## Release
-
-Before publishing, inspect the npm package contents:
-
-```bash
-npm pack --dry-run
-npm publish --access public
-```
