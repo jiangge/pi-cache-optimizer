@@ -27,6 +27,7 @@ Research how major model providers handle prompt/KV/context caching, then design
 * Research provider cache semantics before implementation.
 * Produce an implementation plan and wait for user approval before coding.
 * User approved MVP: adapter architecture, DeepSeek migration, OpenAI/Anthropic/Gemini read-only stats, no request mutation/cache-control injection.
+* User approved cache-hit-rate improvement phase: preserve id/name-only adapter detection, improve provider-neutral stable-prefix extraction, document provider-specific safe actions, and avoid unsafe request-body mutation.
 * Avoid storing or printing API keys, prompts, messages, or headers.
 * Preserve current DeepSeek behavior unless an approved plan changes it.
 
@@ -39,6 +40,7 @@ Research how major model providers handle prompt/KV/context caching, then design
 * [ ] Implementation preserves DeepSeek behavior and migrates v1 persisted stats to DeepSeek adapter stats.
 * [ ] Footer stats are separate per provider family and only show the active supported family.
 * [ ] README and Chinese README document multi-provider read-only stats and limitations.
+* [ ] Stable-prefix optimization includes small stable project/spec instruction files without moving dynamic task/session context.
 
 ## Definition of Done
 
@@ -78,3 +80,5 @@ Research how major model providers handle prompt/KV/context caching, then design
 * Persisted stats moved to version 2 shape: `statsByProvider`, with v1 DeepSeek-only state migration.
 * No request body mutation, no Anthropic `cache_control` injection, and no Gemini explicit cache resource management.
 * Package version bumped to `1.0.3`.
+* Follow-up cache-hit improvement keeps adapter selection id/name-only and extends stable-prefix candidate extraction to stable project/spec instruction files such as `AGENTS.md` and `.trellis/spec/...`.
+* Package version bumped to `1.0.4` for the cache-hit improvement/docs update.

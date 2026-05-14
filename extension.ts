@@ -83,6 +83,19 @@ function escapeXml(value: string): string {
     .replace(/'/g, "&apos;");
 }
 
+function isStableContextFilePath(filePath: string): boolean {
+  const normalized = filePath.replace(/\\/g, "/").toLowerCase();
+  const name = normalized.split("/").pop();
+
+  return (
+    name === "agents.md" ||
+    name === "claude.md" ||
+    name === "gemini.md" ||
+    name === "cursor.md" ||
+    normalized.includes("/.trellis/spec/")
+  );
+}
+
 function formatSkillsForPrompt(skills: NonNullable<BuildSystemPromptOptions["skills"]>): string {
   const visibleSkills = skills.filter((skill) => !skill.disableModelInvocation);
   if (visibleSkills.length === 0) return "";
@@ -127,7 +140,10 @@ function buildStableCandidates(opts: BuildSystemPromptOptions): string[] {
   }
 
   for (const file of opts.contextFiles ?? []) {
-    if (file.content.length <= 2000) continue;
+    // Provider caches work best when stable instructions are part of the earliest prefix.
+    // Keep small stable project/spec instruction files cacheable too, while avoiding
+    // aggressive reordering of small dynamic task/session context files.
+    if (file.content.length <= 2000 && !isStableContextFilePath(file.path)) continue;
     candidates.push(`## ${file.path}\n\n${file.content}`);
     candidates.push(file.content);
   }

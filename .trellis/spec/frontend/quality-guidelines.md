@@ -65,6 +65,7 @@ Questions to answer:
 - Persisted state must contain only counters and local dates; never API keys, prompts, messages, headers, or outputs.
 - Current state shape uses `version: 2` with `statsByProvider` keyed by adapter id.
 - Adapter selection must use only model id/name plus assistant message `model`/`name`; never provider id, API type, base URL, thinking format, or compat flags.
+- Stable-prefix optimization may move stable instruction files such as `AGENTS.md`, `CLAUDE.md`, `GEMINI.md`, `CURSOR.md`, and `.trellis/spec/...` ahead of dynamic context; it must not persist or print their contents.
 - Old `version: 1` state migrates into the DeepSeek adapter counters.
 - `/reload` resets persisted counters; Pi process restart restores persisted counters; local natural-day rollover resets on next status/update.
 
@@ -77,6 +78,7 @@ Questions to answer:
 ### 5. Good/Base/Bad Cases
 - Good: DeepSeek/OpenAI-family/Claude/Gemini model id/name with cache usage fields updates only that adapter's counters.
 - Base: DeepSeek usage with no cache read increments total requests and records a miss, preserving legacy behavior.
+- Base: Small stable `AGENTS.md` or `.trellis/spec/...` context can move earlier for cacheability while dynamic task/session context remains later.
 - Bad: Generic OpenAI-compatible API metadata selects the OpenAI adapter when model id/name does not match an OpenAI-family token.
 
 ### 6. Tests Required

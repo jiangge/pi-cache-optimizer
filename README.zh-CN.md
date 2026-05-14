@@ -139,6 +139,24 @@ Provider 缓存通常依赖精确或近似精确的前缀匹配。Pi 的 system 
 
 Pi 本身还会根据模型 compat 和 `PI_CACHE_RETENTION` 决定是否发送缓存相关字段，例如 `prompt_cache_key`、`prompt_cache_retention`、session affinity headers 或 Anthropic-style `cache_control`。本扩展不伪造缓存命中，只帮助配置、提高稳定前缀概率，并把已暴露的 usage 汇总到底部状态栏。
 
+## 提高 cache 命中率
+
+代码里的命中率优化会保持保守和 provider-neutral：把最大的稳定 prompt 前缀放在最前面，让 Pi/provider compat 发送其支持的缓存控制字段，避免把不受支持的 request 字段泄漏给代理。
+
+扩展会自动做这些事：
+
+- 把稳定 prompt 内容移动到动态 task/git/session 上下文之前。除了 tools、skills、custom prompt、append prompt 和 guideline bullets，现在也会把小型稳定项目/规范文件（例如 `AGENTS.md`、`.trellis/spec/...`）保留在更靠前的 cacheable prefix 中。
+- 设置 `PI_CACHE_RETENTION=long`，让 Pi 在当前模型/provider compat 支持时请求更长缓存保留。
+- 按 provider family 分开 footer 计数，方便你验证当前活跃模型 family 是否真的报告 cache reads。
+
+各 provider 注意点：
+
+- DeepSeek：现有行为仍是参考路径。稳定前缀排序，加上 long-retention / session-affinity compat，最有利于自动 KV prefix 复用。
+- OpenAI-family：prompt caching 只会在真实上游支持且 prompt 足够长时自动生效。请尽量把静态 instructions、tools、examples、specs 放在变化的 user/task context 前面。支持的 `prompt_cache_key` / `prompt_cache_retention` 传输字段由 Pi 负责。
+- Claude：prompt caching 依赖 Anthropic `cache_control` breakpoints。本扩展不会自行注入 breakpoint；对兼容 endpoint，只在 endpoint 明确支持时配置 Pi compat，例如 `cacheControlFormat: "anthropic"`。
+- Gemini/Vertex：implicit caching 受益于重复的大型稳定前缀。本扩展不会创建 explicit `cachedContents` resources，也不会保存 cache resource names。
+- Proxies/aggregators：尽量固定上游 routing/provider order。如果同一个 model id/name 可能路由到不同上游，cache hit rate 会不稳定。
+
 ## Provider-specific 限制
 
 本包现在有 provider-family stats adapter，但仍避免盲目泛化：

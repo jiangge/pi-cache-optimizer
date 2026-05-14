@@ -139,6 +139,24 @@ After:  [stable tools + rules | dynamic git status | task context]
 
 Pi itself decides whether to send cache-related fields such as `prompt_cache_key`, `prompt_cache_retention`, session-affinity headers, or Anthropic-style `cache_control` based on model compat and `PI_CACHE_RETENTION`. This extension does not fake cache hits; it helps configuration, improves stable-prefix probability, and summarizes exposed usage in the footer.
 
+## Improving cache hit rate
+
+The cache-hit optimization is intentionally conservative and provider-neutral in code: keep the largest stable prompt prefix first, let Pi/provider compat send supported cache controls, and avoid leaking unsupported request fields to proxies.
+
+What the extension does automatically:
+
+- Moves stable prompt material before dynamic task/git/session context. Besides tools, skills, custom prompts, appended prompts, and guideline bullets, this now also keeps small stable project/spec instruction files such as `AGENTS.md` and `.trellis/spec/...` in the early cacheable prefix.
+- Sets `PI_CACHE_RETENTION=long` so Pi can request longer retention where the selected model/provider compat supports it.
+- Keeps footer counters provider-family-specific so you can verify whether the active model family is actually reporting cache reads.
+
+Provider notes:
+
+- DeepSeek: current behavior remains the reference path. Stable prefix ordering plus long-retention/session-affinity compat gives the best chance of automatic KV prefix reuse.
+- OpenAI-family: prompt caching is automatic only on supported upstreams and sufficiently long prompts. Keep static instructions, tools, examples, and specs before changing user/task context. Pi owns any supported `prompt_cache_key` / `prompt_cache_retention` transport fields.
+- Claude: prompt caching depends on Anthropic `cache_control` breakpoints. This extension does not inject breakpoints itself; for compatible endpoints, configure Pi compat such as `cacheControlFormat: "anthropic"` only when the endpoint supports it.
+- Gemini/Vertex: implicit caching benefits from repeated large stable prefixes. This extension does not create explicit `cachedContents` resources or store cache resource names.
+- Proxies/aggregators: fix upstream routing/provider order where possible. Cache hit rates are unreliable if the same model id/name can route to different upstreams.
+
 ## Provider-specific limitations
 
 This package now has provider-family stats adapters, but it still avoids blind generalization:
