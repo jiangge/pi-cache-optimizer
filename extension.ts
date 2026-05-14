@@ -1,3 +1,6 @@
+import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
+import { homedir } from "node:os";
+import { join } from "node:path";
 import type { BuildSystemPromptOptions, ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 
 /**
@@ -7,7 +10,7 @@ import type { BuildSystemPromptOptions, ExtensionAPI, ExtensionContext } from "@
  * 1. Reorders Pi's system prompt so stable content is sent before dynamic context.
  * 2. Sets PI_CACHE_RETENTION=long at extension load time.
  * 3. Warns once per DeepSeek-like provider/model when cache-related compat flags are missing.
- * 4. Shows lightweight in-memory DeepSeek cache hit/token stats in Pi's footer.
+ * 4. Shows lightweight persisted DeepSeek cache hit/token stats in Pi's footer.
  *
  * DeepSeek prompt/KV cache is provider-side, automatic, and best-effort. This extension
  * improves the odds of cache hits; it cannot guarantee hits, especially through proxies.
@@ -24,6 +27,8 @@ type PiModel = NonNullable<ExtensionContext["model"]>;
 type UnknownRecord = Record<string, unknown>;
 
 const STATUS_KEY = "deepseek-cache-stats";
+const STATE_DIR = join(homedir(), ".pi", "agent");
+const STATE_FILE_PATH = join(STATE_DIR, "deepseek-cache-optimizer-stats.json");
 
 type CacheCompat = {
   sendSessionAffinityHeaders?: boolean;
@@ -207,6 +212,11 @@ type CacheStats = {
   totalInputTokens: number;
 };
 
+type PersistedCacheStats = {
+  version: 1;
+  stats: CacheStats;
+};
+
 type UsageSnapshot = {
   input: number;
   cacheRead: number;
@@ -263,7 +273,12 @@ function addUsageToCacheStats(stats: CacheStats, usage: UsageSnapshot): void {
 }
 
 function formatTokenCount(value: number): string {
-  return Math.round(value).toLocaleString();
+  const millions = Math.max(0, Math.round(value)) / 1_000_000;
+  if (millions === 0) return "0M";
+  if (millions < 0.001) return `${millions.toFixed(4)}M`;
+  if (millions < 0.01) return `${millions.toFixed(3)}M`;
+  if (millions >= 10) return `${millions.toFixed(1)}M`;
+  return `${millions.toFixed(2)}M`;
 }
 
 function formatCacheStats(stats: CacheStats): string {
@@ -274,20 +289,117 @@ function formatCacheStats(stats: CacheStats): string {
   return `DS cache ${stats.hitRequests}/${stats.totalRequests} · ${formatTokenCount(stats.cachedInputTokens)}/${formatTokenCount(stats.totalInputTokens)} tok${percent}`;
 }
 
+function getErrorCode(error: unknown): string | undefined {
+  return typeof error === "object" && error !== null && "code" in error
+    ? String((error as { code?: unknown }).code)
+    : undefined;
+}
+
+function getNonNegativeNumber(record: UnknownRecord, key: string): number | undefined {
+  const value = getNumber(record[key]);
+  return value !== undefined && value >= 0 ? value : undefined;
+}
+
+function parsePersistedCacheStats(value: unknown): CacheStats | undefined {
+  const record = asRecord(value);
+  if (!record || record.version !== 1) return undefined;
+
+  const stats = asRecord(record.stats);
+  if (!stats || typeof stats.day !== "string" || !/^\d{4}-\d{2}-\d{2}$/.test(stats.day)) {
+    return undefined;
+  }
+
+  const totalRequests = getNonNegativeNumber(stats, "totalRequests");
+  const hitRequests = getNonNegativeNumber(stats, "hitRequests");
+  const cachedInputTokens = getNonNegativeNumber(stats, "cachedInputTokens");
+  const totalInputTokens = getNonNegativeNumber(stats, "totalInputTokens");
+
+  if (
+    totalRequests === undefined ||
+    hitRequests === undefined ||
+    cachedInputTokens === undefined ||
+    totalInputTokens === undefined ||
+    hitRequests > totalRequests ||
+    cachedInputTokens > totalInputTokens
+  ) {
+    return undefined;
+  }
+
+  return {
+    day: stats.day,
+    totalRequests,
+    hitRequests,
+    cachedInputTokens,
+    totalInputTokens,
+  };
+}
+
+async function readPersistedCacheStats(): Promise<CacheStats | undefined> {
+  try {
+    const raw = await readFile(STATE_FILE_PATH, "utf8");
+    return parsePersistedCacheStats(JSON.parse(raw));
+  } catch (error) {
+    if (getErrorCode(error) !== "ENOENT") {
+      console.warn("DeepSeek cache optimizer: failed to read persisted cache stats", error);
+    }
+    return undefined;
+  }
+}
+
+async function writePersistedCacheStats(stats: CacheStats): Promise<void> {
+  await mkdir(STATE_DIR, { recursive: true });
+  const payload: PersistedCacheStats = { version: 1, stats };
+  const tempPath = `${STATE_FILE_PATH}.${process.pid}.${Date.now()}.tmp`;
+
+  await writeFile(tempPath, JSON.stringify(payload, null, 2) + "\n", "utf8");
+  await rename(tempPath, STATE_FILE_PATH);
+}
+
 export default function (pi: ExtensionAPI) {
   const warnedModels = new Set<string>();
   let cacheStats = emptyCacheStats();
   let lastStatusText: string | undefined;
+  let persistenceWarningShown = false;
 
-  function rollOverStatsIfNeeded(): void {
-    const day = currentLocalDay();
-    if (cacheStats.day !== day) {
-      cacheStats = emptyCacheStats(day);
+  async function persistCacheStats(ctx?: ExtensionContext): Promise<void> {
+    try {
+      await writePersistedCacheStats(cacheStats);
+    } catch (error) {
+      console.warn("DeepSeek cache optimizer: failed to persist cache stats", error);
+      if (!persistenceWarningShown) {
+        persistenceWarningShown = true;
+        ctx?.ui.notify(
+          "DeepSeek cache optimizer: failed to persist footer stats; using in-memory stats for this process.",
+          "warning",
+        );
+      }
     }
   }
 
-  function publishStatus(ctx: ExtensionContext, model: PiModel | undefined = ctx.model): void {
-    rollOverStatsIfNeeded();
+  async function restoreCacheStats(reason: string, ctx: ExtensionContext): Promise<void> {
+    if (reason === "reload") {
+      cacheStats = emptyCacheStats();
+      lastStatusText = undefined;
+      await persistCacheStats(ctx);
+      return;
+    }
+
+    cacheStats = (await readPersistedCacheStats()) ?? emptyCacheStats();
+    lastStatusText = undefined;
+    await rollOverStatsIfNeeded(ctx);
+  }
+
+  async function rollOverStatsIfNeeded(ctx?: ExtensionContext): Promise<void> {
+    const day = currentLocalDay();
+    if (cacheStats.day !== day) {
+      cacheStats = emptyCacheStats(day);
+      lastStatusText = undefined;
+      await persistCacheStats(ctx);
+    }
+  }
+
+  async function publishStatus(ctx: ExtensionContext, model: PiModel | undefined = ctx.model): Promise<void> {
+    await rollOverStatsIfNeeded(ctx);
 
     const statusText = isDeepSeekLikeModel(model) ? formatCacheStats(cacheStats) : undefined;
     if (statusText === lastStatusText) return;
@@ -296,14 +408,15 @@ export default function (pi: ExtensionAPI) {
     ctx.ui.setStatus(STATUS_KEY, statusText);
   }
 
-  pi.on("session_start", async (_event, ctx) => {
+  pi.on("session_start", async (event, ctx) => {
+    await restoreCacheStats(event.reason, ctx);
     notifyCacheCompatIfNeeded(ctx.model, ctx, warnedModels);
-    publishStatus(ctx);
+    await publishStatus(ctx);
   });
 
   pi.on("model_select", async (event, ctx) => {
     notifyCacheCompatIfNeeded(event.model, ctx, warnedModels);
-    publishStatus(ctx, event.model);
+    await publishStatus(ctx, event.model);
   });
 
   pi.on("before_agent_start", async (event, _ctx) => {
@@ -316,14 +429,15 @@ export default function (pi: ExtensionAPI) {
     return {};
   });
 
-  pi.on("message_end", (event, ctx) => {
+  pi.on("message_end", async (event, ctx) => {
     if (!isDeepSeekLikeAssistantMessage(event.message, ctx.model)) return;
 
     const usage = getAssistantUsage(event.message);
     if (!usage) return;
 
-    rollOverStatsIfNeeded();
+    await rollOverStatsIfNeeded(ctx);
     addUsageToCacheStats(cacheStats, usage);
-    publishStatus(ctx);
+    await persistCacheStats(ctx);
+    await publishStatus(ctx);
   });
 }

@@ -1,56 +1,60 @@
 # Pi DeepSeek Cache Optimizer
 
-开箱即用的 DeepSeek KV Cache / Prompt Cache 优化扩展。
+[中文说明](./README.zh-CN.md)
 
-> 重要：DeepSeek 缓存是服务端的、自动的、best-effort 行为。本扩展只能提高命中概率（稳定前缀、长保留、session affinity 提醒、轻量统计），不能保证每次命中。使用第三方代理时，代理也可能隐藏、丢失或降低缓存命中效果。
+A plug-and-play Pi extension that improves DeepSeek KV Cache / Prompt Cache hit rates.
 
-## 做了什么
+> Important: DeepSeek caching is server-side, automatic, and best-effort. This extension can improve the odds of cache hits by stabilizing prompt prefixes, requesting long retention, warning about session-affinity config, and showing lightweight footer stats. It cannot guarantee cache hits. Third-party proxies may hide, drop, or reduce cache effectiveness.
 
-| 功能 | 方式 | 是否需要手动操作 |
-|------|------|:---:|
-| 🔄 重组 system prompt | `before_agent_start` 钩子 — 稳定前缀在前、动态上下文在后 | ❌ 自动 |
-| ⏳ 长缓存保留 | 扩展加载时自动设置 `PI_CACHE_RETENTION=long` | ❌ 自动 |
-| 🔗 Session 亲和提醒 | 根据 model id / name 检测 DeepSeek-like 模型的 compat 配置 | ⚠️ 见下 |
-| 📊 底部缓存统计 | 使用 Pi footer/status 显示 DeepSeek cache 命中请求数与命中 token 比例 | ❌ 自动 |
+## What it does
 
-## 安装
+| Feature | How | Manual action required |
+|---|---|:---:|
+| 🔄 Reorders the system prompt | `before_agent_start` hook: stable prefix first, dynamic context later | ❌ Automatic |
+| ⏳ Requests long cache retention | Sets `PI_CACHE_RETENTION=long` when the extension loads | ❌ Automatic |
+| 🔗 Session-affinity reminders | Checks DeepSeek-like model id/name and merged compat flags | ⚠️ See below |
+| 📊 Footer cache stats | Shows DeepSeek cache hit requests and cache-read token ratio in Pi footer/status | ❌ Automatic |
+
+## Install
 
 ```bash
 pi install npm:pi-deepseek-cache-optimizer
 ```
 
-安装后 `PI_CACHE_RETENTION=long` **自动生效**，system prompt **自动重组**，DeepSeek-like 模型响应完成后底部状态栏会显示缓存统计。
+After installation, `PI_CACHE_RETENTION=long` is applied automatically, the system prompt is reordered automatically, and the footer shows cache stats after DeepSeek-like model responses.
 
-## 底部缓存统计
+## Footer cache stats
 
-扩展会在 Pi 底部状态栏显示类似：
+The Pi footer displays stats like:
 
 ```text
-DS cache 3/5 · 768/801 tok (96%)
+DS cache 3/5 · 0.77M/0.80M tok (96%)
 ```
 
-含义：
+Meaning:
 
-- `3/5`：5 次 DeepSeek-like assistant 响应中，有 3 次 `cacheRead > 0`。
-- `768/801 tok`：累计 cache-read input tokens / 累计 prompt input tokens。
-- 百分比：`cacheRead / total prompt input`。
+- `3/5`: 3 of 5 DeepSeek-like assistant responses had `cacheRead > 0`.
+- `0.77M/0.80M tok`: cumulative cache-read input tokens / cumulative prompt input tokens, shown in millions.
+- Percentage: `cacheRead / total prompt input`.
 
-统计规则：
+Stats rules:
 
-- 只统计 model id 或 model name 中包含 `deepseek` 的 assistant 响应。
-- 只统计 Pi/provider 暴露 usage 的 assistant 响应。
-- `cacheRead` 来自 Pi 归一化后的 `usage.cacheRead`。
-- prompt input 总量使用 `usage.input + usage.cacheRead + usage.cacheWrite`。在 DeepSeek 的常见用法里，`usage.input` 对应未命中/非缓存输入，`usage.cacheRead` 对应缓存命中输入；如果 provider 暴露 `cacheWrite`，也会计入总 prompt input，避免分母偏小。
-- 统计只更新底部状态栏，不创建额外 TUI 组件，也不写诊断文件；因此不会因调试组件频繁重绘导致屏幕闪烁。
+- Counts only assistant responses whose model id or model name contains `deepseek`.
+- Counts only responses where Pi/provider exposes usage.
+- `cacheRead` comes from Pi-normalized `usage.cacheRead`.
+- Total prompt input is `usage.input + usage.cacheRead + usage.cacheWrite`. In common DeepSeek usage, `usage.input` is uncached/missed input and `usage.cacheRead` is cached input; if the provider exposes `cacheWrite`, it is included so the denominator is not too small.
+- Stats update only the footer/status. The extension does not create extra TUI widgets or diagnostic files.
+- Stats are persisted in a small local JSON state file at `~/.pi/agent/deepseek-cache-optimizer-stats.json`. The file stores only counters and the local day; it does not store API keys, prompts, messages, or model output.
 
-重置规则：
+Reset behavior:
 
-- 统计只保存在扩展内存中，Pi 重启或扩展 reload 后自动清零。
-- 长时间运行跨过本地自然日时，会在下一次 DeepSeek-like 响应统计前自动按本地日期清零。这样既可预测，也不需要持久化文件。
+- Pi restarts do **not** clear stats; the persisted counters are restored.
+- `/reload` / extension reload resets the persisted counters because Pi exposes `session_start` with reason `reload`.
+- Crossing the local natural-day boundary resets counters on the next status update or DeepSeek-like response.
 
-## 建议的 compat 配置
+## Suggested compat config
 
-对直连 DeepSeek 或 DeepSeek-like OpenAI-compatible 代理，建议在对应 provider 或 model 的 `compat` 中配置：
+For direct DeepSeek or DeepSeek-like OpenAI-compatible proxies, configure the provider or model `compat` like this:
 
 ```json
 {
@@ -66,82 +70,80 @@ DS cache 3/5 · 768/801 tok (96%)
 }
 ```
 
-如果你的 provider id 不是 `deepseek`（例如公司代理、OpenRouter 风格代理），也可以把同样字段放在该 provider 或具体 DeepSeek 模型的 `compat` 里。扩展识别 DeepSeek-like 模型的依据是 model id / model name 是否包含 `deepseek`；不会根据 provider id、baseUrl 或 `thinkingFormat` 判断。当前推荐的验证路径只覆盖官方直连 `deepseek/deepseek-v4-pro`。
+If your provider id is not `deepseek` (for example a company proxy or OpenRouter-style proxy), you can put the same fields on that provider or the specific DeepSeek model. The extension detects DeepSeek-like models only by checking whether the model id/name contains `deepseek`; it does not infer this from provider id, base URL, or `thinkingFormat`. The currently recommended verification path covers the official direct `deepseek/deepseek-v4-pro` model.
 
-扩展会对每个 provider/model **每个会话最多提醒一次**：
+The extension warns at most once per provider/model per session when:
 
-- 缺少 `supportsLongCacheRetention: true`：Pi 可能不会发送 `prompt_cache_retention: "24h"`。
-- 缺少 `sendSessionAffinityHeaders: true`（OpenAI Completions 兼容 API）或 `sendSessionIdHeader: true`（OpenAI Responses 兼容 API）：Pi 可能不会发送 session affinity headers（如 `session_id`、`x-client-request-id`、`x-session-affinity`），代理/负载均衡场景下缓存命中可能更差。
+- `supportsLongCacheRetention: true` is missing, so Pi may not send `prompt_cache_retention: "24h"`.
+- `sendSessionAffinityHeaders: true` is missing for OpenAI Completions-compatible APIs, or `sendSessionIdHeader: true` is missing for OpenAI Responses-compatible APIs, so Pi may not send session-affinity headers such as `session_id`, `x-client-request-id`, or `x-session-affinity`.
 
-> 提醒：`sendSessionAffinityHeaders` 是否真的被上游接受取决于 provider/代理。只有在 endpoint 支持这些 header 时才建议启用。
+> Reminder: only enable session-affinity headers when your endpoint or proxy supports them.
 
-## 原理
+## How it works
 
-DeepSeek KV Cache 基于**前缀精确匹配**。Pi 的 system prompt 包含跨会话稳定的内容（工具定义、技能、规范），也包含每次变化的动态内容（git status、当前任务）。
+DeepSeek KV Cache is based on exact prefix matching. Pi's system prompt contains stable content that is likely shared across sessions (tools, skills, guidelines) and dynamic content that changes frequently (git status, task context).
 
 ```text
-优化前: [动态 git status | 任务上下文 | 稳定工具+规范]
-         ↓ 每次前缀不同 → 缓存全失效
+Before: [dynamic git status | task context | stable tools + rules]
+        ↓ changing prefix → lower cache reuse
 
-优化后: [稳定工具+规范 | 动态 git status | 任务上下文]
-         ↓ 稳定前缀不变 → 更容易命中缓存
+After:  [stable tools + rules | dynamic git status | task context]
+        ↓ stable prefix → higher chance of cache reuse
 ```
 
-Pi 本身还会根据模型 compat 和 `PI_CACHE_RETENTION` 决定是否发送缓存相关字段，例如 `prompt_cache_key`、`prompt_cache_retention`、session affinity headers 或 Anthropic-style `cache_control`。本扩展不伪造缓存命中，只帮助配置、提高稳定前缀概率，并把已暴露的 usage 汇总到底部状态栏。
+Pi itself decides whether to send cache-related fields such as `prompt_cache_key`, `prompt_cache_retention`, session-affinity headers, or Anthropic-style `cache_control` based on model compat and `PI_CACHE_RETENTION`. This extension does not fake cache hits; it helps configuration, improves stable-prefix probability, and summarizes exposed usage in the footer.
 
-## 验证效果
+## Verify effect
 
-### 在 Pi 中查看
+### In Pi
 
-- 使用底部 `DS cache ...` 状态查看当前 Pi 进程/当天的 DeepSeek cache 命中请求数和 token 比例。
-- 使用 Pi 内置 `/stats` 查看累计 `cacheRead` tokens 是否增长。
-- DeepSeek API usage 中也可能出现 `prompt_cache_hit_tokens` / `prompt_cache_miss_tokens`；Pi 会尽量归一化为 `usage.cacheRead` / `usage.input`。
+- Watch the footer `DS cache ...` status for the current local day.
+- Use Pi's built-in `/stats` to confirm `cacheRead` tokens grow.
+- DeepSeek API usage may also expose `prompt_cache_hit_tokens` / `prompt_cache_miss_tokens`; Pi normalizes these where possible to `usage.cacheRead` / `usage.input`.
 
-### 官方 DeepSeek baseline（推荐且当前唯一建议路径）
+### Official DeepSeek baseline (recommended)
 
-请使用官方直连 `deepseek/deepseek-v4-pro` 做基线；暂不建议把代理路径混进同一次验证。请不要把 API key 粘贴到聊天记录或 issue 中。
+Use official direct `deepseek/deepseek-v4-pro` as the baseline. Avoid mixing proxy paths in the same verification run. Do not paste API keys into chats or issues.
 
-1. 配置官方 key（任选一种方式）：
+1. Configure the official key with either:
 
    ```bash
    export DEEPSEEK_API_KEY='...'
    ```
 
-   或使用 Pi 的登录/配置方式保存 key。
+   or Pi's login/config mechanism.
 
-2. 确认模型可见：
+2. Confirm the model is visible:
 
    ```bash
    pi --list-models deepseek-v4-pro
    ```
 
-   应能看到 `deepseek/deepseek-v4-pro`。
-
-3. 运行最小请求：
+3. Run a minimal request:
 
    ```bash
    pi --model deepseek/deepseek-v4-pro --thinking high
    ```
 
-   在 Pi 中连续输入几次相同或高度相似的短 prompt，例如：
+   In Pi, send the same or highly similar short prompt several times, for example:
 
    ```text
-   请用一句话回答：cache baseline ping
+   Answer in one sentence: cache baseline ping
    ```
 
-4. 对同一或高度相似请求连续运行至少三次，再用底部 `DS cache ...` 和 `/stats` 对比 `cacheRead` / hit rate 是否增长。
+4. Repeat the same or highly similar request at least three times, then compare footer `DS cache ...` and `/stats` for increasing `cacheRead` / hit rate.
 
-DeepSeek 的缓存前缀以服务端 prefix/cache unit 为粒度。第一次重复但在后缀处发生分歧的请求，可能是在构建公共前缀缓存；第三次以及之后与该公共前缀匹配的请求通常更有参考意义。官方文档提到缓存清理可能是数小时到数天的 best-effort 行为，但这不是“命中保证”；短时间内 miss 也不一定代表 TTL 已经失效，可能只是前缀粒度、路由、请求差异或缓存尚未建立。
+DeepSeek cache prefixes are server-side and may be grouped by prefix/cache unit. The first repeated request can still be building a shared prefix cache; the third and later matching requests are usually more meaningful. Official docs describe cache cleanup as a best-effort process that may take hours to days, but this is not a hit guarantee. A short-term miss can also be caused by prefix granularity, routing, request differences, or cache not being built yet.
 
-> 注意：baseline 会消耗少量 token；请使用短 prompt，不要粘贴大文件。当前推荐测试命令只使用官方 `deepseek/deepseek-v4-pro`。
+> Note: the baseline consumes a small number of tokens. Use short prompts and do not paste large files.
 
-## 许可证
+## License
 
-本项目基于 [MIT License](./LICENSE) 开源发布。
+Released under the [MIT License](./LICENSE).
 
-## 发布
+## Release
 
-发布前先检查 npm 包内容，确认只包含扩展源码、README、LICENSE 和 package manifest：
+Before publishing, inspect the npm package contents:
 
 ```bash
 npm pack --dry-run
