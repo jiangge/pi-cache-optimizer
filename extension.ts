@@ -339,6 +339,18 @@ function readCacheWriteFromDetails(details: UnknownRecord | undefined): number |
   return getFirstNonNegativeNumber(details?.cache_write_tokens, details?.cacheWriteTokens);
 }
 
+// Pi normalizes provider-specific raw usage (prompt_cache_hit_tokens, cached_tokens,
+// cache_read_input_tokens, etc.) into a common shape:
+//   input     = uncached prompt portion (total prompt minus cacheRead minus cacheWrite)
+//   cacheRead = tokens read from a previously-cached prefix
+//   cacheWrite= tokens newly written into cache in this request
+//
+// We reconstruct the total prompt-token count as input + cacheRead + cacheWrite.
+// Pi guarantees that input, cacheRead, and cacheWrite are always present on
+// assistant messages processed through its provider pipeline (at least as zero).
+//
+// Only DeepSeek sets allowInputOnly=true so that a cache miss (cacheRead=0) still
+// contributes total input tokens to the denominator.
 function getPiNormalizedUsage(message: unknown, allowInputOnly = false): UsageSnapshot | undefined {
   const usage = usageRecordFromAssistant(message);
   if (!usage) return undefined;
@@ -350,13 +362,22 @@ function getPiNormalizedUsage(message: unknown, allowInputOnly = false): UsageSn
 
   if (!hasCacheSignal && (input === undefined || !allowInputOnly)) return undefined;
 
+  // Under healthy Pi normalization input is the uncached portion, so
+  // totalInput = input + cacheRead + cacheWrite gives the full prompt token count.
+  // Guard against degenerate reads where a broken proxy omits prompt_tokens and
+  // Pi's input falls to zero: totalInput must never be less than cacheRead + cacheWrite.
+  const computed = (input ?? 0) + (cacheRead ?? 0) + (cacheWrite ?? 0);
+  const floor = (cacheRead ?? 0) + (cacheWrite ?? 0);
   return {
     cacheRead: cacheRead ?? 0,
     cacheWrite: cacheWrite ?? 0,
-    totalInput: (input ?? 0) + (cacheRead ?? 0) + (cacheWrite ?? 0),
+    totalInput: computed >= floor ? computed : floor,
   };
 }
 
+// Raw fallback for DeepSeek responses that still carry their native usage fields.
+// In practice Pi normalizes usage before message_end fires, so this path is only
+// reached when Pi-normalized fields are absent (e.g. custom/foreign providers).
 function getDeepSeekRawUsage(message: unknown): UsageSnapshot | undefined {
   const usage = usageRecordFromAssistant(message);
   if (!usage) return undefined;
@@ -366,11 +387,15 @@ function getDeepSeekRawUsage(message: unknown): UsageSnapshot | undefined {
 
   const cacheMiss = getFirstNonNegativeNumber(usage.prompt_cache_miss_tokens);
   const promptTokens = getFirstNonNegativeNumber(usage.prompt_tokens);
+  // DeepSeek guarantees prompt_tokens = prompt_cache_hit_tokens + prompt_cache_miss_tokens.
   const totalInput = promptTokens ?? cacheRead + (cacheMiss ?? 0);
 
   return { cacheRead, cacheWrite: 0, totalInput };
 }
 
+// Raw fallback for OpenAI-family responses that still carry their native usage fields.
+// In practice Pi normalizes usage before message_end fires, so this path is only
+// reached when Pi-normalized fields are absent (e.g. custom/foreign providers).
 function getOpenAIRawUsage(message: unknown): UsageSnapshot | undefined {
   const usage = usageRecordFromAssistant(message);
   if (!usage) return undefined;
@@ -391,6 +416,9 @@ function getOpenAIRawUsage(message: unknown): UsageSnapshot | undefined {
   return { cacheRead, cacheWrite, totalInput };
 }
 
+// Raw fallback for Anthropic/Claude responses that still carry their native usage fields.
+// In practice Pi normalizes usage before message_end fires, so this path is only
+// reached when Pi-normalized fields are absent (e.g. custom/foreign providers).
 function getAnthropicRawUsage(message: unknown): UsageSnapshot | undefined {
   const usage = usageRecordFromAssistant(message);
   if (!usage) return undefined;
@@ -399,6 +427,7 @@ function getAnthropicRawUsage(message: unknown): UsageSnapshot | undefined {
   const cacheWrite = getFirstNonNegativeNumber(usage.cache_creation_input_tokens, usage.cacheCreationInputTokens);
   if (cacheRead === undefined && cacheWrite === undefined) return undefined;
 
+  // Anthropic input_tokens = tokens after the last cache breakpoint (neither read nor written).
   const input = getFirstNonNegativeNumber(usage.input_tokens, usage.inputTokens) ?? 0;
   return {
     cacheRead: cacheRead ?? 0,
@@ -407,6 +436,9 @@ function getAnthropicRawUsage(message: unknown): UsageSnapshot | undefined {
   };
 }
 
+// Raw fallback for Gemini/Vertex responses that still carry their native usage fields.
+// In practice Pi normalizes usage before message_end fires, so this path is only
+// reached when Pi-normalized fields are absent (e.g. custom/foreign providers).
 function getGeminiRawUsage(message: unknown): UsageSnapshot | undefined {
   const record = getAssistantRecord(message);
   if (!record) return undefined;
@@ -440,6 +472,10 @@ function getGeminiRawUsage(message: unknown): UsageSnapshot | undefined {
   return { cacheRead, cacheWrite: 0, totalInput };
 }
 
+// Try Pi-normalized usage first (always present for messages that went through Pi's
+// provider pipeline). Fall back to provider-specific raw-field readers when Pi-normalized
+// fields are absent (e.g. messages from custom/foreign providers whose raw usage shape
+// matches the official API).
 function normalizeWithFallback(
   message: unknown,
   rawNormalizer: (message: unknown) => UsageSnapshot | undefined,

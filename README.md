@@ -182,6 +182,8 @@ This package now has provider-family stats adapters, but it still avoids blind g
 
 - Watch the footer label for the active family, such as `DS cache ...`, `OpenAI cache ...`, `Claude cache ...`, or `Gemini cache ...`.
 - Use Pi's built-in `/stats` to confirm `cacheRead` tokens grow when Pi normalizes provider usage.
+- For DeepSeek, Pi normalizes `usage.input` as uncached/miss prompt tokens and `usage.cacheRead` as `prompt_cache_hit_tokens`, so the footer denominator is reconstructed as `input + cacheRead + cacheWrite` (matching DeepSeek `prompt_tokens` when the provider reports normal usage).
+- Footer hit count is request-level: one assistant response increments total requests, and it is a hit when `cacheRead > 0`. DeepSeek dashboards may use different time windows or account-wide/provider-side aggregation, so align the reset/window before comparing.
 - For provider raw APIs, compare with documented usage fields such as DeepSeek `prompt_cache_hit_tokens`, OpenAI `cached_tokens`, Anthropic `cache_read_input_tokens`, or Gemini/Vertex cached-content token counts.
 
 ### Official DeepSeek baseline (recommended)
