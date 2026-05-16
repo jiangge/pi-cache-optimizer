@@ -1,5 +1,9 @@
 # Pi Cache Optimizer
 
+[![npm version](https://img.shields.io/npm/v/pi-cache-optimizer.svg)](https://www.npmjs.com/package/pi-cache-optimizer)
+[![npm downloads](https://img.shields.io/npm/dm/pi-cache-optimizer.svg)](https://www.npmjs.com/package/pi-cache-optimizer)
+[![license](https://img.shields.io/npm/l/pi-cache-optimizer.svg)](./LICENSE)
+
 [English README](./README.md)
 
 > **已从 `pi-deepseek-cache-optimizer` 重命名。** 如果你之前安装的是旧名称，请迁移：
@@ -10,7 +14,7 @@
 >
 > 持久化的底部计数器以及已有的 `~/.pi/agent/models.json` 都会被保留。
 
-开箱即用的 Pi 扩展，用稳定 prompt 前缀提升 provider-side KV Cache / Prompt Cache 命中概率，并以保守的 provider-specific adapter 显示底部缓存统计。包名里虭带 DeepSeek，但从 1.x 开始实际上已同时支持 DeepSeek、OpenAI、Claude、Gemini 的统计 adapter；新名称反映这个事实。
+开箱即用的 Pi 扩展，用稳定 prompt 前缀提升 provider-side KV Cache / Prompt Cache 命中概率，并以保守的 provider-specific adapter 显示底部缓存统计。包名里虽带 DeepSeek，但从 1.x 开始实际上已同时支持 DeepSeek、OpenAI、Claude、Gemini 的统计 adapter；新名称反映这个事实。
 
 > 重要：prompt/KV 缓存是 provider 侧、best-effort 行为。本扩展只能通过稳定前缀、在 Pi 支持时请求长保留、提醒明显 compat 缺口、以及展示 provider 暴露的轻量统计来提高命中概率，不能保证每次命中。第三方代理可能隐藏、丢失、重路由或重新解释缓存行为。
 

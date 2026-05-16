@@ -1,5 +1,9 @@
 # Pi Cache Optimizer
 
+[![npm version](https://img.shields.io/npm/v/pi-cache-optimizer.svg)](https://www.npmjs.com/package/pi-cache-optimizer)
+[![npm downloads](https://img.shields.io/npm/dm/pi-cache-optimizer.svg)](https://www.npmjs.com/package/pi-cache-optimizer)
+[![license](https://img.shields.io/npm/l/pi-cache-optimizer.svg)](./LICENSE)
+
 [中文说明](./README.zh-CN.md)
 
 > **Renamed from `pi-deepseek-cache-optimizer`.** If you previously installed the old name, migrate with:

@@ -20,7 +20,7 @@
   ],
   "pi": {
     "extensions": ["./extension.ts"],
-    "image": "https://img.shields.io/badge/DeepSeek-Cache%20Optimizer-4A90D9"
+    "image": "https://img.shields.io/badge/Pi-Cache%20Optimizer-4A90D9"
   },
   "peerDependencies": {
     "@earendil-works/pi-coding-agent": "*"
