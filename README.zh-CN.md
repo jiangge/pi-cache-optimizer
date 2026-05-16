@@ -1,8 +1,16 @@
-# Pi DeepSeek Cache Optimizer
+# Pi Cache Optimizer
 
 [English README](./README.md)
 
-开箱即用的 Pi 扩展，用稳定 prompt 前缀提升 provider-side KV Cache / Prompt Cache 命中概率，并以保守的 provider-specific adapter 显示底部缓存统计。
+> **已从 `pi-deepseek-cache-optimizer` 重命名。** 如果你之前安装的是旧名称，请迁移：
+>
+> ```bash
+> pi remove npm:pi-deepseek-cache-optimizer && pi install npm:pi-cache-optimizer
+> ```
+>
+> 持久化的底部计数器以及已有的 `~/.pi/agent/models.json` 都会被保留。
+
+开箱即用的 Pi 扩展，用稳定 prompt 前缀提升 provider-side KV Cache / Prompt Cache 命中概率，并以保守的 provider-specific adapter 显示底部缓存统计。包名里虭带 DeepSeek，但从 1.x 开始实际上已同时支持 DeepSeek、OpenAI、Claude、Gemini 的统计 adapter；新名称反映这个事实。
 
 > 重要：prompt/KV 缓存是 provider 侧、best-effort 行为。本扩展只能通过稳定前缀、在 Pi 支持时请求长保留、提醒明显 compat 缺口、以及展示 provider 暴露的轻量统计来提高命中概率，不能保证每次命中。第三方代理可能隐藏、丢失、重路由或重新解释缓存行为。
 
@@ -28,20 +36,39 @@
 
 Generic OpenAI-compatible 代理**不会**仅因为使用 OpenAI 形状 API 或 provider id 就被当作 OpenAI-family。如果当前 model id/name 语义不明确，扩展会隐藏底部统计，而不是猜测。
 
+## 快速开始
+
+1. （可选但推荐）先读一遍官方 Pi + DeepSeek 接入指南：[`pi_mono.zh-CN.md`](https://github.com/deepseek-ai/awesome-deepseek-agent/blob/main/docs/pi_mono.zh-CN.md)。它讲了 Pi 安装与基础配置。
+2. 安装本扩展：
+
+   ```bash
+   pi install npm:pi-cache-optimizer
+   ```
+
+3. 首次激活时，如果 `~/.pi/agent/models.json` 里还没有 DeepSeek-like 模型，本扩展会自动写入一个推荐的 `deepseek` provider 块。这个 seed 比官方接入文档多了两个关键 flag：`supportsLongCacheRetention: true` 与 `sendSessionAffinityHeaders: true`——这些正是官方文档略去、但本扩展 compat 警告一直在判断的缓存相关项。写入前会先产生一个带时间戳的备份 `~/.pi/agent/models.json.bak.<unix-millis>`，原有的任何 provider 条目都不会被修改或覆盖。
+4. 在运行 `pi` 的同一个 shell 中导出 DeepSeek API key：
+
+   ```bash
+   export DEEPSEEK_API_KEY='...'
+   ```
+
+   seed 只是以 `$DEEPSEEK_API_KEY` 符号引用 key；本扩展**不会**读取、存储或打印 key 的值。
+5. 如需退出自动写入，请在启动 Pi 之前设 `PI_CACHE_OPTIMIZER_NO_AUTO_CONFIG=1`。退出后不会产生任何写入或备份，也不会新增 provider 条目。
+
 ## 安装
 
 ```bash
-pi install npm:pi-deepseek-cache-optimizer
+pi install npm:pi-cache-optimizer
 ```
 
-安装后 `PI_CACHE_RETENTION=long` **自动生效**，system prompt **自动重组**，受支持 model family 的响应完成且暴露 usage 后，底部状态栏会显示缓存统计。
+安装后 `PI_CACHE_RETENTION=long` **自动生效**，system prompt **自动重组**；如果 `~/.pi/agent/models.json` 还没有 DeepSeek-like 模型，会自动 seed 一个 `deepseek` provider 块；受支持 model family 的响应完成且暴露 usage 后，底部状态栏会显示缓存统计。
 
 ## 卸载
 
 请移除当初安装时使用的同一个 package source。npm 包对应命令：
 
 ```bash
-pi remove npm:pi-deepseek-cache-optimizer
+pi remove npm:pi-cache-optimizer
 ```
 
 如果你是从本地路径安装的，请移除同一个路径/source，例如：
@@ -52,13 +79,17 @@ pi remove /absolute/path/to/pi-deepseek-cache-optimizer
 pi remove ./relative/path/to/pi-deepseek-cache-optimizer
 ```
 
-如果当初使用 `pi install -l ...` 安装到项目级 settings，请使用对应的项目级卸载命令，例如 `pi remove -l npm:pi-deepseek-cache-optimizer`。
+如果当初使用 `pi install -l ...` 安装到项目级 settings，请使用对应的项目级卸载命令，例如 `pi remove -l npm:pi-cache-optimizer`。
 
 移除 package 后，在 Pi 中执行 `/reload` 或重启 Pi，让扩展卸载。底部统计计数器会单独持久化；如果也想删除这个本地状态文件，可以执行：
 
 ```bash
-rm ~/.pi/agent/deepseek-cache-optimizer-stats.json
+rm ~/.pi/agent/pi-cache-optimizer-stats.json
+# 旧名称（首次运行新版本时会被迁移、可能已被删除；仍在的话可安全删除）：
+rm -f ~/.pi/agent/deepseek-cache-optimizer-stats.json
 ```
+
+本扩展写入到 `~/.pi/agent/models.json` 的 DeepSeek 块在卸载后不会被自动删除。如需清除请手动编辑；之前的备份 `~/.pi/agent/models.json.bak.<unix-millis>` 可供对比还原。
 
 ## 底部缓存统计
 
@@ -87,7 +118,7 @@ Gemini cache 1/2 · 0.18M/0.50M tok (36%)
 - 优先使用 Pi 归一化后的 `usage.input`、`usage.cacheRead`、`usage.cacheWrite`。只有当 assistant message 上可见已知 provider raw 字段时，才做保守 fallback 解析。
 - Pi 归一化 usage 的 prompt input 总量使用 `input + cacheRead + cacheWrite`。provider raw normalizer 会优先使用各 provider 文档里的 total/input 字段。
 - 统计只更新底部状态栏，不创建额外 TUI 组件，也不写诊断文件；因此不会因调试组件频繁重绘导致屏幕闪烁。
-- 统计会持久化到本地小 JSON 文件：`~/.pi/agent/deepseek-cache-optimizer-stats.json`。该文件只保存计数器和本地日期，不保存 API key、prompt、消息内容、headers 或模型输出。
+- 统计会持久化到本地小 JSON 文件：`~/.pi/agent/pi-cache-optimizer-stats.json`。早期 1.x 版本使用 `~/.pi/agent/deepseek-cache-optimizer-stats.json`；首次运行新版时会从旧路径读一次、复制到新路径、然后 best-effort 删除旧文件。该文件只保存计数器和本地日期，不保存 API key、prompt、消息内容、headers 或模型输出。
 - DeepSeek-only 旧版本的 v1 状态文件会自动迁移到 DeepSeek adapter 计数器。
 
 重置规则：

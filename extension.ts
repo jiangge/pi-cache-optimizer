@@ -1,17 +1,25 @@
 import { createHash } from "node:crypto";
-import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
+import {
+  mkdirSync,
+  readFileSync,
+  renameSync,
+  writeFileSync,
+} from "node:fs";
+import { mkdir, readFile, rename, unlink, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import type { BuildSystemPromptOptions, ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 
 /**
- * DeepSeek KV Cache Optimizer
+ * Pi Cache Optimizer (formerly pi-deepseek-cache-optimizer)
  *
  * What it does:
  * 1. Reorders Pi's system prompt so stable content is sent before dynamic context.
  * 2. Sets PI_CACHE_RETENTION=long at extension load time.
- * 3. Warns once for provider/model cache compat gaps where the signal is conservative.
- * 4. Shows lightweight persisted provider-specific cache stats in Pi's footer.
+ * 3. Auto-seeds a recommended DeepSeek entry into ~/.pi/agent/models.json on first run
+ *    (only when no DeepSeek-like model is already configured; never overwrites).
+ * 4. Warns once for provider/model cache compat gaps where the signal is conservative.
+ * 5. Shows lightweight persisted provider-specific cache stats in Pi's footer.
  *
  * Provider prompt/KV caches are provider-side and best-effort. This extension improves
  * the odds of cache hits; it cannot guarantee hits, especially through proxies.
@@ -28,13 +36,18 @@ type PiModel = NonNullable<ExtensionContext["model"]>;
 type UnknownRecord = Record<string, unknown>;
 type CacheProviderId = "deepseek" | "openai" | "claude" | "gemini";
 
-const STATUS_KEY = "deepseek-cache-stats";
+const LOG_PREFIX = "pi-cache-optimizer";
+const STATUS_KEY = "pi-cache-stats";
 const STATE_DIR = join(homedir(), ".pi", "agent");
-const STATE_FILE_PATH = join(STATE_DIR, "deepseek-cache-optimizer-stats.json");
+const STATE_FILE_PATH = join(STATE_DIR, "pi-cache-optimizer-stats.json");
+const LEGACY_STATE_FILE_PATH = join(STATE_DIR, "deepseek-cache-optimizer-stats.json");
+const MODELS_JSON_PATH = join(STATE_DIR, "models.json");
 
 const CACHE_PROVIDER_IDS: CacheProviderId[] = ["deepseek", "openai", "claude", "gemini"];
 const OPENAI_CACHE_KEY_ENV = "PI_CACHE_OPTIMIZER_OPENAI_CACHE_KEY";
 const OPENAI_PROMPT_CACHE_KEY_PREFIX = "pi-dsco-";
+const NO_AUTO_CONFIG_ENV = "PI_CACHE_OPTIMIZER_NO_AUTO_CONFIG";
+const DEEPSEEK_API_KEY_ENV = "DEEPSEEK_API_KEY";
 
 const ASSISTANT_MESSAGE_MODEL_TOKEN_KEYS = ["model", "name"];
 const OPENAI_REASONING_MODEL_PATTERN = /(^|[/\s:_-])o[1345]($|[-_.:/\s])/;
@@ -533,7 +546,7 @@ const CACHE_PROVIDER_ADAPTERS: CacheProviderAdapter[] = [
 
       const key = modelKey(model);
       return (
-        `💡 DeepSeek cache optimizer: ${key} is DeepSeek-like but merged compat lacks ${missing.join(" and ")}. ` +
+        `💡 pi-cache-optimizer: ${key} is DeepSeek-like but merged compat lacks ${missing.join(" and ")}. ` +
         "Proxies may reduce or hide cache hits; add these compat flags in ~/.pi/agent/models.json when the endpoint supports them."
       );
     },
@@ -732,10 +745,38 @@ async function readPersistedCacheStats(): Promise<Partial<Record<CacheProviderId
     return parsePersistedCacheStats(JSON.parse(raw));
   } catch (error) {
     if (getErrorCode(error) !== "ENOENT") {
-      console.warn("DeepSeek cache optimizer: failed to read persisted cache stats", error);
+      console.warn(`${LOG_PREFIX}: failed to read persisted cache stats`, error);
+      return undefined;
     }
-    return undefined;
   }
+
+  // New path missing: try one-shot migration from the old (pre-rename) path.
+  try {
+    const raw = await readFile(LEGACY_STATE_FILE_PATH, "utf8");
+    const parsed = parsePersistedCacheStats(JSON.parse(raw));
+    if (parsed) {
+      try {
+        await writePersistedCacheStats(parsed);
+        // Best-effort delete; if the unlink fails the new path is still authoritative.
+        try {
+          await unlink(LEGACY_STATE_FILE_PATH);
+        } catch (unlinkError) {
+          if (getErrorCode(unlinkError) !== "ENOENT") {
+            console.warn(`${LOG_PREFIX}: failed to remove legacy stats file`, unlinkError);
+          }
+        }
+      } catch (writeError) {
+        console.warn(`${LOG_PREFIX}: failed to migrate legacy cache stats`, writeError);
+      }
+      return parsed;
+    }
+  } catch (error) {
+    if (getErrorCode(error) !== "ENOENT") {
+      console.warn(`${LOG_PREFIX}: failed to read legacy cache stats`, error);
+    }
+  }
+
+  return undefined;
 }
 
 async function writePersistedCacheStats(statsByProvider: Partial<Record<CacheProviderId, CacheStats>>): Promise<void> {
@@ -747,12 +788,244 @@ async function writePersistedCacheStats(statsByProvider: Partial<Record<CachePro
   await rename(tempPath, STATE_FILE_PATH);
 }
 
+// ============================================================
+// models.json auto-config (DeepSeek seed)
+// ============================================================
+
+type ModelsJsonShape = {
+  providers?: UnknownRecord;
+} & UnknownRecord;
+
+const DEEPSEEK_SEED_PROVIDER = {
+  baseUrl: "https://api.deepseek.com",
+  api: "openai-completions",
+  apiKey: "$DEEPSEEK_API_KEY",
+  models: [
+    {
+      id: "deepseek-v4-pro",
+      name: "DeepSeek V4 Pro",
+      contextWindow: 1_000_000,
+      maxTokens: 384_000,
+      input: ["text"],
+      reasoning: true,
+      cost: { input: 1.74, output: 3.48, cacheRead: 0.145, cacheWrite: 0 },
+      compat: {
+        requiresReasoningContentOnAssistantMessages: true,
+        thinkingFormat: "deepseek",
+        supportsLongCacheRetention: true,
+        sendSessionAffinityHeaders: true,
+        reasoningEffortMap: {
+          minimal: "high",
+          low: "high",
+          medium: "high",
+          high: "high",
+          xhigh: "max",
+        },
+      },
+    },
+    {
+      id: "deepseek-v4-flash",
+      name: "DeepSeek V4 Flash",
+      contextWindow: 1_000_000,
+      maxTokens: 384_000,
+      input: ["text"],
+      reasoning: true,
+      cost: { input: 0.14, output: 0.28, cacheRead: 0.028, cacheWrite: 0 },
+      compat: {
+        requiresReasoningContentOnAssistantMessages: true,
+        thinkingFormat: "deepseek",
+        supportsLongCacheRetention: true,
+        sendSessionAffinityHeaders: true,
+        reasoningEffortMap: {
+          minimal: "high",
+          low: "high",
+          medium: "high",
+          high: "high",
+          xhigh: "max",
+        },
+      },
+    },
+  ],
+} as const;
+
+function modelsJsonContainsDeepseek(parsed: ModelsJsonShape): boolean {
+  const providers = asRecord(parsed.providers);
+  if (!providers) return false;
+
+  // Respect user intent: a provider key literally named "deepseek" (case-insensitive)
+  // means the user already declared their own DeepSeek block, even if its models list is empty.
+  for (const key of Object.keys(providers)) {
+    if (key.toLowerCase() === "deepseek") return true;
+  }
+
+  for (const providerValue of Object.values(providers)) {
+    const provider = asRecord(providerValue);
+    if (!provider) continue;
+    const models = provider.models;
+    if (!Array.isArray(models)) continue;
+    for (const model of models) {
+      const record = asRecord(model);
+      if (!record) continue;
+      if (lower(record.id).includes("deepseek") || lower(record.name).includes("deepseek")) {
+        return true;
+      }
+    }
+  }
+
+  return false;
+}
+
+type EnsureDeepseekResult = {
+  // Whether some DeepSeek-like model is now present in models.json (either pre-existing or just-seeded).
+  deepseekPresent: boolean;
+  // Whether we just wrote the seed in this activation.
+  seeded: boolean;
+  // Whether auto-config was deliberately skipped (env opt-out or malformed file).
+  skipped: boolean;
+};
+
+function ensureDeepseekConfigured(notify?: (text: string, level: "info" | "warning") => void): EnsureDeepseekResult {
+  const result: EnsureDeepseekResult = { deepseekPresent: false, seeded: false, skipped: false };
+
+  if (isEnabledEnv(process.env[NO_AUTO_CONFIG_ENV])) {
+    result.skipped = true;
+    // Even when opted out, callers still need to know whether DeepSeek is present so the
+    // API-key hint can fire. Read-only inspection only; no writes.
+    try {
+      const raw = readFileSync(MODELS_JSON_PATH, "utf8");
+      const parsed = JSON.parse(raw) as ModelsJsonShape;
+      if (parsed && typeof parsed === "object") {
+        result.deepseekPresent = modelsJsonContainsDeepseek(parsed);
+      }
+    } catch {
+      // ignore: missing or unreadable file means "not present"
+    }
+    return result;
+  }
+
+  let originalBytes: string | undefined;
+  let parsed: ModelsJsonShape;
+  try {
+    originalBytes = readFileSync(MODELS_JSON_PATH, "utf8");
+  } catch (error) {
+    if (getErrorCode(error) !== "ENOENT") {
+      console.warn(`${LOG_PREFIX}: failed to read models.json; skipping auto-config`, error);
+      result.skipped = true;
+      return result;
+    }
+    parsed = { providers: {} };
+  }
+
+  if (originalBytes !== undefined) {
+    try {
+      const decoded = JSON.parse(originalBytes) as unknown;
+      if (decoded && typeof decoded === "object" && !Array.isArray(decoded)) {
+        parsed = decoded as ModelsJsonShape;
+      } else {
+        // A non-object top-level JSON (array/string/number) is unexpected; treat as malformed and abort.
+        console.warn(`${LOG_PREFIX}: models.json top-level is not an object; aborting auto-config`);
+        result.skipped = true;
+        return result;
+      }
+    } catch (error) {
+      // Malformed JSON: do NOT overwrite the user's file.
+      console.warn(`${LOG_PREFIX}: models.json is not valid JSON; aborting auto-config`, error);
+      result.skipped = true;
+      return result;
+    }
+  } else {
+    parsed = { providers: {} };
+  }
+
+  if (modelsJsonContainsDeepseek(parsed)) {
+    result.deepseekPresent = true;
+    return result;
+  }
+
+  // Decide we will seed. Snapshot the old bytes (or empty marker) into a backup before mutating.
+  const backupPath = `${MODELS_JSON_PATH}.bak.${Date.now()}`;
+  try {
+    mkdirSync(STATE_DIR, { recursive: true });
+    writeFileSync(backupPath, originalBytes ?? "", "utf8");
+  } catch (error) {
+    console.warn(`${LOG_PREFIX}: failed to write models.json backup; aborting auto-config`, error);
+    result.skipped = true;
+    return result;
+  }
+
+  const providersIn = asRecord(parsed.providers) ?? {};
+  const merged: ModelsJsonShape = {
+    ...parsed,
+    providers: { ...providersIn, deepseek: DEEPSEEK_SEED_PROVIDER },
+  };
+
+  const tempPath = `${MODELS_JSON_PATH}.tmp.${process.pid}`;
+  try {
+    writeFileSync(tempPath, JSON.stringify(merged, null, 2) + "\n", "utf8");
+  } catch (error) {
+    console.warn(`${LOG_PREFIX}: failed to write models.json temp file; aborting auto-config`, error);
+    result.skipped = true;
+    return result;
+  }
+
+  try {
+    renameSync(tempPath, MODELS_JSON_PATH);
+  } catch (error) {
+    console.warn(
+      `${LOG_PREFIX}: failed to atomically rename models.json (temp left at ${tempPath})`,
+      error,
+    );
+    result.skipped = true;
+    return result;
+  }
+
+  result.seeded = true;
+  result.deepseekPresent = true;
+  notify?.(
+    `${LOG_PREFIX}: seeded DeepSeek provider into ${MODELS_JSON_PATH} (backup at ${backupPath}). ` +
+      `Set ${DEEPSEEK_API_KEY_ENV} to use it; or set ${NO_AUTO_CONFIG_ENV}=1 next time to opt out.`,
+    "info",
+  );
+  return result;
+}
+
+function emitDeepseekApiKeyHintIfNeeded(
+  deepseekPresent: boolean,
+  notify: (text: string, level: "info" | "warning") => void,
+): void {
+  if (!deepseekPresent) return;
+  const value = process.env[DEEPSEEK_API_KEY_ENV];
+  if (typeof value === "string" && value.trim().length > 0) return;
+
+  notify(
+    `${LOG_PREFIX}: ${DEEPSEEK_API_KEY_ENV} is not set. ` +
+      `DeepSeek models in ${MODELS_JSON_PATH} reference $${DEEPSEEK_API_KEY_ENV}; ` +
+      `export ${DEEPSEEK_API_KEY_ENV}=... in your shell to enable them.`,
+    "info",
+  );
+}
+
 export default function (pi: ExtensionAPI) {
   const warnedModels = new Set<string>();
   let cacheStatsByProvider: Partial<Record<CacheProviderId, CacheStats>> = emptyAllCacheStats();
   let lastStatusText: string | undefined;
   let latestPromptCacheKey: string | undefined;
   let persistenceWarningShown = false;
+  let apiKeyHintShown = false;
+
+  // Auto-config runs once at extension activation (idempotent: skips if DeepSeek already configured).
+  // Pi's UI logger is not yet bound here, so seed-time notifications go through console.warn / console.info.
+  // Per-session UI notification is emitted from the session_start hook below.
+  let autoConfig: EnsureDeepseekResult;
+  try {
+    autoConfig = ensureDeepseekConfigured((text, level) => {
+      if (level === "warning") console.warn(text);
+      else console.info(text);
+    });
+  } catch (error) {
+    console.warn(`${LOG_PREFIX}: ensureDeepseekConfigured threw; continuing without auto-config`, error);
+    autoConfig = { deepseekPresent: false, seeded: false, skipped: true };
+  }
 
   function getStatsForAdapter(adapter: CacheProviderAdapter): CacheStats {
     const existing = cacheStatsByProvider[adapter.id];
@@ -767,11 +1040,11 @@ export default function (pi: ExtensionAPI) {
     try {
       await writePersistedCacheStats(cacheStatsByProvider);
     } catch (error) {
-      console.warn("DeepSeek cache optimizer: failed to persist cache stats", error);
+      console.warn(`${LOG_PREFIX}: failed to persist cache stats`, error);
       if (!persistenceWarningShown) {
         persistenceWarningShown = true;
         ctx?.ui.notify(
-          "DeepSeek cache optimizer: failed to persist footer stats; using in-memory stats for this process.",
+          `${LOG_PREFIX}: failed to persist footer stats; using in-memory stats for this process.`,
           "warning",
         );
       }
@@ -823,6 +1096,12 @@ export default function (pi: ExtensionAPI) {
   pi.on("session_start", async (event, ctx) => {
     await restoreCacheStats(event.reason, ctx);
     notifyCacheCompatIfNeeded(ctx.model, ctx, warnedModels);
+    if (!apiKeyHintShown) {
+      apiKeyHintShown = true;
+      emitDeepseekApiKeyHintIfNeeded(autoConfig.deepseekPresent, (text, level) => {
+        ctx.ui.notify(text, level);
+      });
+    }
     await publishStatus(ctx);
   });
 

@@ -1,8 +1,16 @@
-# Pi DeepSeek Cache Optimizer
+# Pi Cache Optimizer
 
 [中文说明](./README.zh-CN.md)
 
-A plug-and-play Pi extension that improves provider-side KV Cache / Prompt Cache hit rates, with conservative provider-specific footer stats.
+> **Renamed from `pi-deepseek-cache-optimizer`.** If you previously installed the old name, migrate with:
+>
+> ```bash
+> pi remove npm:pi-deepseek-cache-optimizer && pi install npm:pi-cache-optimizer
+> ```
+>
+> Your persisted footer counters and any existing `~/.pi/agent/models.json` are preserved automatically.
+
+A plug-and-play Pi extension that improves provider-side KV Cache / Prompt Cache hit rates, with conservative provider-specific footer stats. Despite the original DeepSeek-only name, this package has supported DeepSeek, OpenAI, Claude, and Gemini stats adapters since 1.x — the new name reflects that scope.
 
 > Important: prompt/KV caching is provider-side and best-effort. This extension can improve the odds of cache hits by stabilizing prompt prefixes, requesting long retention through Pi when supported, warning about obvious compat gaps, and showing lightweight footer stats for providers that expose reliable cache usage. It cannot guarantee cache hits. Third-party proxies may hide, drop, reroute, or reinterpret cache behavior.
 
@@ -28,20 +36,39 @@ This release keeps the original DeepSeek behavior and adds read-only stats adapt
 
 Generic OpenAI-compatible proxies are **not** treated as OpenAI-family just because they use an OpenAI-shaped API or provider id. If the active model id/name is ambiguous, the extension hides the footer stats instead of guessing.
 
+## Quickstart
+
+1. (Optional but recommended) Read the official Pi + DeepSeek onboarding guide: [`pi_mono.zh-CN.md`](https://github.com/deepseek-ai/awesome-deepseek-agent/blob/main/docs/pi_mono.zh-CN.md). It covers Pi installation and core configuration.
+2. Install this extension:
+
+   ```bash
+   pi install npm:pi-cache-optimizer
+   ```
+
+3. On first activation, if no DeepSeek-like model is already configured, this extension auto-seeds a recommended `deepseek` provider block into `~/.pi/agent/models.json`. The seed goes BEYOND the official onboarding doc by adding `supportsLongCacheRetention: true` and `sendSessionAffinityHeaders: true` — those flags are exactly the cache-related compat the official doc omits, and they are the reason this extension's compat warnings exist. A timestamped backup `~/.pi/agent/models.json.bak.<unix-millis>` is written before any change. Existing user entries are never modified.
+4. Export your DeepSeek API key in the same shell where you run `pi`:
+
+   ```bash
+   export DEEPSEEK_API_KEY='...'
+   ```
+
+   The seed references `$DEEPSEEK_API_KEY` symbolically; this extension never reads, stores, or prints the key value.
+5. Opt out of auto-seeding by exporting `PI_CACHE_OPTIMIZER_NO_AUTO_CONFIG=1` before launching Pi. With opt-out, no write or backup happens, and no provider entry is added or modified.
+
 ## Install
 
 ```bash
-pi install npm:pi-deepseek-cache-optimizer
+pi install npm:pi-cache-optimizer
 ```
 
-After installation, `PI_CACHE_RETENTION=long` is applied automatically, the system prompt is reordered automatically, and the footer shows cache stats after supported model-family responses with exposed usage.
+After installation, `PI_CACHE_RETENTION=long` is applied automatically, the system prompt is reordered automatically, `~/.pi/agent/models.json` is auto-seeded with a DeepSeek block when no DeepSeek-like model is configured, and the footer shows cache stats after supported model-family responses with exposed usage.
 
 ## Uninstall
 
 Remove the same package source you installed. For the npm package:
 
 ```bash
-pi remove npm:pi-deepseek-cache-optimizer
+pi remove npm:pi-cache-optimizer
 ```
 
 If you installed from a local path, remove that same path/source instead, for example:
@@ -52,13 +79,17 @@ pi remove /absolute/path/to/pi-deepseek-cache-optimizer
 pi remove ./relative/path/to/pi-deepseek-cache-optimizer
 ```
 
-If you installed into project settings with `pi install -l ...`, use the matching project-scope remove command, for example `pi remove -l npm:pi-deepseek-cache-optimizer`.
+If you installed into project settings with `pi install -l ...`, use the matching project-scope remove command, for example `pi remove -l npm:pi-cache-optimizer`.
 
 After removing the package, run `/reload` in Pi or restart Pi so the extension is unloaded. The footer counters are persisted separately; if you also want to delete that local state, remove:
 
 ```bash
-rm ~/.pi/agent/deepseek-cache-optimizer-stats.json
+rm ~/.pi/agent/pi-cache-optimizer-stats.json
+# Old name (kept once and migrated automatically; safe to delete if it still exists):
+rm -f ~/.pi/agent/deepseek-cache-optimizer-stats.json
 ```
+
+The DeepSeek block this extension seeded into `~/.pi/agent/models.json` is left in place on uninstall. Remove it manually if you no longer want it; the timestamped backup at `~/.pi/agent/models.json.bak.<unix-millis>` lets you compare against the previous content.
 
 ## Footer cache stats
 
@@ -87,7 +118,7 @@ Stats rules:
 - Pi-normalized `usage.input`, `usage.cacheRead`, and `usage.cacheWrite` are preferred. Known raw provider fields are used only defensively when visible on the assistant message.
 - Total prompt input is `input + cacheRead + cacheWrite` for Pi-normalized usage. Provider raw normalizers use each provider's documented total/input fields when available.
 - Stats update only the footer/status. The extension does not create extra TUI widgets or diagnostic files.
-- Stats are persisted in a small local JSON state file at `~/.pi/agent/deepseek-cache-optimizer-stats.json`. The file stores only counters and the local day; it does not store API keys, prompts, messages, headers, or model output.
+- Stats are persisted in a small local JSON state file at `~/.pi/agent/pi-cache-optimizer-stats.json`. Earlier 1.x releases used `~/.pi/agent/deepseek-cache-optimizer-stats.json`; on first run after upgrade the old file is read once, copied into the new path, and best-effort deleted. The file stores only counters and the local day; it does not store API keys, prompts, messages, headers, or model output.
 - Existing v1 state files from DeepSeek-only releases are migrated into the DeepSeek adapter counters automatically.
 
 Reset behavior:
