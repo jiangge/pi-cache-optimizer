@@ -51,11 +51,12 @@ const NO_SKILL_COMPRESSION_ENV = "PI_CACHE_OPTIMIZER_NO_SKILL_COMPRESSION";
 const DEEPSEEK_API_KEY_ENV = "DEEPSEEK_API_KEY";
 
 // WORM-flag: if optimizeSystemPrompt ever detects that its blind-replace
-// logic has accidentally truncated the trellis `<workflow-state>` block
-// (or any structural marker from an upstream extension), we flip this.
-// publishStatus reads it once, appends a footer warning, then resets it.
-// The flag surface is kept separate from the regular cache-stats counter
-// so that a one-turn glitch doesn't poison the persisted metrics.
+// logic has accidentally truncated a structural marker (any XML tag or
+// HTML comment boundary marker present in the original prompt), we flip
+// this. publishStatus reads it once, appends a footer warning, then
+// resets it. The flag surface is kept separate from the regular
+// cache-stats counter so that a one-turn glitch doesn't poison the
+// persisted metrics.
 let promptTruncationDetected = false;
 
 // Minimum count of skills before compression is worth applying.
@@ -387,6 +388,62 @@ function stripSessionOverviewChurn(prompt: string): string {
   return before + cleaned + after;
 }
 
+/**
+ * Extract structural markers from a prompt for the integrity guard.
+ *
+ * The guard runs in `optimizeSystemPrompt` to catch cases where the
+ * blind `rest.replace(part, "")` reorder accidentally eats text inside
+ * an extension-injected structural block (e.g., trellis
+ * `<workflow-state>`, a hypothetical `<task-tracker>`, or AGENTS.md
+ * `<!-- TRELLIS:START -->` markers). When the original prompt contains
+ * a marker that the result is missing, we fall back to the original
+ * prompt rather than ship a corrupted one.
+ *
+ * Three marker categories are recognized (covers ~99% of real-world
+ * extension injection patterns in the pi ecosystem):
+ *
+ *   1. XML-style opening tags  `<tagname>` (lowercase, alpha-num + `_`/`-`)
+ *   2. XML-style closing tags  `</tagname>`
+ *   3. HTML comment START/END  `<!-- NAME:START -->` / `<!-- NAME:END -->`
+ *
+ * Tags with attributes (e.g., `<task id="42">`) are not currently emitted
+ * by any pi extension we know of and are skipped to keep the regex tight.
+ * Markdown headers, horizontal rules, and timestamp patterns are not
+ * usable as guards because they have no closing form to verify.
+ *
+ * The check is deliberately set-based (presence/absence) rather than
+ * count-based: a single occurrence per request is the universal
+ * convention, and a count drop with the same set of unique tags would
+ * be a different class of bug not catchable here.
+ */
+function extractStructuralMarkers(prompt: string): {
+  openingTags: Set<string>;
+  closingTags: Set<string>;
+  commentMarkers: Set<string>;
+} {
+  const openingTags = new Set<string>();
+  const closingTags = new Set<string>();
+  const commentMarkers = new Set<string>();
+
+  // Opening tags: <tagname> with no attributes and no leading slash.
+  // Tagname must start with a letter and contain only alpha-num, `-`, `_`.
+  for (const match of prompt.matchAll(/<([a-z][a-z0-9_-]*)>/gi)) {
+    openingTags.add(match[1].toLowerCase());
+  }
+  // Closing tags: </tagname>
+  for (const match of prompt.matchAll(/<\/([a-z][a-z0-9_-]*)>/gi)) {
+    closingTags.add(match[1].toLowerCase());
+  }
+  // HTML comments with NAME:START or NAME:END inside.
+  // Trellis emits `<!-- TRELLIS:START -->` / `<!-- TRELLIS:END -->` in
+  // the AGENTS.md managed block; other extensions follow this convention.
+  for (const match of prompt.matchAll(/<!--\s*([A-Z][A-Z0-9_-]*):(START|END)\s*-->/g)) {
+    commentMarkers.add(`${match[1]}:${match[2]}`);
+  }
+
+  return { openingTags, closingTags, commentMarkers };
+}
+
 function optimizeSystemPrompt(
   original: string,
   opts: BuildSystemPromptOptions,
@@ -420,17 +477,29 @@ function optimizeSystemPrompt(
     stablePrefix +
     (dynamicRemainder.length > 0 ? "\n\n---\n\n" + dynamicRemainder : "");
 
-  // Sanity check: if trellis (or another extension) injected structural
-  // markers into the prompt that happen to share a substring with one of
-  // our stable candidates, the blind `rest.replace(part, "")` could
-  // silently eat part of the dynamic layer. We anchor on
-  // `<workflow-state>` because it is the most stable structural marker
-  // trellis emits and is never a stable candidate itself.
+  // Sanity check: scan ALL structural markers (XML tags + HTML comment
+  // boundary markers) in the original and verify each one survives the
+  // reorder. If any marker drops, the blind `rest.replace(part, "")`
+  // logic ate something it shouldn't have — fall back to the original
+  // prompt and flag the footer warning. This is provider-agnostic and
+  // extension-agnostic: trellis `<workflow-state>`, a hypothetical
+  // `<task-tracker>`, AGENTS.md `<!-- TRELLIS:START -->`, etc., are all
+  // protected without code changes when new extensions ship.
   //
-  // When the marker was present in the original but is missing in the
-  // result, the reorder is unsafe — fall back to the original prompt
-  // so the model gets a complete prompt, and flag the footer warning.
-  if (original.includes("<workflow-state>") && !systemPrompt.includes("<workflow-state>")) {
+  // Our skills compression runs BEFORE optimizeSystemPrompt and replaces
+  // pi's verbose `<available_skills>` block with a compressed text
+  // section that has no XML tag. So `original` here (post-compression)
+  // does not contain `<available_skills>` and the result doesn't either
+  // — no false positive.
+  const originalMarkers = extractStructuralMarkers(original);
+  const resultMarkers = extractStructuralMarkers(systemPrompt);
+
+  const missing =
+    [...originalMarkers.openingTags].some((tag) => !resultMarkers.openingTags.has(tag)) ||
+    [...originalMarkers.closingTags].some((tag) => !resultMarkers.closingTags.has(tag)) ||
+    [...originalMarkers.commentMarkers].some((m) => !resultMarkers.commentMarkers.has(m));
+
+  if (missing) {
     promptTruncationDetected = true;
     return { systemPrompt: original, stablePrefix: "", changed: false };
   }
@@ -1240,6 +1309,7 @@ export const __internals_for_tests = {
   buildStableCandidates,
   optimizeSystemPrompt,
   stripSessionOverviewChurn,
+  extractStructuralMarkers,
   formatSkillsForPrompt,
   formatSkillsForPromptCompressed,
   compressSkillsInSystemPrompt,

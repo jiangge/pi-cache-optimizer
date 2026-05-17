@@ -413,37 +413,50 @@ No opt-out; the stripped fields carry zero task-execution information
 that the model cannot obtain from `git log` / `git status` / `wc -l`
 in the rare case it actually needs them.
 
-### Truncation guard (workflow-state integrity)
+### Truncation guard (structural marker integrity)
 
 `optimizeSystemPrompt` uses `String.replace(part, "")` to extract
 stable candidates from the dynamic remainder. If an upstream extension
-(e.g. trellis) injects text that shares a substring with a candidate,
-`replace()` removes the **first** occurrence — the one in the stable
-block. This is usually safe because the copy inside the dynamic
-injection stays.
+(e.g. trellis, or any future extension) injects text that shares a
+substring with a candidate, `replace()` removes the **first** occurrence
+— the one in the stable block. This is usually safe because the copy
+inside the dynamic injection stays.
 
 When it is **not** safe: if a candidate substring appears ONLY inside
 an injected block (not in any stable block), the first (and only)
 occurrence IS inside the injection — `replace()` eats dynamic content.
 
 Guard:
-* After reorder, check: was `<workflow-state>` present in `original`
-  but absent from the resulting `systemPrompt`?
-* If yes → **fall back to the original prompt** (no reorder), flip
+* Before reorder, scan `original` for **all** structural markers. Three
+  marker categories are recognized:
+  - XML opening tags `<tagname>` (lowercase, alphanumeric + `-`/`_`)
+  - XML closing tags `</tagname>`
+  - HTML comment START/END pairs `<!-- NAME:START --> ... <!-- NAME:END -->`
+* After reorder, scan the result for the same markers.
+* If any marker present in `original` is missing from the result →
+  **fall back to the original prompt** (no reorder), flip
   `promptTruncationDetected` flag. The model receives a complete
   prompt; cache stability is sacrificed for integrity.
 * `publishStatus` reads the flag once, appends ` ⚠️ integrity` to
   the footer status line, and resets the flag — the warning is
   visible for exactly one status update.
-* The guard fires on real structural truncation only; it does NOT
-  fire on the common substring-collision case (substring in both
-  stable AND dynamic) because `<workflow-state>` survives that.
+* The guard is **extension-agnostic**: trellis `<workflow-state>`,
+  hypothetical `<task-tracker>`, AGENTS.md `<!-- TRELLIS:START -->`,
+  or any future extension's structural markers are all protected
+  without code changes when new extensions ship.
+* Tags with attributes (`<task id="42">`) are deliberately not picked
+  up: the pi extension ecosystem currently does not emit them, and
+  including them would require a more permissive regex that risks
+  false positives on prose like `<3` or `<= x`.
+* Markdown headers, horizontal rules, and timestamp patterns are not
+  used as guards: they have no closing form and cannot reliably
+  signal "missing in result".
 
 When the user sees ` ⚠️ integrity` in the footer:
-1. The prompt sent to the model is the **original** (trellis-injected)
+1. The prompt sent to the model is the **original** (extension-injected)
    prompt — no reorder was applied on that turn.
-2. The cause is almost always an upstream format change (trellis
-   update) that introduced a new substring collision.
+2. The cause is almost always an upstream format change (e.g. trellis
+   update, or a new extension introducing a substring collision).
 3. `/reload` may help if the collision depends on per-turn state;
    otherwise, degrades gracefully (cache miss, no prompt corruption).
 
