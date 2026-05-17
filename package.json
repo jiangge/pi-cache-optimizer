@@ -16,10 +16,10 @@
   "author": "freescheme",
   "license": "MIT",
   "files": [
-    "extension.ts"
+    "index.ts"
   ],
   "pi": {
-    "extensions": ["./extension.ts"],
+    "extensions": ["./index.ts"],
     "image": "https://img.shields.io/badge/Pi-Cache%20Optimizer-4A90D9"
   },
   "peerDependencies": {
@@ -27,6 +27,6 @@
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/jiangge/pi-deepseek-cache-optimizer.git"
+    "url": "git+https://github.com/jiangge/pi-cache-optimizer.git"
   }
 }
