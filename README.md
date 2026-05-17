@@ -65,7 +65,15 @@ Generic OpenAI-compatible proxies are **not** treated as OpenAI-family just beca
 pi install npm:pi-cache-optimizer
 ```
 
-After installation, `PI_CACHE_RETENTION=long` is applied automatically, the system prompt is reordered automatically, `~/.pi/agent/models.json` is auto-seeded with a DeepSeek block when no DeepSeek-like model is configured, and the footer shows cache stats after supported model-family responses with exposed usage.
+After installation, `PI_CACHE_RETENTION=long` is applied automatically, the system prompt is reordered and skills are compressed automatically, session-overview churn is stripped automatically, `~/.pi/agent/models.json` is auto-seeded with a DeepSeek block when no DeepSeek-like model is configured, and the footer shows cache stats after supported model-family responses with exposed usage.
+
+## Opt-out
+
+| Env var | Effect |
+|---------|--------|
+| `PI_CACHE_OPTIMIZER_NO_AUTO_CONFIG=1` | Skip DeepSeek `models.json` auto-seed |
+| `PI_CACHE_OPTIMIZER_NO_SKILL_COMPRESSION=1` | Keep pi's verbose `<available_skills>` XML (opt out of one-line index) |
+| `PI_CACHE_OPTIMIZER_OPENAI_CACHE_KEY=1` | Add `prompt_cache_key` to OpenAI-family requests (opt-in) |
 
 ## Uninstall
 
