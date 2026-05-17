@@ -396,6 +396,40 @@ Key properties:
   string. The `before_agent_start` reorder MUST remain idempotent
   (identical inputs → byte-identical output).
 
+### Truncation guard (workflow-state integrity)
+
+`optimizeSystemPrompt` uses `String.replace(part, "")` to extract
+stable candidates from the dynamic remainder. If an upstream extension
+(e.g. trellis) injects text that shares a substring with a candidate,
+`replace()` removes the **first** occurrence — the one in the stable
+block. This is usually safe because the copy inside the dynamic
+injection stays.
+
+When it is **not** safe: if a candidate substring appears ONLY inside
+an injected block (not in any stable block), the first (and only)
+occurrence IS inside the injection — `replace()` eats dynamic content.
+
+Guard:
+* After reorder, check: was `<workflow-state>` present in `original`
+  but absent from the resulting `systemPrompt`?
+* If yes → **fall back to the original prompt** (no reorder), flip
+  `promptTruncationDetected` flag. The model receives a complete
+  prompt; cache stability is sacrificed for integrity.
+* `publishStatus` reads the flag once, appends ` ⚠️ integrity` to
+  the footer status line, and resets the flag — the warning is
+  visible for exactly one status update.
+* The guard fires on real structural truncation only; it does NOT
+  fire on the common substring-collision case (substring in both
+  stable AND dynamic) because `<workflow-state>` survives that.
+
+When the user sees ` ⚠️ integrity` in the footer:
+1. The prompt sent to the model is the **original** (trellis-injected)
+   prompt — no reorder was applied on that turn.
+2. The cause is almost always an upstream format change (trellis
+   update) that introduced a new substring collision.
+3. `/reload` may help if the collision depends on per-turn state;
+   otherwise, degrades gracefully (cache miss, no prompt corruption).
+
 ---
 
 ## Notes on rollback
