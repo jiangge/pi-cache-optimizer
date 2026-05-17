@@ -3,6 +3,10 @@ name: trellis-check
 description: |
   Code quality check expert. Reviews changes against Trellis specs, fixes issues directly, and verifies quality gates.
 tools: Read, Write, Edit, Bash, Glob, Grep
+model: deepseek/deepseek-v4-flash
+thinking: high
+fallbackModels:
+  - deepseek/deepseek-v4-pro
 ---
 
 ## Required: Load Trellis Context First
