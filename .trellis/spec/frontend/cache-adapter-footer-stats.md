@@ -386,15 +386,32 @@ Key properties:
   the tail.
 * `<session-overview>` tail fields (recent commits, journal line
   count) — change per-turn when the user commits or writes journal.
-  Lifting the whole block would taint the stable prefix; partially
-  lifting (stable head only) would break the structural grouping and
-  confuse the model. Leave it in the dynamic remainder where trellis
-  placed it.
+  **These are now proactively stripped by `stripSessionOverviewChurn`**
+  before reorder, so the remaining session-overview (branch, active
+  tasks, paths) becomes stable and cacheable.
 * Date / cwd footer — 100 bytes, not worth lifting.
 * Any extension-appended block that contains a timestamp, random
   salt, insertion-order-dependent iteration, or env-var-derived
   string. The `before_agent_start` reorder MUST remain idempotent
   (identical inputs → byte-identical output).
+
+### Session-overview churn strip
+
+`stripSessionOverviewChurn(prompt)` surgically removes three fields
+from inside `<session-overview>`:
+* `## RECENT COMMITS` block (from heading through next `##` heading
+  or end of block).
+* `Working directory: ...` line.
+* `Line count: N / NNNN` line.
+
+The remaining fields (DEVELOPER, Branch, CURRENT TASK, ACTIVE
+TASKS, MY TASKS, JOURNAL FILE active-file-only, PACKAGES, PATHS)
+are stable within a session and survive the strip intact.
+
+Called in `before_agent_start` BEFORE skills compression and reorder.
+No opt-out; the stripped fields carry zero task-execution information
+that the model cannot obtain from `git log` / `git status` / `wc -l`
+in the rare case it actually needs them.
 
 ### Truncation guard (workflow-state integrity)
 
