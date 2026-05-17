@@ -1,6 +1,6 @@
 {
   "name": "pi-cache-optimizer",
-  "version": "2.1.0",
+  "version": "2.1.1",
   "description": "Pi extension that improves provider-side KV/prompt cache hit rates (DeepSeek, OpenAI, Claude, Gemini) by reordering the system prompt, requesting long retention, and showing footer cache stats. Renamed from pi-deepseek-cache-optimizer.",
   "keywords": [
     "pi-package",
