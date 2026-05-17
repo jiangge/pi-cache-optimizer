@@ -49,6 +49,29 @@ const OPENAI_PROMPT_CACHE_KEY_PREFIX = "pi-dsco-";
 const NO_AUTO_CONFIG_ENV = "PI_CACHE_OPTIMIZER_NO_AUTO_CONFIG";
 const DEEPSEEK_API_KEY_ENV = "DEEPSEEK_API_KEY";
 
+// Minimum trimmed length for a candidate to qualify as a stable-prefix "part".
+//
+// `optimizeSystemPrompt` removes each accepted candidate from the dynamic
+// remainder via `rest.replace(part, "")`. Short or character-class candidates
+// (think: `S`, `- u`, `- (`, `- }`) match the FIRST occurrence of those bytes
+// anywhere in `rest`, ripping unrelated text out of the prompt and yielding a
+// non-deterministic dynamic remainder per request. Both behaviors poison the
+// provider's prompt-prefix cache.
+//
+// The threshold also caps the upstream string-vs-array regression we saw with
+// trellis 0.5.16 / 0.6.0-beta.17 (subagent tool registration passing
+// `promptGuidelines: "<long string>"` instead of `["<long string>"]`, which
+// pi then iterates char-by-char). Even if a similar bug recurs upstream, this
+// extension will not lift its single-character byproducts into the stable
+// prefix candidate list.
+//
+// 8 chars is comfortably above all single-bullet (`- X` = 3 chars) and
+// short-token noise while leaving every legitimate guideline / tool snippet /
+// context-file payload above the bar. If a real future guideline is shorter
+// than 8 chars, the cost is that it is not lifted into the stable prefix; the
+// dynamic-remainder path still includes it untouched.
+const MIN_STABLE_CANDIDATE_LENGTH = 8;
+
 const ASSISTANT_MESSAGE_MODEL_TOKEN_KEYS = ["model", "name"];
 const OPENAI_REASONING_MODEL_PATTERN = /(^|[/\s:_-])o[1345]($|[-_.:/\s])/;
 
@@ -187,9 +210,11 @@ function optimizeSystemPrompt(
   let rest = original;
 
   // Stable layer: content likely to be identical across sessions/turns.
+  // Short / single-char candidates are dropped: see MIN_STABLE_CANDIDATE_LENGTH.
   for (const candidate of buildStableCandidates(opts)) {
     const part = candidate.trim();
-    if (!part || seen.has(part) || !rest.includes(part)) continue;
+    if (!part || part.length < MIN_STABLE_CANDIDATE_LENGTH) continue;
+    if (seen.has(part) || !rest.includes(part)) continue;
 
     stableParts.push(part);
     seen.add(part);
@@ -1004,6 +1029,15 @@ function emitDeepseekApiKeyHintIfNeeded(
     "info",
   );
 }
+
+// Internal helpers exported only so the task verification script
+// (.trellis/tasks/.../verify.ts) can exercise them. They are not part of the
+// extension's public API; pi only invokes the default export below.
+export const __internals_for_tests = {
+  buildStableCandidates,
+  optimizeSystemPrompt,
+  MIN_STABLE_CANDIDATE_LENGTH,
+};
 
 export default function (pi: ExtensionAPI) {
   const warnedModels = new Set<string>();

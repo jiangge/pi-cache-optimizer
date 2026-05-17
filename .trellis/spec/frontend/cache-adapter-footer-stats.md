@@ -166,6 +166,93 @@ extension's compat warnings exist.
 
 ---
 
+## System prompt reordering invariants
+
+`extension.ts` exposes `optimizeSystemPrompt(original, opts)` which is invoked
+from the `before_agent_start` hook to lift stable content above dynamic
+content. The reorder uses `rest.replace(part, "")` per accepted candidate
+from `buildStableCandidates(opts)`. Because `String.prototype.replace`
+matches the FIRST occurrence of `part` anywhere in `rest`, short or
+character-class candidates can rip arbitrary unrelated text out of the
+dynamic remainder — corrupting the prompt and destabilizing provider
+prefix caches across requests.
+
+### Hard contracts
+
+* The candidate filter MUST drop any trimmed candidate shorter than
+  `MIN_STABLE_CANDIDATE_LENGTH` (currently `8`). That threshold is
+  intentionally larger than every short bullet form pi may emit (`- X` is
+  3 chars, `- ab` is 4, etc.) so single-character or two-character noise
+  cannot become a `replace()` target.
+* The threshold is a CACHE-CORRECTNESS contract, not a UX preference.
+  Lowering it must be paired with a different mangle-resistant strategy
+  (e.g. structural lift instead of `replace`-based extraction). Do not
+  weaken the threshold without that.
+* The reorder MUST remain idempotent: identical `(original, opts)` MUST
+  produce byte-identical `(systemPrompt, stablePrefix)`. No timestamps,
+  random salts, or iteration order that depends on `Map`/`Set` insertion
+  order driven by external data.
+* `buildStableCandidates` MAY return strings that the optimizer then
+  rejects (it is a pure shaper). The defensive filter MUST live inside
+  `optimizeSystemPrompt`, not inside `buildStableCandidates`, so that the
+  rejection rationale stays close to the `replace()` call site.
+
+### Common mistake: upstream string-vs-array regression in tool registrations
+
+**Symptom**: Pi's emitted system prompt contains long runs of single-character
+bullets such as:
+
+```
+- S
+- u
+- b
+- -
+- a
+- g
+- e
+- n
+- t
+```
+
+**Cause**: A pi extension registers a tool with `promptGuidelines` set to a
+*string* instead of `string[]`. Pi's `_normalizePromptGuidelines`
+(`@earendil-works/pi-coding-agent/dist/core/agent-session.js`) does
+`for (const g of guidelines) { ... }`, which iterates a string
+character-by-character. Each unique character becomes its own guideline.
+
+**Observed at**: `@mindfoldhq/trellis` 0.5.16 (latest stable as of 2026-05-17)
+and 0.6.0-beta.17 — file `src/templates/pi/extensions/trellis/index.ts`,
+`subagent` tool registration. Tracked locally in
+`.pi/extensions/trellis/index.ts` with a `LOCAL PATCH` comment until
+upstream ships the fix.
+
+**Fix at the source** (in the offending tool registration):
+
+```ts
+// Wrong
+pi.registerTool?.({
+  name: "subagent",
+  promptGuidelines: SUBAGENT_DISPATCH_PROTOCOL, // string — iterated char by char
+});
+
+// Correct
+pi.registerTool?.({
+  name: "subagent",
+  promptGuidelines: [SUBAGENT_DISPATCH_PROTOCOL], // string[]
+});
+```
+
+**Defense in this extension**: even when pi feeds us such a polluted
+`promptGuidelines` array, `optimizeSystemPrompt` MUST NOT lift the
+resulting `- X` bullets into the stable prefix or use them as `replace()`
+targets. The `MIN_STABLE_CANDIDATE_LENGTH = 8` filter handles this; the
+verification harness in any task that touches this code path SHOULD
+include a test that mirrors the regression (build candidates that include
+single-character entries, assert the dynamic remainder is byte-equivalent
+to a control run with the noise pre-filtered).
+
+---
+
 ## Forbidden patterns
 
 * Writing `models.json` without first writing the timestamped `.bak.<ts>` backup.

@@ -1074,7 +1074,18 @@ export default function trellisExtension(pi: {
     label: "Subagent",
     description: "Run a Trellis project sub-agent with active task context.",
     promptSnippet: SUBAGENT_DISPATCH_PROTOCOL,
-    promptGuidelines: SUBAGENT_DISPATCH_PROTOCOL,
+    // LOCAL PATCH (pi-cache-optimizer task 05-17-fix-prompt-pollution-bugs): pi
+    // expects `promptGuidelines: string[]` (see
+    // @earendil-works/pi-coding-agent dist/core/system-prompt.d.ts). Passing a
+    // bare string causes pi's `_normalizePromptGuidelines` to iterate it
+    // character-by-character, polluting the system prompt with ~57
+    // single-character bullets (`- S`, `- u`, `- b`, ...) every turn and
+    // breaking provider prompt caches. Wrapping in an array fixes this.
+    //
+    // Upstream: still present in @mindfoldhq/trellis 0.5.16 (latest stable) and
+    // 0.6.0-beta.17 at src/templates/pi/extensions/trellis/index.ts (same
+    // line). Patch should be upstreamed; revisit on next `trellis update`.
+    promptGuidelines: [SUBAGENT_DISPATCH_PROTOCOL],
     parameters: {
       type: "object",
       properties: {
