@@ -340,6 +340,53 @@ function buildStableCandidates(opts: BuildSystemPromptOptions): string[] {
   return candidates;
 }
 
+/**
+ * Strip per-turn churn from trellis `<session-overview>` block.
+ *
+ * Trellis injects a session-overview that includes `RECENT COMMITS`
+ * (shifts on every git commit), `Working directory: Clean/N uncommitted`
+ * (shifts on every edit/commit), and `Line count: N / 2000` (shifts on
+ * every journal append). These fields are at the tail of the
+ * session-overview and poison the prompt-prefix cache for everything
+ * that follows.
+ *
+ * This function surgically removes those three churn fields from the
+ * `<session-overview>...</session-overview>` block. The remaining
+ * fields (DEVELOPER, GIT STATUS branch-only, CURRENT TASK, ACTIVE
+ * TASKS, MY TASKS, JOURNAL FILE active-file-only, PACKAGES, PATHS)
+ * are stable within a session and become cache-friendlier.
+ *
+ * No-op when the `<session-overview>` tag is not present (e.g.
+ * trellis hook chose not to inject it, or a different extension
+ * owns the prompt).
+ */
+function stripSessionOverviewChurn(prompt: string): string {
+  const startTag = "<session-overview>";
+  const endTag = "</session-overview>";
+
+  const startIdx = prompt.indexOf(startTag);
+  if (startIdx === -1) return prompt;
+
+  const endIdx = prompt.indexOf(endTag, startIdx + startTag.length);
+  if (endIdx === -1) return prompt;
+
+  const before = prompt.slice(0, startIdx + startTag.length);
+  const inner = prompt.slice(startIdx + startTag.length, endIdx);
+  const after = prompt.slice(endIdx);
+
+  let cleaned = inner
+    // Drop the RECENT COMMITS section (from the heading through the
+    // next heading or end of inner). The model sees commit history
+    // via `git log`; carrying it in every system prompt is redundant.
+    .replace(/\n## RECENT COMMITS\n[\s\S]*?(?=\n## |$)/, "")
+    // Drop "Working directory: ..." (Git status tail churn).
+    .replace(/\nWorking directory:[^\n]*/g, "")
+    // Drop "Line count: N / NNNN" (Journal tail churn).
+    .replace(/\nLine count:[^\n]*/g, "");
+
+  return before + cleaned + after;
+}
+
 function optimizeSystemPrompt(
   original: string,
   opts: BuildSystemPromptOptions,
@@ -1192,6 +1239,7 @@ function emitDeepseekApiKeyHintIfNeeded(
 export const __internals_for_tests = {
   buildStableCandidates,
   optimizeSystemPrompt,
+  stripSessionOverviewChurn,
   formatSkillsForPrompt,
   formatSkillsForPromptCompressed,
   compressSkillsInSystemPrompt,
@@ -1315,19 +1363,25 @@ export default function (pi: ExtensionAPI) {
   });
 
   pi.on("before_agent_start", async (event, _ctx) => {
-    // Step 1: compress pi's verbose `<available_skills>` XML block.
+    // Step 1: strip per-turn churn from <session-overview>.
+    // Removing RECENT COMMITS, Working directory status, and
+    // Journal line count makes more of the session-overview stable
+    // across turns, which DeepSeek's prefix cache can then retain.
+    const strippedPrompt = stripSessionOverviewChurn(event.systemPrompt);
+
+    // Step 2: compress skills XML → one-line index.
     // The compressed form is identical-string-equivalent to the
     // verbose one as far as cache-stability is concerned because both
     // are deterministic from the same `event.systemPromptOptions.skills`.
     // No-op if opted out, below SKILL_COMPRESSION_MIN_COUNT, or if pi
     // emitted a format we don't recognize.
     const compressedPrompt = compressSkillsInSystemPrompt(
-      event.systemPrompt,
+      strippedPrompt,
       event.systemPromptOptions,
     );
 
-    // Step 2: lift stable content above dynamic content for cache
-    // stability. Operates on the (possibly compressed) prompt so the
+    // Step 3: lift stable content above dynamic content for cache
+    // stability. Operates on the (stripped + compressed) prompt so the
     // cache key derived from `stablePrefix` reflects what actually
     // ships to the provider.
     const optimized = optimizeSystemPrompt(compressedPrompt, event.systemPromptOptions);
@@ -1338,11 +1392,14 @@ export default function (pi: ExtensionAPI) {
     }
 
     // Reorder didn't apply but compression might have. Return the
-    // compressed prompt directly so we still benefit from the volume
-    // cut even when reorder is a no-op (e.g., short sessions where no
-    // stable candidate is long enough).
-    if (compressedPrompt !== event.systemPrompt && compressedPrompt.trim().length > 0) {
+    // compressed (or stripped) prompt directly so we still benefit from
+    // the volume cut even when reorder is a no-op (e.g., short sessions
+    // where no stable candidate is long enough).
+    if (compressedPrompt !== strippedPrompt && compressedPrompt.trim().length > 0) {
       return { systemPrompt: compressedPrompt };
+    }
+    if (strippedPrompt !== event.systemPrompt && strippedPrompt.trim().length > 0) {
+      return { systemPrompt: strippedPrompt };
     }
 
     return {};
