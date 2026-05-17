@@ -50,6 +50,14 @@ const NO_AUTO_CONFIG_ENV = "PI_CACHE_OPTIMIZER_NO_AUTO_CONFIG";
 const NO_SKILL_COMPRESSION_ENV = "PI_CACHE_OPTIMIZER_NO_SKILL_COMPRESSION";
 const DEEPSEEK_API_KEY_ENV = "DEEPSEEK_API_KEY";
 
+// WORM-flag: if optimizeSystemPrompt ever detects that its blind-replace
+// logic has accidentally truncated the trellis `<workflow-state>` block
+// (or any structural marker from an upstream extension), we flip this.
+// publishStatus reads it once, appends a footer warning, then resets it.
+// The flag surface is kept separate from the regular cache-stats counter
+// so that a one-turn glitch doesn't poison the persisted metrics.
+let promptTruncationDetected = false;
+
 // Minimum count of skills before compression is worth applying.
 // Below this, pi's verbose XML block is small enough that the overhead of
 // an additional one-line index isn't worth the loss of per-skill
@@ -361,10 +369,27 @@ function optimizeSystemPrompt(
     return { systemPrompt: original, stablePrefix: "", changed: false };
   }
 
+  const systemPrompt =
+    stablePrefix +
+    (dynamicRemainder.length > 0 ? "\n\n---\n\n" + dynamicRemainder : "");
+
+  // Sanity check: if trellis (or another extension) injected structural
+  // markers into the prompt that happen to share a substring with one of
+  // our stable candidates, the blind `rest.replace(part, "")` could
+  // silently eat part of the dynamic layer. We anchor on
+  // `<workflow-state>` because it is the most stable structural marker
+  // trellis emits and is never a stable candidate itself.
+  //
+  // When the marker was present in the original but is missing in the
+  // result, the reorder is unsafe — fall back to the original prompt
+  // so the model gets a complete prompt, and flag the footer warning.
+  if (original.includes("<workflow-state>") && !systemPrompt.includes("<workflow-state>")) {
+    promptTruncationDetected = true;
+    return { systemPrompt: original, stablePrefix: "", changed: false };
+  }
+
   return {
-    systemPrompt:
-      stablePrefix +
-      (dynamicRemainder.length > 0 ? "\n\n---\n\n" + dynamicRemainder : ""),
+    systemPrompt,
     stablePrefix,
     changed: true,
   };
@@ -1255,7 +1280,17 @@ export default function (pi: ExtensionAPI) {
     await rollOverStatsIfNeeded(ctx);
 
     const adapter = selectAdapterForModel(model);
-    const statusText = adapter ? formatCacheStats(adapter, getStatsForAdapter(adapter)) : undefined;
+    let statusText: string | undefined = adapter ? formatCacheStats(adapter, getStatsForAdapter(adapter)) : undefined;
+
+    // If optimizeSystemPrompt detected structural truncation on this or
+    // a recent turn, flag it once in the footer so the user knows to
+    // /reload before continuing. The flag resets after emission so a
+    // single-turn glitch does not permanently taint the footer.
+    if (promptTruncationDetected && statusText !== undefined) {
+      statusText = statusText + " ⚠️ integrity";
+      promptTruncationDetected = false;
+    }
+
     if (statusText === lastStatusText) return;
 
     lastStatusText = statusText;
