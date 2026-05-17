@@ -36,6 +36,53 @@ OpenAI-family just because they use an OpenAI-shaped API.
 
 If no adapter matches, the footer status MUST be cleared (set to `undefined`).
 
+### Provider transport caveats (do not paper over)
+
+Some pi providers ship as extensions that register a custom `api` id and
+own their own request/response transport. Pi's compat-driven cache marker
+injection (`cacheControlFormat: "anthropic"`, `cachePoint` insertion in
+bedrock-converse-stream, etc.) lives **inside** the openai-completions,
+anthropic-messages, and bedrock-converse-stream adapters. Custom-API
+extensions are not visited by that compat layer.
+
+When the adapter selection picks an underlying provider whose transport
+does not surface cache fields, the footer MUST stay at 0% rather than
+being massaged. Do NOT special-case-bump these counters.
+
+#### `kiro-api` (provider `kiro`, package `pi-provider-kiro`)
+
+* Wire identity: assistant messages carry `"provider":"kiro"`,
+  `"api":"kiro-api"`. The transport is
+  `POST https://q.<region>.amazonaws.com/generateAssistantResponse`
+  with header
+  `X-Amz-Target: AmazonCodeWhispererStreamingService.GenerateAssistantResponse`
+  (the AWS CodeWhisperer / Amazon Q Developer streaming protocol).
+* Source-of-truth pointer: `pi-provider-kiro@0.6.1`'s
+  `dist/{stream.js,usage.js}` contain zero matches for `cache_control`,
+  `cachePoint`, `cache_read_input`, `cacheReadInputTokens`, or
+  `cacheCreationInputTokens`. All `cacheRead`/`cacheWrite` references
+  are zero-initializers, never assignments from upstream response data.
+  The request body's `userInputMessage.content` is a flat string with
+  no slot for cache markers.
+* Configuration note: a user's `models.json` `"kiro": { ... }` block
+  cannot fix this. The package registers `kiro-api` and the custom
+  `stream` function; pi's compat flags do not reach that code path.
+* Footer behavior: Claude requests on `kiro-api` MUST keep showing 0%
+  cache hit rate. This is **truthful and unchangeable from this
+  extension's side**. Do NOT add a special-case bump or fake `cacheRead`
+  values to make the number look better.
+* Warning behavior: the Claude adapter's `warningText` MUST stay silent
+  for `kiro-api` (it currently fires only when
+  `isOpenAICompatibleApi(model.api)` is true, which `kiro-api` is not).
+  The compat warning's purpose is to nudge the user toward flipping a
+  flag; on `kiro-api` there is no flag the user can flip, so an
+  informational warning would be startup noise. If a future contributor
+  proposes adding a Kiro-specific warning, the answer is: don't — the
+  decision is recorded here.
+* Investigation references:
+  `.trellis/tasks/05-17-investigate-kiro-claude-0-cache-hit-rate/`
+  (`prd.md` + `research/kiro-cache-passthrough.md`).
+
 ---
 
 ## Persisted stats schema
@@ -265,6 +312,89 @@ to a control run with the noise pre-filtered).
 * Generating in-place writes to `models.json` (no `renameSync` step) or to the
   stats file.
 * Re-emitting the API-key hint on every `session_start`.
+* Special-casing `kiro-api` (or any other custom-API extension whose
+  transport does not surface cache fields) by faking `cacheRead`,
+  `cacheReadInputTokens`, or hit counts to make the footer look better.
+  The 0% is the truthful number; documenting the constraint is the
+  correct response, not papering over it.
+
+---
+
+## System prompt budget
+
+### What counts as cacheable-and-stable vs cacheable-and-volatile
+
+Pi's system prompt combines several layers. From most-to-least
+cacheable:
+
+| Layer | Stability | Cache impact |
+| ----- | --------- | ------------ |
+| Pi base preamble (tools + guidelines + doc paths) | Stable across sessions unless tools change | Always in stable prefix; 100 % cacheable |
+| `AGENTS.md` / project context files | Stable per repo; changes only on commit | Lifted to stable prefix by `optimizeSystemPrompt`; 100 % cacheable |
+| Skills XML `<available_skills>` block | Deterministic from `opts.skills` (stable unless you install/remove a skill) | Lifted to stable prefix; now **compressed by default** (see below) |
+| Trellis `<session-overview>` | Mostly stable; tail (commits, journal line count) churns per turn | Currently in dynamic remainder (tail churn). Do not lift in this extension — that's trellis's own ordering decision. |
+| Trellis `<workflow-state>` per-turn breadcrumb | Changes per task activation, per turn | Always in dynamic remainder. Small (~1 KB). |
+| Date + cwd footer | Date changes once/day; cwd stable | In dynamic remainder; ~100 bytes, not worth lifting. |
+
+### Skills compression contract
+
+`formatSkillsForPromptCompressed` replaces pi's per-skill four-line XML
+block (`<name>`, `<description>`, `<location>`) with a **single text
+block** grouped by skill-root directory:
+
+```
+The following skills provide specialized instructions for specific tasks.
+When a skill name matches the task you are doing, read the SKILL.md at
+the listed location to load the full instructions. When a SKILL.md
+references a relative path, resolve it against the skill directory
+(parent of SKILL.md / dirname of the path) and use that absolute path in
+tool commands.
+
+Skills under /home/jiang/.agents/skills/<name>/SKILL.md:
+  adapt, animate, arrange, audit, ...
+
+Skills under /home/jiang/jiang/source/.../pi-cache-optimizer/.pi/skills/<name>/SKILL.md:
+  trellis-before-dev, trellis-brainstorm, ...
+```
+
+Key properties:
+
+* **Deterministic**: same `skills` array → byte-identical output,
+  independent of input order. Groups sort by root path; names within
+  each group sort alphabetically.
+* **Idempotent**: running `compressSkillsInSystemPrompt` twice is a
+  no-op (the verbose form is already gone after the first pass).
+* **Opt-out**: `PI_CACHE_OPTIMIZER_NO_SKILL_COMPRESSION=1` disables.
+* **Threshold**: compression fires only when the visible skill count
+  is ≥ `SKILL_COMPRESSION_MIN_COUNT` (currently 4). Below that, the
+  verbose XML block is ≤ ~1 KB and the loss of description hints is
+  not worth the micro-savings.
+* **Anchored substitution**: compression only fires when the verbose
+  output of `formatSkillsForPrompt(opts.skills)` is found verbatim in
+  the prompt (substring match, not regex). If pi changes its emitter
+  format, the substitution no-ops rather than mangling.
+* **Cache-preserving**: the compressed skills block remains
+  deterministic from `opts.skills` and is lifted to the stable prefix
+  by `optimizeSystemPrompt`. No new cache-churn is introduced.
+* **Size cut**: measured at ~93 % reduction of the skills section
+  (13.3 KB → ~0.9 KB on the 31-skill snapshot) and ~55 % of total
+  system prompt (22 KB → ~9 KB).
+
+### What MUST NOT be lifted into the stable prefix
+
+* `<workflow-state>` per-turn breadcrumb — dynamic, small, safe in
+  the tail.
+* `<session-overview>` tail fields (recent commits, journal line
+  count) — change per-turn when the user commits or writes journal.
+  Lifting the whole block would taint the stable prefix; partially
+  lifting (stable head only) would break the structural grouping and
+  confuse the model. Leave it in the dynamic remainder where trellis
+  placed it.
+* Date / cwd footer — 100 bytes, not worth lifting.
+* Any extension-appended block that contains a timestamp, random
+  salt, insertion-order-dependent iteration, or env-var-derived
+  string. The `before_agent_start` reorder MUST remain idempotent
+  (identical inputs → byte-identical output).
 
 ---
 

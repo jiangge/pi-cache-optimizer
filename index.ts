@@ -7,7 +7,7 @@ import {
 } from "node:fs";
 import { mkdir, readFile, rename, unlink, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import type { BuildSystemPromptOptions, ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 
 /**
@@ -47,7 +47,15 @@ const CACHE_PROVIDER_IDS: CacheProviderId[] = ["deepseek", "openai", "claude", "
 const OPENAI_CACHE_KEY_ENV = "PI_CACHE_OPTIMIZER_OPENAI_CACHE_KEY";
 const OPENAI_PROMPT_CACHE_KEY_PREFIX = "pi-dsco-";
 const NO_AUTO_CONFIG_ENV = "PI_CACHE_OPTIMIZER_NO_AUTO_CONFIG";
+const NO_SKILL_COMPRESSION_ENV = "PI_CACHE_OPTIMIZER_NO_SKILL_COMPRESSION";
 const DEEPSEEK_API_KEY_ENV = "DEEPSEEK_API_KEY";
+
+// Minimum count of skills before compression is worth applying.
+// Below this, pi's verbose XML block is small enough that the overhead of
+// an additional one-line index isn't worth the loss of per-skill
+// description hints. The 31-skill snapshot in this repo was 13.3 KB; one
+// or two skills is well under 1 KB and not worth touching.
+const SKILL_COMPRESSION_MIN_COUNT = 4;
 
 // Minimum trimmed length for a candidate to qualify as a stable-prefix "part".
 //
@@ -166,6 +174,121 @@ function formatSkillsForPrompt(skills: NonNullable<BuildSystemPromptOptions["ski
   return lines.join("\n");
 }
 
+/**
+ * Compressed alternative to `formatSkillsForPrompt`.
+ *
+ * Pi emits a four-line XML block per skill (`<name>`, `<description>`,
+ * `<location>`) plus a three-sentence preamble. With 31 skills active in
+ * this repo that block measured 13.3 KB — 61.5 % of the total system
+ * prompt. The full description text matters when the model has to decide
+ * which skill to load, but the model can read SKILL.md on demand: the
+ * names alone plus a known location pattern is enough to identify
+ * candidates.
+ *
+ * This compressed form preserves:
+ *   1. The instruction to read SKILL.md when a task matches a skill name.
+ *   2. The relative-path resolution rule (parent of SKILL.md is the
+ *      skill directory).
+ *   3. Discoverability of every skill: name + location prefix per skill.
+ *
+ * It drops:
+ *   - Per-skill description text (model loads it via `read` when a name
+ *     matches a task).
+ *   - The `<available_skills>` XML envelope and per-skill XML overhead
+ *     (~110 bytes per skill of pure structure, plus the location path).
+ *
+ * Output shape is a single text block grouped by skill-root directory so
+ * the model can compute each skill's full path by name. Names are sorted
+ * alphabetically within each group for determinism (cache stability).
+ */
+function formatSkillsForPromptCompressed(
+  skills: NonNullable<BuildSystemPromptOptions["skills"]>,
+): string {
+  const visibleSkills = skills.filter((skill) => !skill.disableModelInvocation);
+  if (visibleSkills.length === 0) return "";
+
+  const groups = new Map<string, string[]>();
+  for (const skill of visibleSkills) {
+    // skill.filePath = .../<skill-name>/SKILL.md, so dirname is the
+    // skill directory and dirname-of-dirname is the skills root.
+    const skillDir = dirname(skill.filePath);
+    const root = dirname(skillDir);
+    const list = groups.get(root) ?? [];
+    list.push(skill.name);
+    groups.set(root, list);
+  }
+
+  // Sort group entries by root for determinism: same skill set under the
+  // same roots must always produce the same string, otherwise the
+  // provider prompt-prefix cache loses on prompt builder runs that
+  // happened to iterate the underlying Map in different orders.
+  const sortedGroups = [...groups.entries()].sort(([a], [b]) =>
+    a < b ? -1 : a > b ? 1 : 0,
+  );
+
+  const lines: string[] = [
+    "",
+    "",
+    "The following skills provide specialized instructions for specific tasks. When a skill name matches the task you are doing, read the SKILL.md at the listed location to load the full instructions. When a SKILL.md references a relative path, resolve it against the skill directory (parent of SKILL.md / dirname of the path) and use that absolute path in tool commands.",
+  ];
+
+  for (const [root, names] of sortedGroups) {
+    names.sort();
+    lines.push("");
+    lines.push(`Skills under ${root}/<name>/SKILL.md:`);
+    // Wrap the name list at ~80 columns for readability without
+    // affecting determinism. Each line is `  name1, name2, name3,`.
+    let buf = "  ";
+    for (let i = 0; i < names.length; i++) {
+      const name = names[i];
+      const piece = (buf === "  " ? "" : ", ") + name;
+      if (buf.length > 2 && buf.length + piece.length > 80) {
+        lines.push(`${buf},`);
+        buf = `  ${name}`;
+      } else {
+        buf += piece;
+      }
+    }
+    if (buf.length > 2) lines.push(buf);
+  }
+
+  return lines.join("\n");
+}
+
+/**
+ * Replace pi's verbose `<available_skills>` block in `prompt` with the
+ * compressed one-index form. Idempotent: if the verbose form is not
+ * present (compression already applied, or skill count below threshold),
+ * the prompt is returned unchanged.
+ *
+ * Opt-out: set `PI_CACHE_OPTIMIZER_NO_SKILL_COMPRESSION=1`.
+ *
+ * Pre-conditions for compression to fire:
+ *   - opts.skills present and visible-skill count >= SKILL_COMPRESSION_MIN_COUNT
+ *   - Verbose block (built from the same `opts.skills`) is found in
+ *     `prompt` (substring match, no regex). This anchors the substitution
+ *     to pi's own emitter; if pi changes the format, we no-op rather
+ *     than mangle.
+ */
+function compressSkillsInSystemPrompt(
+  prompt: string,
+  opts: BuildSystemPromptOptions,
+): string {
+  if (isEnabledEnv(process.env[NO_SKILL_COMPRESSION_ENV])) return prompt;
+  if (!opts.skills || opts.skills.length === 0) return prompt;
+
+  const visible = opts.skills.filter((skill) => !skill.disableModelInvocation);
+  if (visible.length < SKILL_COMPRESSION_MIN_COUNT) return prompt;
+
+  const verbose = formatSkillsForPrompt(opts.skills);
+  if (!verbose || !prompt.includes(verbose)) return prompt;
+
+  const compressed = formatSkillsForPromptCompressed(opts.skills);
+  if (!compressed || compressed.length >= verbose.length) return prompt;
+
+  return prompt.replace(verbose, compressed);
+}
+
 function buildStableCandidates(opts: BuildSystemPromptOptions): string[] {
   const candidates: string[] = [];
 
@@ -195,7 +318,15 @@ function buildStableCandidates(opts: BuildSystemPromptOptions): string[] {
   }
 
   if (opts.skills && opts.skills.length > 0) {
+    // Push BOTH forms so `optimizeSystemPrompt` finds whichever is
+    // actually present in the prompt. The `rest.includes(part)`
+    // short-circuit skips the form that isn't there. The two strings
+    // are mutually distinguishable (the verbose form contains the
+    // literal `<available_skills>` envelope; the compressed form
+    // contains `Skills under ` and no XML tags) so they cannot
+    // accidentally match each other.
     candidates.push(formatSkillsForPrompt(opts.skills));
+    candidates.push(formatSkillsForPromptCompressed(opts.skills));
   }
 
   return candidates;
@@ -1036,7 +1167,11 @@ function emitDeepseekApiKeyHintIfNeeded(
 export const __internals_for_tests = {
   buildStableCandidates,
   optimizeSystemPrompt,
+  formatSkillsForPrompt,
+  formatSkillsForPromptCompressed,
+  compressSkillsInSystemPrompt,
   MIN_STABLE_CANDIDATE_LENGTH,
+  SKILL_COMPRESSION_MIN_COUNT,
 };
 
 export default function (pi: ExtensionAPI) {
@@ -1145,11 +1280,34 @@ export default function (pi: ExtensionAPI) {
   });
 
   pi.on("before_agent_start", async (event, _ctx) => {
-    const optimized = optimizeSystemPrompt(event.systemPrompt, event.systemPromptOptions);
+    // Step 1: compress pi's verbose `<available_skills>` XML block.
+    // The compressed form is identical-string-equivalent to the
+    // verbose one as far as cache-stability is concerned because both
+    // are deterministic from the same `event.systemPromptOptions.skills`.
+    // No-op if opted out, below SKILL_COMPRESSION_MIN_COUNT, or if pi
+    // emitted a format we don't recognize.
+    const compressedPrompt = compressSkillsInSystemPrompt(
+      event.systemPrompt,
+      event.systemPromptOptions,
+    );
+
+    // Step 2: lift stable content above dynamic content for cache
+    // stability. Operates on the (possibly compressed) prompt so the
+    // cache key derived from `stablePrefix` reflects what actually
+    // ships to the provider.
+    const optimized = optimizeSystemPrompt(compressedPrompt, event.systemPromptOptions);
     latestPromptCacheKey = buildPromptCacheKey(optimized.stablePrefix);
 
     if (optimized.changed && optimized.systemPrompt.trim().length > 0) {
       return { systemPrompt: optimized.systemPrompt };
+    }
+
+    // Reorder didn't apply but compression might have. Return the
+    // compressed prompt directly so we still benefit from the volume
+    // cut even when reorder is a no-op (e.g., short sessions where no
+    // stable candidate is long enough).
+    if (compressedPrompt !== event.systemPrompt && compressedPrompt.trim().length > 0) {
+      return { systemPrompt: compressedPrompt };
     }
 
     return {};
