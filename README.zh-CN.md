@@ -43,6 +43,19 @@
 
 Generic OpenAI-compatible 代理**不会**仅因为使用 OpenAI 形状 API 或 provider id 就被当作 OpenAI-family。如果当前 model id/name 语义不明确，扩展会隐藏底部统计，而不是猜测。
 
+## 平台支持
+
+本扩展是纯 Node.js 实现 —— 不调用 shell、没有原生绑定、不写死平台相关路径 —— 因此与 Pi 自身保持一致，支持以下系统：
+
+| 操作系统 | 说明 |
+|---|---|
+| Linux | 原生支持。 |
+| macOS | 原生支持。 |
+| Windows | 通过 Pi 在 Windows 下要求的 bash shell 运行（Git Bash、Cygwin、MSYS2 或 WSL）。详见 Pi 的 [Windows setup](https://github.com/earendil-works/pi-coding-agent/blob/main/docs/windows.md)。 |
+| Termux / Android | 在 Pi 的 Termux 环境中可用。 |
+
+状态文件 `~/.pi/agent/` 通过 Node 的 `os.homedir()` 解析，所以在 Windows 上会自动展开为 `C:\Users\<你>\.pi\agent\...`。本文档中所有 shell 命令均使用 bash 语法，与 Pi 在每个受支持平台下运行的 shell 一致；只要在 Pi 内（或为 Pi 而执行）运行，就**不需要**改写为 PowerShell 或 `cmd.exe` 形式。
+
 ## 快速开始
 
 1. （可选但推荐）先读一遍官方 Pi + DeepSeek 接入指南：[`pi_mono.zh-CN.md`](https://github.com/deepseek-ai/awesome-deepseek-agent/blob/main/docs/pi_mono.zh-CN.md)。它讲了 Pi 安装与基础配置。

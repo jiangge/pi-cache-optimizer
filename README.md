@@ -40,6 +40,19 @@ This release keeps the original DeepSeek behavior and adds read-only stats adapt
 
 Generic OpenAI-compatible proxies are **not** treated as OpenAI-family just because they use an OpenAI-shaped API or provider id. If the active model id/name is ambiguous, the extension hides the footer stats instead of guessing.
 
+## Platform support
+
+This extension is pure Node.js — no shell exec, no native bindings, no platform-specific paths — so it runs on every OS Pi itself supports:
+
+| OS | Notes |
+|---|---|
+| Linux | Native. |
+| macOS | Native. |
+| Windows | Works through the bash shell Pi requires on Windows (Git Bash, Cygwin, MSYS2, or WSL). See Pi's [Windows setup](https://github.com/earendil-works/pi-coding-agent/blob/main/docs/windows.md). |
+| Termux / Android | Works inside Pi's Termux setup. |
+
+State files under `~/.pi/agent/` are resolved via Node's `os.homedir()`, so on Windows the path automatically expands to `C:\Users\<you>\.pi\agent\...`. All shell snippets in this README are bash, matching the shell Pi runs in on every supported platform; no PowerShell or `cmd.exe` translation is needed when commands are executed inside (or for) Pi.
+
 ## Quickstart
 
 1. (Optional but recommended) Read the official Pi + DeepSeek onboarding guide: [`pi_mono.zh-CN.md`](https://github.com/deepseek-ai/awesome-deepseek-agent/blob/main/docs/pi_mono.zh-CN.md). It covers Pi installation and core configuration.
