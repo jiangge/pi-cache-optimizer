@@ -1433,6 +1433,40 @@ export default function (pi: ExtensionAPI) {
   });
 
   pi.on("before_agent_start", async (event, _ctx) => {
+    // ────────────────────────────────────────────────────────────────
+    // OpenAI Responses API bypass (codex-responses + responses)
+    //
+    // OpenAI's Responses API endpoints — both the Codex backend
+    // (openai-codex-responses, chatgpt.com) and the public
+    // Responses API (openai-responses, api.openai.com / Copilot) —
+    // have two properties that make client-side prompt reordering
+    // unnecessary and potentially harmful:
+    //
+    //  1. Server-managed caching: both APIs send `prompt_cache_key`
+    //     (= Pi session id) in every request body, so the server
+    //     already maintains a stable cache without prefix ordering.
+    //     Client-side reordering adds no cache benefit.
+    //
+    //  2. Stricter content-safety filtering: the Codex backend in
+    //     particular has a product-level safety filter that flags
+    //     reordered prompts (tool snippets / guidelines lifted above
+    //     the assistant role) as potential prompt-injection, returning
+    //     `content_filter` and blocking tool calls (notably
+    //     `subagent`). The public Responses API shares the same
+    //     filter framework and could behave similarly.
+    //
+    // We therefore skip ALL prompt modifications (churn strip, skill
+    // compression, reorder) for these APIs. Third-party providers
+    // that use openai-completions are unaffected.
+    // ────────────────────────────────────────────────────────────────
+    const model = _ctx.model;
+    if (model) {
+      const api = lower(model.api);
+      if (api === "openai-codex-responses" || api === "openai-responses") {
+        return {};
+      }
+    }
+
     // Step 1: strip per-turn churn from <session-overview>.
     // Removing RECENT COMMITS, Working directory status, and
     // Journal line count makes more of the session-overview stable

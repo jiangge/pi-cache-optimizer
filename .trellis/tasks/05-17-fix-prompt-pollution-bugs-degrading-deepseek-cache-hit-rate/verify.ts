@@ -19,7 +19,7 @@
 //
 // Exits 0 on success, 1 on any failed assertion.
 
-import { __internals_for_tests } from "../../../extension.ts";
+import { __internals_for_tests } from "../../../index.ts";
 
 const { buildStableCandidates, optimizeSystemPrompt, MIN_STABLE_CANDIDATE_LENGTH } =
   __internals_for_tests;
