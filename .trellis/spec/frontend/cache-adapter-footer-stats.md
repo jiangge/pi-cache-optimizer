@@ -1,9 +1,9 @@
-# Cache Adapter Footer Stats and Auto-Config Contract
+# Cache Adapter Footer Stats Contract
 
 > Single-file Pi extension `extension.ts`. Pi loads this via Jiti at extension activation.
 
-This document captures the executable contract for the footer cache stats and the
-DeepSeek auto-config behavior. AI assistants and contributors should treat the rows
+This document captures the executable contract for the footer cache stats
+behavior. AI assistants and contributors should treat the rows
 below as binding when changing `extension.ts`.
 
 ---
@@ -15,7 +15,7 @@ below as binding when changing `extension.ts`.
 | npm package name | `pi-cache-optimizer` | Renamed from `pi-deepseek-cache-optimizer` in 2.0.0. |
 | Status key | `pi-cache-stats` | Passed to `ctx.ui.setStatus(STATUS_KEY, ...)`. Renamed from `deepseek-cache-stats`. |
 | Stats file path | `~/.pi/agent/pi-cache-optimizer-stats.json` | Renamed from `~/.pi/agent/deepseek-cache-optimizer-stats.json`. |
-| Models JSON path | `~/.pi/agent/models.json` | Read/auto-write target on Linux/macOS; `%USERPROFILE%\.pi\agent\models.json` on Windows. |
+| Models JSON path | `~/.pi/agent/models.json` | Reference path for compat warnings; `%USERPROFILE%\.pi\agent\models.json` on Windows. |
 
 ---
 
@@ -83,6 +83,51 @@ being massaged. Do NOT special-case-bump these counters.
   `.trellis/tasks/05-17-investigate-kiro-claude-0-cache-hit-rate/`
   (`prd.md` + `research/kiro-cache-passthrough.md`).
 
+### OpenAI-family prompt cache-key fallback
+
+The extension MAY add a top-level `prompt_cache_key` in the
+`before_provider_request` hook, but only as a conservative fallback around Pi
+core's own cache transport.
+
+* Scope gate: the active model MUST be OpenAI-family by `id`/`name` detection
+  (`gpt-`, `chatgpt`, or safe-boundary `o[1345]`) AND its `api` MUST be an
+  OpenAI-compatible Pi adapter (`openai-completions` or `openai-responses`).
+  Do not inject this field into custom transports such as `kiro-api`, even if
+  the model name contains `gpt`.
+* Cache-key source: use `ctx.sessionManager.getSessionId()`, clamped to
+  OpenAI's 64-codepoint `prompt_cache_key` limit. Do NOT derive the key from a
+  prompt/stable-prefix hash; Pi core uses session id for official OpenAI paths,
+  and the extension fallback must match that stability model.
+* Existing key preservation: a non-empty string in either `prompt_cache_key`
+  or `promptCacheKey` is authoritative and MUST NOT be overwritten. Values that
+  are `undefined`, `null`, `""`, or whitespace-only are treated as missing and
+  may be replaced by the session-id fallback.
+* Opt-out: default behavior is enabled. Users can disable fallback injection
+  with `PI_CACHE_OPTIMIZER_NO_OPENAI_CACHE_KEY=1` (truthy: `1`, `true`, `yes`,
+  `on`) or legacy-style `PI_CACHE_OPTIMIZER_OPENAI_CACHE_KEY=0` (disabled:
+  `0`, `false`, `no`, `off`).
+* Official OpenAI Responses / Codex prompt bypass remains unchanged: the
+  `before_agent_start` hook still avoids prompt rewriting for
+  `openai-codex-responses` and `openai-responses`.
+
+#### Third-party GPT proxy compat warning
+
+For OpenAI-family models using `api: "openai-completions"` through a non-official
+base URL (not `api.openai.com`), warn once per model when merged compat lacks
+one or both of:
+
+```json
+{
+  "supportsLongCacheRetention": true,
+  "sendSessionAffinityHeaders": true
+}
+```
+
+This warning is advisory only and MUST NOT mutate `~/.pi/agent/models.json`.
+It exists because many third-party OpenAI-compatible proxies fan out to multiple
+upstream instances; a body `prompt_cache_key` alone may not keep requests on the
+same cache-bearing backend unless the proxy also honors session-affinity headers.
+
 ---
 
 ## Persisted stats schema
@@ -117,99 +162,18 @@ being massaged. Do NOT special-case-bump these counters.
 
 ---
 
-## models.json auto-config (DeepSeek seed)
-
-Trigger: extension activation (the function exported as `default` runs once when
-Pi loads the extension). Auto-config MUST be idempotent: running it multiple
-times with the same state must produce the same outcome.
-
-### Decision flow
-
-1. If `PI_CACHE_OPTIMIZER_NO_AUTO_CONFIG=1` (case-insensitive truthy:
-   `1`, `true`, `yes`, `on`), do not write. Read-only inspection of
-   `models.json` is allowed only to set `deepseekPresent` for the API-key hint.
-2. Read `~/.pi/agent/models.json`:
-   * Missing file → treat as `{ "providers": {} }`.
-   * Present but unreadable for any reason other than ENOENT → log warning,
-     skip auto-config.
-   * Present but JSON invalid → log warning, skip auto-config. **Do NOT
-     overwrite a malformed user file.**
-   * Present and top-level is not a JSON object (array/string/number) → log
-     warning, skip auto-config.
-3. Skip seeding if any of:
-   * Any model under any provider has an `id` or `name` containing the
-     case-insensitive substring `deepseek`.
-   * A provider key whose lowercase form equals `deepseek` exists, regardless
-     of its model list contents.
-4. Otherwise seed:
-   1. Write `~/.pi/agent/models.json.bak.<unix-millis>` containing the exact
-      bytes that were just read (or empty string if the file did not exist).
-      Backup write failure aborts auto-config; the user's file is not touched.
-   2. Build the merged document by adding a single `deepseek` provider key.
-      Existing keys MUST NOT be modified, deleted, reordered destructively, or
-      overwritten.
-   3. Write merged JSON to `~/.pi/agent/models.json.tmp.<pid>` with
-      `fs.writeFileSync` and 2-space indentation, then `fs.renameSync` over the
-      target path. Rename failure leaves the temp file in place and logs a
-      warning.
-
-### Seed contents
-
-The seed is `{ "deepseek": <provider-block> }` where the provider block has
-exactly these top-level fields: `baseUrl`, `api: "openai-completions"`,
-`apiKey: "$DEEPSEEK_API_KEY"`, and `models` — currently
-`deepseek-v4-pro` and `deepseek-v4-flash`. Every model in the seed MUST carry
-`compat.supportsLongCacheRetention: true` and
-`compat.sendSessionAffinityHeaders: true`. These two flags are intentionally
-beyond the official DeepSeek+Pi onboarding doc and are the reason this
-extension's compat warnings exist.
-
-### Hard contracts
-
-* **Never modify or overwrite an existing user provider entry.** Auto-config is
-  add-only and triggers only when the file is fully absent of DeepSeek-like
-  models AND has no `deepseek` provider key.
-* **Always write a backup before any mutation** of `models.json`. No backup, no
-  write.
-* **Never read, store, log, or print API key values** (`DEEPSEEK_API_KEY` or
-  any other), prompts, message bodies, headers, or model outputs.
-* **Atomic rename** (`writeFileSync` to temp + `renameSync`) is required. Plain
-  in-place writes are forbidden.
-* The opt-out env var `PI_CACHE_OPTIMIZER_NO_AUTO_CONFIG=1` MUST short-circuit
-  every write path. Even with opt-out, the API-key hint is still allowed to
-  fire (its trigger is the presence of DeepSeek in `models.json`, not seed
-  ownership).
-
-### API-key hint (once per session)
-
-* On the first `session_start` after extension activation, if
-  `process.env.DEEPSEEK_API_KEY` is empty/whitespace AND `models.json` contains
-  a DeepSeek-like model (whether seeded by us or pre-existing), emit exactly
-  one `ctx.ui.notify(..., "info")` pointing at where to set the env var.
-* The hint MUST NOT read the key value, MUST NOT print the key value, and MUST
-  NOT duplicate Pi's own missing-key error when the user actually invokes the
-  model.
-* The hint fires at most once per process. Subsequent `session_start` events
-  (e.g. `/reload`) MUST NOT re-emit it.
-
----
-
 ## Validation matrix
 
 | Scenario | Expected behavior |
 |---|---|
-| Fresh install, no `models.json`, key unset | File created with `{ "providers": { "deepseek": ... } }`. Backup `~/.pi/agent/models.json.bak.<ts>` written as empty string. Hint emitted on first `session_start`. |
-| Fresh install, no `models.json`, key set | File seeded same as above. **No** API-key hint. |
-| `models.json` already contains a `deepseek` provider key (any models list) | No write. No backup. Hint may still fire when key is unset. |
-| `models.json` has another provider whose model id contains `deepseek` (case-insensitive) | No write. No backup. Hint behavior same as above. |
-| `models.json` is malformed JSON | No write. No backup. Warning logged. **Original file untouched.** Hint logic still queries `deepseekPresent = false` (cannot trust file). |
-| `models.json` top-level is an array/string/number | Same as malformed JSON: skip, do not overwrite. |
-| `PI_CACHE_OPTIMIZER_NO_AUTO_CONFIG=1` | No write. No backup. Read-only check still computes `deepseekPresent` for hint logic. |
+| `prompt_cache_key` fallback disabled (`PI_CACHE_OPTIMIZER_NO_OPENAI_CACHE_KEY=1` or `PI_CACHE_OPTIMIZER_OPENAI_CACHE_KEY=0`) | No extension-added `prompt_cache_key`; Pi core behavior remains authoritative. |
+| OpenAI-family `openai-completions` payload has no effective key | Extension adds `prompt_cache_key` from `ctx.sessionManager.getSessionId()` if a non-empty session id is available. |
+| Payload has non-empty `prompt_cache_key` or `promptCacheKey` | Extension does not replace it. |
+| Payload has `prompt_cache_key: undefined`, `null`, `""`, or whitespace | Treat as missing; extension may add the session-id fallback. |
+| Model id/name looks GPT-like but API is a custom transport (e.g. `kiro-api`) | Do not add OpenAI `prompt_cache_key`; do not assume compat layers reach custom transports. |
+| Third-party GPT `openai-completions` proxy missing cache/session-affinity compat | Warn once per model with a copyable `compat` suggestion; do not edit `models.json`. |
 | Old stats path exists, new stats path missing | Read old, write new atomically, best-effort `unlink` old. `version: 2` `statsByProvider` data preserved unchanged. |
 | New stats path corrupt | Log warning, fall back to empty in-memory counters; do not delete. Next valid write replaces it. |
-| Backup write fails | Abort auto-config; do not write `models.json`. |
-| `renameSync` for `models.json.tmp.<pid>` fails | Leave temp file in place; log a one-line warning; do not partial-write the target. |
-| Two parallel Pi processes activate simultaneously | Each writes its own `bak.<ts>` and `tmp.<pid>`. The last `renameSync` wins. Backups guarantee both pre-states are recoverable. |
 
 ---
 
@@ -302,16 +266,17 @@ to a control run with the noise pre-filtered).
 
 ## Forbidden patterns
 
-* Writing `models.json` without first writing the timestamped `.bak.<ts>` backup.
-* Overwriting or deleting any existing provider/model entry in `models.json`.
+* Never creating, backing up, overwriting, or deleting provider/model entries in `models.json`. This extension may mention `models.json` only in advisory compat text.
 * Reading or logging the value of `DEEPSEEK_API_KEY` (or any other API key env var).
 * Storing prompts, request payloads, response bodies, or HTTP headers in any
   on-disk file produced by this extension.
+* Injecting OpenAI `prompt_cache_key` into non-OpenAI-compatible custom APIs.
+* Deriving OpenAI `prompt_cache_key` from prompt content or stable-prefix hashes; use the Pi session id fallback instead.
+* Overwriting a non-empty user/Pi-provided `prompt_cache_key` or `promptCacheKey`.
 * Adapter selection by `provider` id, API type, base URL, or compat flags.
-* Using `version: 3+` schema or marker fields inside `models.json`.
-* Generating in-place writes to `models.json` (no `renameSync` step) or to the
-  stats file.
-* Re-emitting the API-key hint on every `session_start`.
+* Using `version: 3+` schema or marker fields inside the stats file.
+* Generating in-place writes to the stats file.
+* Re-emitting per-session notifications or duplicate warnings.
 * Special-casing `kiro-api` (or any other custom-API extension whose
   transport does not surface cache fields) by faking `cacheRead`,
   `cacheReadInputTokens`, or hit counts to make the footer look better.
@@ -459,17 +424,3 @@ When the user sees ` ⚠️ integrity` in the footer:
    update, or a new extension introducing a substring collision).
 3. `/reload` may help if the collision depends on per-turn state;
    otherwise, degrades gracefully (cache miss, no prompt corruption).
-
----
-
-## Notes on rollback
-
-If a future change needs to revert seeding for a specific user, the user keeps
-control by:
-
-1. Setting `PI_CACHE_OPTIMIZER_NO_AUTO_CONFIG=1` before launching Pi.
-2. Editing `~/.pi/agent/models.json` directly (or restoring from the
-   `.bak.<ts>` backup the extension wrote before the seed).
-
-The extension MUST NOT auto-revert or auto-clean its own seed, because it
-cannot distinguish a user-edited copy of the seed from the original.

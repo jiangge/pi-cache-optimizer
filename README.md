@@ -62,15 +62,13 @@ State files under `~/.pi/agent/` are resolved via Node's `os.homedir()`, so on W
    pi install npm:pi-cache-optimizer
    ```
 
-3. On first activation, if no DeepSeek-like model is already configured, this extension auto-seeds a recommended `deepseek` provider block into `~/.pi/agent/models.json`. The seed goes BEYOND the official onboarding doc by adding `supportsLongCacheRetention: true` and `sendSessionAffinityHeaders: true` — those flags are exactly the cache-related compat the official doc omits, and they are the reason this extension's compat warnings exist. A timestamped backup `~/.pi/agent/models.json.bak.<unix-millis>` is written before any change. Existing user entries are never modified.
-4. Export your DeepSeek API key in the same shell where you run `pi`:
+3. Export your DeepSeek API key in the same shell where you run `pi` (if you use a DeepSeek model):
 
    ```bash
    export DEEPSEEK_API_KEY='...'
    ```
 
-   The seed references `$DEEPSEEK_API_KEY` symbolically; this extension never reads, stores, or prints the key value.
-5. Opt out of auto-seeding by exporting `PI_CACHE_OPTIMIZER_NO_AUTO_CONFIG=1` before launching Pi. With opt-out, no write or backup happens, and no provider entry is added or modified.
+   This extension never reads, stores, or prints the key value.
 
 ## Install
 
@@ -78,15 +76,15 @@ State files under `~/.pi/agent/` are resolved via Node's `os.homedir()`, so on W
 pi install npm:pi-cache-optimizer
 ```
 
-After installation, `PI_CACHE_RETENTION=long` is applied automatically, the system prompt is reordered and skills are compressed automatically, session-overview churn is stripped automatically, `~/.pi/agent/models.json` is auto-seeded with a DeepSeek block when no DeepSeek-like model is configured, and the footer shows cache stats after supported model-family responses with exposed usage.
+After installation, `PI_CACHE_RETENTION=long` is applied automatically, the system prompt is reordered and skills are compressed automatically, session-overview churn is stripped automatically, and the footer shows cache stats after supported model-family responses with exposed usage.
 
 ## Opt-out
 
 | Env var | Effect |
 |---------|--------|
-| `PI_CACHE_OPTIMIZER_NO_AUTO_CONFIG=1` | Skip DeepSeek `models.json` auto-seed |
 | `PI_CACHE_OPTIMIZER_NO_SKILL_COMPRESSION=1` | Keep pi's verbose `<available_skills>` XML (opt out of one-line index) |
-| `PI_CACHE_OPTIMIZER_OPENAI_CACHE_KEY=1` | Add `prompt_cache_key` to OpenAI-family requests (opt-in) |
+| `PI_CACHE_OPTIMIZER_OPENAI_CACHE_KEY=0` | Disable the OpenAI-family `prompt_cache_key` fallback (default is enabled) |
+| `PI_CACHE_OPTIMIZER_NO_OPENAI_CACHE_KEY=1` | Disable the OpenAI-family `prompt_cache_key` fallback |
 
 ## Uninstall
 
@@ -114,7 +112,7 @@ rm ~/.pi/agent/pi-cache-optimizer-stats.json
 rm -f ~/.pi/agent/deepseek-cache-optimizer-stats.json
 ```
 
-The DeepSeek block this extension seeded into `~/.pi/agent/models.json` is left in place on uninstall. Remove it manually if you no longer want it; the timestamped backup at `~/.pi/agent/models.json.bak.<unix-millis>` lets you compare against the previous content.
+
 
 ## Footer cache stats
 
@@ -193,7 +191,7 @@ After:  [stable tools + rules | dynamic git status | task context]
         ↓ stable prefix → higher chance of cache reuse
 ```
 
-Pi itself decides whether to send cache-related fields such as `prompt_cache_retention`, session-affinity headers, or Anthropic-style `cache_control` based on model compat and `PI_CACHE_RETENTION`. By default this extension does not add request fields; the only opt-in request hint is OpenAI-family `prompt_cache_key` when `PI_CACHE_OPTIMIZER_OPENAI_CACHE_KEY=1` is set. The extension does not fake cache hits; it helps configuration, improves stable-prefix probability, and summarizes exposed usage in the footer.
+Pi itself decides whether to send cache-related fields such as `prompt_cache_retention`, session-affinity headers, or Anthropic-style `cache_control` based on model compat and `PI_CACHE_RETENTION`. This extension now adds only one conservative request-body fallback by default: for OpenAI-family models using OpenAI-compatible Pi APIs, it fills a missing or blank top-level `prompt_cache_key` with the Pi session id and never overwrites an existing non-empty key. The extension does not fake cache hits; it helps configuration, improves stable-prefix probability, and summarizes exposed usage in the footer.
 
 ## Improving cache hit rate
 
@@ -208,7 +206,7 @@ What the extension does automatically:
 Provider notes:
 
 - DeepSeek: current behavior remains the reference path. Stable prefix ordering plus long-retention/session-affinity compat gives the best chance of automatic KV prefix reuse.
-- OpenAI-family: prompt caching is automatic only on supported upstreams and sufficiently long prompts. Keep static instructions, tools, examples, and specs before changing user/task context. Pi owns retention transport by default. If you explicitly opt in with `PI_CACHE_OPTIMIZER_OPENAI_CACHE_KEY=1`, the extension adds a top-level `prompt_cache_key` derived from a SHA-256 hash of the stable prompt prefix for OpenAI-family id/name matches only. The stable prompt text is not stored or printed, but unsupported OpenAI-compatible proxies may reject this field.
+- OpenAI-family: prompt caching is automatic only on supported upstreams and sufficiently long prompts. Keep static instructions, tools, examples, and specs before changing user/task context. Pi owns retention transport by default. For OpenAI-compatible Pi APIs, the extension fills a missing or blank top-level `prompt_cache_key` with the Pi session id (matching Pi core's official OpenAI behavior) and never overwrites an existing non-empty `prompt_cache_key` / `promptCacheKey`. Disable this fallback with `PI_CACHE_OPTIMIZER_NO_OPENAI_CACHE_KEY=1` or `PI_CACHE_OPTIMIZER_OPENAI_CACHE_KEY=0`. Unsupported OpenAI-compatible proxies may reject unknown fields; custom APIs are not targeted.
 - Claude: prompt caching depends on Anthropic `cache_control` breakpoints. This extension does not inject breakpoints itself; for compatible endpoints, configure Pi compat such as `cacheControlFormat: "anthropic"` only when the endpoint supports it.
 - Gemini/Vertex: implicit caching benefits from repeated large stable prefixes. This extension does not create explicit `cachedContents` resources or store cache resource names.
 - Proxies/aggregators: fix upstream routing/provider order where possible. Cache hit rates are unreliable if the same model id/name can route to different upstreams.
@@ -225,9 +223,9 @@ This package now has provider-family stats adapters, but it still avoids blind g
 
 ## Out of scope for this release
 
-- Broad/default request-body mutation or provider-agnostic cache-control injection.
+- Broad/provider-agnostic request-body mutation or cache-control injection. The only default request-body fallback is OpenAI-family `prompt_cache_key` on OpenAI-compatible APIs, sourced from the Pi session id and skipped when an effective key already exists.
 - Injecting Anthropic `cache_control` markers.
-- Sending OpenAI `prompt_cache_key` by default; it is only added when `PI_CACHE_OPTIMIZER_OPENAI_CACHE_KEY=1` is set, the active model id/name is OpenAI-family, and the payload does not already define one.
+- Sending OpenAI `prompt_cache_key` into custom/non-OpenAI-compatible APIs; the fallback is gated to OpenAI-family id/name plus `openai-completions` / `openai-responses`.
 - Overriding OpenAI `prompt_cache_retention` outside Pi's own compat handling.
 - Creating Gemini explicit `cachedContents` resources or persisting cache resource names.
 - Claiming stats for providers that do not expose reliable cache usage.

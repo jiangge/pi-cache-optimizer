@@ -1,10 +1,3 @@
-import { createHash } from "node:crypto";
-import {
-  mkdirSync,
-  readFileSync,
-  renameSync,
-  writeFileSync,
-} from "node:fs";
 import { mkdir, readFile, rename, unlink, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
@@ -16,10 +9,8 @@ import type { BuildSystemPromptOptions, ExtensionAPI, ExtensionContext } from "@
  * What it does:
  * 1. Reorders Pi's system prompt so stable content is sent before dynamic context.
  * 2. Sets PI_CACHE_RETENTION=long at extension load time.
- * 3. Auto-seeds a recommended DeepSeek entry into ~/.pi/agent/models.json on first run
- *    (only when no DeepSeek-like model is already configured; never overwrites).
- * 4. Warns once for provider/model cache compat gaps where the signal is conservative.
- * 5. Shows lightweight persisted provider-specific cache stats in Pi's footer.
+ * 3. Warns once for provider/model cache compat gaps where the signal is conservative.
+ * 4. Shows lightweight persisted provider-specific cache stats in Pi's footer.
  *
  * Provider prompt/KV caches are provider-side and best-effort. This extension improves
  * the odds of cache hits; it cannot guarantee hits, especially through proxies.
@@ -41,14 +32,11 @@ const STATUS_KEY = "pi-cache-stats";
 const STATE_DIR = join(homedir(), ".pi", "agent");
 const STATE_FILE_PATH = join(STATE_DIR, "pi-cache-optimizer-stats.json");
 const LEGACY_STATE_FILE_PATH = join(STATE_DIR, "deepseek-cache-optimizer-stats.json");
-const MODELS_JSON_PATH = join(STATE_DIR, "models.json");
-
 const CACHE_PROVIDER_IDS: CacheProviderId[] = ["deepseek", "openai", "claude", "gemini"];
 const OPENAI_CACHE_KEY_ENV = "PI_CACHE_OPTIMIZER_OPENAI_CACHE_KEY";
-const OPENAI_PROMPT_CACHE_KEY_PREFIX = "pi-dsco-";
-const NO_AUTO_CONFIG_ENV = "PI_CACHE_OPTIMIZER_NO_AUTO_CONFIG";
+const NO_OPENAI_CACHE_KEY_ENV = "PI_CACHE_OPTIMIZER_NO_OPENAI_CACHE_KEY";
+const OPENAI_PROMPT_CACHE_KEY_MAX_LENGTH = 64;
 const NO_SKILL_COMPRESSION_ENV = "PI_CACHE_OPTIMIZER_NO_SKILL_COMPRESSION";
-const DEEPSEEK_API_KEY_ENV = "DEEPSEEK_API_KEY";
 
 // WORM-flag: if optimizeSystemPrompt ever detects that its blind-replace
 // logic has accidentally truncated a structural marker (any XML tag or
@@ -511,12 +499,17 @@ function optimizeSystemPrompt(
   };
 }
 
-function buildPromptCacheKey(stablePrefix: string): string | undefined {
-  const normalized = stablePrefix.trim();
+function clampPromptCacheKey(key: string | undefined): string | undefined {
+  const normalized = key?.trim();
   if (!normalized) return undefined;
 
-  const digest = createHash("sha256").update(normalized).digest("hex").slice(0, 24);
-  return `${OPENAI_PROMPT_CACHE_KEY_PREFIX}${digest}`;
+  const chars = Array.from(normalized);
+  if (chars.length <= OPENAI_PROMPT_CACHE_KEY_MAX_LENGTH) return normalized;
+  return chars.slice(0, OPENAI_PROMPT_CACHE_KEY_MAX_LENGTH).join("");
+}
+
+function getSessionPromptCacheKey(ctx: ExtensionContext): string | undefined {
+  return clampPromptCacheKey(ctx.sessionManager.getSessionId());
 }
 
 function asRecord(value: unknown): UnknownRecord | undefined {
@@ -547,8 +540,16 @@ function isEnabledEnv(value: string | undefined): boolean {
   return normalized === "1" || normalized === "true" || normalized === "yes" || normalized === "on";
 }
 
-function hasOwn(record: UnknownRecord, key: string): boolean {
-  return Object.prototype.hasOwnProperty.call(record, key);
+function isDisabledEnv(value: string | undefined): boolean {
+  if (!value) return false;
+  const normalized = value.trim().toLowerCase();
+  return normalized === "0" || normalized === "false" || normalized === "no" || normalized === "off";
+}
+
+function shouldInjectOpenAIPromptCacheKey(): boolean {
+  if (isEnabledEnv(process.env[NO_OPENAI_CACHE_KEY_ENV])) return false;
+  if (isDisabledEnv(process.env[OPENAI_CACHE_KEY_ENV])) return false;
+  return true;
 }
 
 function isAssistantMessage(message: unknown): boolean {
@@ -796,13 +797,51 @@ function normalizeWithFallback(
 
 function addOpenAIPromptCacheKey(payload: unknown, cacheKey: string | undefined): unknown | undefined {
   const record = asRecord(payload);
-  if (!record || !cacheKey) return undefined;
+  const normalizedCacheKey = clampPromptCacheKey(cacheKey);
+  if (!record || !normalizedCacheKey) return undefined;
 
-  if (hasOwn(record, "prompt_cache_key") || hasOwn(record, "promptCacheKey")) {
+  if (hasEffectivePromptCacheKey(record)) {
     return undefined;
   }
 
-  return { ...record, prompt_cache_key: cacheKey };
+  return { ...record, prompt_cache_key: normalizedCacheKey };
+}
+
+function hasEffectivePromptCacheKey(record: UnknownRecord): boolean {
+  return isNonEmptyString(record.prompt_cache_key) || isNonEmptyString(record.promptCacheKey);
+}
+
+function isNonEmptyString(value: unknown): boolean {
+  return typeof value === "string" && value.trim().length > 0;
+}
+
+function isOfficialOpenAIBaseUrl(model: PiModel): boolean {
+  const value = lower(model.baseUrl).trim();
+  if (!value) return false;
+
+  try {
+    return new URL(value).hostname === "api.openai.com";
+  } catch {
+    return value === "api.openai.com" || value.startsWith("api.openai.com/");
+  }
+}
+
+function describeMissingOpenAIFamilyProxyCompat(model: PiModel): string[] {
+  const compat = getCompat(model);
+  const missing: string[] = [];
+
+  if (!isOpenAIFamilyModel(model)) return missing;
+  if (model.api !== "openai-completions") return missing;
+  if (isOfficialOpenAIBaseUrl(model)) return missing;
+
+  if (compat.supportsLongCacheRetention !== true) {
+    missing.push("supportsLongCacheRetention");
+  }
+  if (compat.sendSessionAffinityHeaders !== true) {
+    missing.push("sendSessionAffinityHeaders");
+  }
+
+  return missing;
 }
 
 function describeMissingDeepSeekCompat(model: PiModel): string[] {
@@ -880,6 +919,15 @@ const CACHE_PROVIDER_ADAPTERS: CacheProviderAdapter[] = [
     },
     normalizeUsage(message) {
       return normalizeWithFallback(message, getOpenAIRawUsage);
+    },
+    warningText(model) {
+      const missing = describeMissingOpenAIFamilyProxyCompat(model);
+      if (missing.length === 0) return undefined;
+
+      return (
+        `💡 pi-cache-optimizer: ${modelKey(model)} looks like a third-party GPT/OpenAI-compatible proxy but merged compat lacks ${missing.join(" and ")}. ` +
+        `For better cache locality, add compat: { "supportsLongCacheRetention": true, "sendSessionAffinityHeaders": true } in ~/.pi/agent/models.json when the endpoint supports these fields.`
+      );
     },
   },
   {
@@ -1085,222 +1133,7 @@ async function writePersistedCacheStats(statsByProvider: Partial<Record<CachePro
   await rename(tempPath, STATE_FILE_PATH);
 }
 
-// ============================================================
-// models.json auto-config (DeepSeek seed)
-// ============================================================
 
-type ModelsJsonShape = {
-  providers?: UnknownRecord;
-} & UnknownRecord;
-
-const DEEPSEEK_SEED_PROVIDER = {
-  baseUrl: "https://api.deepseek.com",
-  api: "openai-completions",
-  apiKey: "$DEEPSEEK_API_KEY",
-  models: [
-    {
-      id: "deepseek-v4-pro",
-      name: "DeepSeek V4 Pro",
-      contextWindow: 1_000_000,
-      maxTokens: 384_000,
-      input: ["text"],
-      reasoning: true,
-      cost: { input: 1.74, output: 3.48, cacheRead: 0.145, cacheWrite: 0 },
-      compat: {
-        requiresReasoningContentOnAssistantMessages: true,
-        thinkingFormat: "deepseek",
-        supportsLongCacheRetention: true,
-        sendSessionAffinityHeaders: true,
-        reasoningEffortMap: {
-          minimal: "high",
-          low: "high",
-          medium: "high",
-          high: "high",
-          xhigh: "max",
-        },
-      },
-    },
-    {
-      id: "deepseek-v4-flash",
-      name: "DeepSeek V4 Flash",
-      contextWindow: 1_000_000,
-      maxTokens: 384_000,
-      input: ["text"],
-      reasoning: true,
-      cost: { input: 0.14, output: 0.28, cacheRead: 0.028, cacheWrite: 0 },
-      compat: {
-        requiresReasoningContentOnAssistantMessages: true,
-        thinkingFormat: "deepseek",
-        supportsLongCacheRetention: true,
-        sendSessionAffinityHeaders: true,
-        reasoningEffortMap: {
-          minimal: "high",
-          low: "high",
-          medium: "high",
-          high: "high",
-          xhigh: "max",
-        },
-      },
-    },
-  ],
-} as const;
-
-function modelsJsonContainsDeepseek(parsed: ModelsJsonShape): boolean {
-  const providers = asRecord(parsed.providers);
-  if (!providers) return false;
-
-  // Respect user intent: a provider key literally named "deepseek" (case-insensitive)
-  // means the user already declared their own DeepSeek block, even if its models list is empty.
-  for (const key of Object.keys(providers)) {
-    if (key.toLowerCase() === "deepseek") return true;
-  }
-
-  for (const providerValue of Object.values(providers)) {
-    const provider = asRecord(providerValue);
-    if (!provider) continue;
-    const models = provider.models;
-    if (!Array.isArray(models)) continue;
-    for (const model of models) {
-      const record = asRecord(model);
-      if (!record) continue;
-      if (lower(record.id).includes("deepseek") || lower(record.name).includes("deepseek")) {
-        return true;
-      }
-    }
-  }
-
-  return false;
-}
-
-type EnsureDeepseekResult = {
-  // Whether some DeepSeek-like model is now present in models.json (either pre-existing or just-seeded).
-  deepseekPresent: boolean;
-  // Whether we just wrote the seed in this activation.
-  seeded: boolean;
-  // Whether auto-config was deliberately skipped (env opt-out or malformed file).
-  skipped: boolean;
-};
-
-function ensureDeepseekConfigured(notify?: (text: string, level: "info" | "warning") => void): EnsureDeepseekResult {
-  const result: EnsureDeepseekResult = { deepseekPresent: false, seeded: false, skipped: false };
-
-  if (isEnabledEnv(process.env[NO_AUTO_CONFIG_ENV])) {
-    result.skipped = true;
-    // Even when opted out, callers still need to know whether DeepSeek is present so the
-    // API-key hint can fire. Read-only inspection only; no writes.
-    try {
-      const raw = readFileSync(MODELS_JSON_PATH, "utf8");
-      const parsed = JSON.parse(raw) as ModelsJsonShape;
-      if (parsed && typeof parsed === "object") {
-        result.deepseekPresent = modelsJsonContainsDeepseek(parsed);
-      }
-    } catch {
-      // ignore: missing or unreadable file means "not present"
-    }
-    return result;
-  }
-
-  let originalBytes: string | undefined;
-  let parsed: ModelsJsonShape;
-  try {
-    originalBytes = readFileSync(MODELS_JSON_PATH, "utf8");
-  } catch (error) {
-    if (getErrorCode(error) !== "ENOENT") {
-      console.warn(`${LOG_PREFIX}: failed to read models.json; skipping auto-config`, error);
-      result.skipped = true;
-      return result;
-    }
-    parsed = { providers: {} };
-  }
-
-  if (originalBytes !== undefined) {
-    try {
-      const decoded = JSON.parse(originalBytes) as unknown;
-      if (decoded && typeof decoded === "object" && !Array.isArray(decoded)) {
-        parsed = decoded as ModelsJsonShape;
-      } else {
-        // A non-object top-level JSON (array/string/number) is unexpected; treat as malformed and abort.
-        console.warn(`${LOG_PREFIX}: models.json top-level is not an object; aborting auto-config`);
-        result.skipped = true;
-        return result;
-      }
-    } catch (error) {
-      // Malformed JSON: do NOT overwrite the user's file.
-      console.warn(`${LOG_PREFIX}: models.json is not valid JSON; aborting auto-config`, error);
-      result.skipped = true;
-      return result;
-    }
-  } else {
-    parsed = { providers: {} };
-  }
-
-  if (modelsJsonContainsDeepseek(parsed)) {
-    result.deepseekPresent = true;
-    return result;
-  }
-
-  // Decide we will seed. Snapshot the old bytes (or empty marker) into a backup before mutating.
-  const backupPath = `${MODELS_JSON_PATH}.bak.${Date.now()}`;
-  try {
-    mkdirSync(STATE_DIR, { recursive: true });
-    writeFileSync(backupPath, originalBytes ?? "", "utf8");
-  } catch (error) {
-    console.warn(`${LOG_PREFIX}: failed to write models.json backup; aborting auto-config`, error);
-    result.skipped = true;
-    return result;
-  }
-
-  const providersIn = asRecord(parsed.providers) ?? {};
-  const merged: ModelsJsonShape = {
-    ...parsed,
-    providers: { ...providersIn, deepseek: DEEPSEEK_SEED_PROVIDER },
-  };
-
-  const tempPath = `${MODELS_JSON_PATH}.tmp.${process.pid}`;
-  try {
-    writeFileSync(tempPath, JSON.stringify(merged, null, 2) + "\n", "utf8");
-  } catch (error) {
-    console.warn(`${LOG_PREFIX}: failed to write models.json temp file; aborting auto-config`, error);
-    result.skipped = true;
-    return result;
-  }
-
-  try {
-    renameSync(tempPath, MODELS_JSON_PATH);
-  } catch (error) {
-    console.warn(
-      `${LOG_PREFIX}: failed to atomically rename models.json (temp left at ${tempPath})`,
-      error,
-    );
-    result.skipped = true;
-    return result;
-  }
-
-  result.seeded = true;
-  result.deepseekPresent = true;
-  notify?.(
-    `${LOG_PREFIX}: seeded DeepSeek provider into ${MODELS_JSON_PATH} (backup at ${backupPath}). ` +
-      `Set ${DEEPSEEK_API_KEY_ENV} to use it; or set ${NO_AUTO_CONFIG_ENV}=1 next time to opt out.`,
-    "info",
-  );
-  return result;
-}
-
-function emitDeepseekApiKeyHintIfNeeded(
-  deepseekPresent: boolean,
-  notify: (text: string, level: "info" | "warning") => void,
-): void {
-  if (!deepseekPresent) return;
-  const value = process.env[DEEPSEEK_API_KEY_ENV];
-  if (typeof value === "string" && value.trim().length > 0) return;
-
-  notify(
-    `${LOG_PREFIX}: ${DEEPSEEK_API_KEY_ENV} is not set. ` +
-      `DeepSeek models in ${MODELS_JSON_PATH} reference $${DEEPSEEK_API_KEY_ENV}; ` +
-      `export ${DEEPSEEK_API_KEY_ENV}=... in your shell to enable them.`,
-    "info",
-  );
-}
 
 // Internal helpers exported only so the task verification script
 // (.trellis/tasks/.../verify.ts) can exercise them. They are not part of the
@@ -1315,29 +1148,29 @@ export const __internals_for_tests = {
   compressSkillsInSystemPrompt,
   MIN_STABLE_CANDIDATE_LENGTH,
   SKILL_COMPRESSION_MIN_COUNT,
+  // OpenAI-family cache-key helpers
+  addOpenAIPromptCacheKey,
+  clampPromptCacheKey,
+  hasEffectivePromptCacheKey,
+  isNonEmptyString,
+  shouldInjectOpenAIPromptCacheKey,
+  isOpenAICompatibleApi,
+  isOpenAIFamilyModel,
+  isOpenAIFamilyAssistantMessage,
+  isOpenAIFamilyToken,
+  describeMissingOpenAIFamilyProxyCompat,
+  isOfficialOpenAIBaseUrl,
+  getModelIdNameTokenValues,
+  getAssistantMessageModelTokenValues,
+  getCompat,
+  modelKey,
 };
 
 export default function (pi: ExtensionAPI) {
   const warnedModels = new Set<string>();
   let cacheStatsByProvider: Partial<Record<CacheProviderId, CacheStats>> = emptyAllCacheStats();
   let lastStatusText: string | undefined;
-  let latestPromptCacheKey: string | undefined;
   let persistenceWarningShown = false;
-  let apiKeyHintShown = false;
-
-  // Auto-config runs once at extension activation (idempotent: skips if DeepSeek already configured).
-  // Pi's UI logger is not yet bound here, so seed-time notifications go through console.warn / console.info.
-  // Per-session UI notification is emitted from the session_start hook below.
-  let autoConfig: EnsureDeepseekResult;
-  try {
-    autoConfig = ensureDeepseekConfigured((text, level) => {
-      if (level === "warning") console.warn(text);
-      else console.info(text);
-    });
-  } catch (error) {
-    console.warn(`${LOG_PREFIX}: ensureDeepseekConfigured threw; continuing without auto-config`, error);
-    autoConfig = { deepseekPresent: false, seeded: false, skipped: true };
-  }
 
   function getStatsForAdapter(adapter: CacheProviderAdapter): CacheStats {
     const existing = cacheStatsByProvider[adapter.id];
@@ -1418,12 +1251,6 @@ export default function (pi: ExtensionAPI) {
   pi.on("session_start", async (event, ctx) => {
     await restoreCacheStats(event.reason, ctx);
     notifyCacheCompatIfNeeded(ctx.model, ctx, warnedModels);
-    if (!apiKeyHintShown) {
-      apiKeyHintShown = true;
-      emitDeepseekApiKeyHintIfNeeded(autoConfig.deepseekPresent, (text, level) => {
-        ctx.ui.notify(text, level);
-      });
-    }
     await publishStatus(ctx);
   });
 
@@ -1489,7 +1316,6 @@ export default function (pi: ExtensionAPI) {
     // cache key derived from `stablePrefix` reflects what actually
     // ships to the provider.
     const optimized = optimizeSystemPrompt(compressedPrompt, event.systemPromptOptions);
-    latestPromptCacheKey = buildPromptCacheKey(optimized.stablePrefix);
 
     if (optimized.changed && optimized.systemPrompt.trim().length > 0) {
       return { systemPrompt: optimized.systemPrompt };
@@ -1510,10 +1336,11 @@ export default function (pi: ExtensionAPI) {
   });
 
   pi.on("before_provider_request", (event, ctx) => {
-    if (!isEnabledEnv(process.env[OPENAI_CACHE_KEY_ENV])) return undefined;
+    if (!shouldInjectOpenAIPromptCacheKey()) return undefined;
     if (!isOpenAIFamilyModel(ctx.model)) return undefined;
+    if (!isOpenAICompatibleApi(ctx.model?.api)) return undefined;
 
-    return addOpenAIPromptCacheKey(event.payload, latestPromptCacheKey);
+    return addOpenAIPromptCacheKey(event.payload, getSessionPromptCacheKey(ctx));
   });
 
   pi.on("message_end", async (event, ctx) => {
