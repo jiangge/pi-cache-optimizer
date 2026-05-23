@@ -70,6 +70,26 @@ const {
   isCohereLikeAssistantMessage,
   isYiLikeModel,
   isYiLikeAssistantMessage,
+  isDoubaoLikeModel,
+  isDoubaoLikeAssistantMessage,
+  isErnieLikeModel,
+  isErnieLikeAssistantMessage,
+  isBaichuanLikeModel,
+  isBaichuanLikeAssistantMessage,
+  isStepFunLikeModel,
+  isStepFunLikeAssistantMessage,
+  isSparkLikeModel,
+  isSparkLikeAssistantMessage,
+  isInternLMLikeModel,
+  isInternLMLikeAssistantMessage,
+  isGemmaLikeModel,
+  isGemmaLikeAssistantMessage,
+  isPhiLikeModel,
+  isPhiLikeAssistantMessage,
+  isJambaLikeModel,
+  isJambaLikeAssistantMessage,
+  isSolarLikeModel,
+  isSolarLikeAssistantMessage,
   getCompat,
   modelKey,
   buildOpenAIProxyCompatWarningText,
@@ -2175,6 +2195,418 @@ Line count: 10 / 1000
       "expected Windows deepseek warning to NOT contain Unix tilde paths",
     );
   }
+}
+
+// ==========================================================================
+// Test 46: New model-family detection (batch 2) — Doubao, ERNIE, Baichuan, StepFun, Spark, InternLM, Gemma, Phi, Jamba, Solar
+// ==========================================================================
+{
+  // Doubao / ByteDance / Seed detection
+  expect("detect.doubao-id", isDoubaoLikeModel(makeModel({ id: "doubao-pro-32k" })) === true, "expected doubao-pro-32k ID to match");
+  expect("detect.doubao-name", isDoubaoLikeModel(makeModel({ id: "custom", name: "Doubao Pro" })) === true, "expected Doubao Pro name to match");
+  expect("detect.doubao-volcengine", isDoubaoLikeModel(makeModel({ id: "volcengine-seed-llm" })) === true, "expected volcengine-seed-llm ID to match");
+  expect("detect.doubao-bytedance", isDoubaoLikeModel(makeModel({ id: "bytedance-seed-tts" })) === true, "expected bytedance-seed-tts ID to match");
+  expect("detect.doubao-byte-dance", isDoubaoLikeModel(makeModel({ id: "byte-dance-seed-asr" })) === true, "expected byte-dance-seed-asr ID to match");
+  expect("detect.doubao-seed-boundary", isDoubaoLikeModel(makeModel({ id: "seed/seed-llm-v1" })) === true, "expected seed/seed-llm-v1 to match via seed safe boundary");
+  expect("detect.doubao-豆包", isDoubaoLikeModel(makeModel({ id: "豆包-pro" })) === true, "expected 豆包-pro ID to match");
+  expect("detect.doubao-not-gpt", isDoubaoLikeModel(makeModel({ id: "gpt-4" })) === false, "expected gpt-4 to NOT match Doubao");
+  expect("detect.doubao-not-seed-prose", isDoubaoLikeModel(makeModel({ id: "prosody-v2" })) === false, "expected prosody-v2 to NOT match Doubao (seed inside prose)");
+
+  // ERNIE / Baidu detection
+  expect("detect.ernie-id", isErnieLikeModel(makeModel({ id: "ernie-4.0" })) === true, "expected ernie-4.0 ID to match");
+  expect("detect.ernie-name", isErnieLikeModel(makeModel({ id: "custom", name: "ERNIE 4.0" })) === true, "expected ERNIE 4.0 name to match");
+  expect("detect.ernie-wenxin", isErnieLikeModel(makeModel({ id: "wenxin-yiyan" })) === true, "expected wenxin-yiyan ID to match");
+  expect("detect.ernie-baidu", isErnieLikeModel(makeModel({ id: "baidu-ernie-bot" })) === true, "expected baidu-ernie-bot ID to match");
+  expect("detect.ernie-文心", isErnieLikeModel(makeModel({ id: "文心一言" })) === true, "expected 文心一言 ID to match");
+  expect("detect.ernie-一言", isErnieLikeModel(makeModel({ id: "一言-ernie" })) === true, "expected 一言-ernie ID to match");
+  expect("detect.ernie-not-gpt", isErnieLikeModel(makeModel({ id: "gpt-4" })) === false, "expected gpt-4 to NOT match ERNIE");
+  expect("detect.ernie-not-kimi", isErnieLikeModel(makeModel({ id: "kimi-k2.5" })) === false, "expected kimi-k2.5 to NOT match ERNIE");
+
+  // Baichuan detection
+  expect("detect.baichuan-id", isBaichuanLikeModel(makeModel({ id: "baichuan-2-pro" })) === true, "expected baichuan-2-pro ID to match");
+  expect("detect.baichuan-name", isBaichuanLikeModel(makeModel({ id: "custom", name: "Baichuan 2" })) === true, "expected Baichuan 2 name to match");
+  expect("detect.baichuan-百川", isBaichuanLikeModel(makeModel({ id: "百川-pro" })) === true, "expected 百川-pro ID to match");
+  expect("detect.baichuan-not-gpt", isBaichuanLikeModel(makeModel({ id: "gpt-4" })) === false, "expected gpt-4 to NOT match Baichuan");
+
+  // StepFun detection
+  expect("detect.stepfun-id", isStepFunLikeModel(makeModel({ id: "stepfun-pro-v1" })) === true, "expected stepfun-pro-v1 ID to match");
+  expect("detect.stepfun-name", isStepFunLikeModel(makeModel({ id: "custom", name: "StepFun Pro" })) === true, "expected StepFun Pro name to match");
+  expect("detect.stepfun-step-prefix", isStepFunLikeModel(makeModel({ id: "step-2-pro" })) === true, "expected step-2-pro ID to match via step- prefix");
+  expect("detect.stepfun-not-steps-prose", isStepFunLikeModel(makeModel({ id: "footsteps-v1" })) === false, "expected footsteps-v1 to NOT match StepFun (step inside prose)");
+  expect("detect.stepfun-not-gpt", isStepFunLikeModel(makeModel({ id: "gpt-4" })) === false, "expected gpt-4 to NOT match StepFun");
+
+  // Spark / iFlytek detection
+  expect("detect.spark-id", isSparkLikeModel(makeModel({ id: "spark-4.0" })) === true, "expected spark-4.0 ID to match");
+  expect("detect.spark-name", isSparkLikeModel(makeModel({ id: "custom", name: "Spark Desks" })) === true, "expected Spark Desks name to match");
+  expect("detect.spark-xinghuo", isSparkLikeModel(makeModel({ id: "xinghuo-v3" })) === true, "expected xinghuo-v3 ID to match");
+  expect("detect.spark-iflytek", isSparkLikeModel(makeModel({ id: "iflytek-spark" })) === true, "expected iflytek-spark ID to match");
+  expect("detect.spark-讯飞", isSparkLikeModel(makeModel({ id: "讯飞星火" })) === true, "expected 讯飞星火 ID to match");
+  expect("detect.spark-星火", isSparkLikeModel(makeModel({ id: "星火-v3" })) === true, "expected 星火-v3 ID to match");
+  expect("detect.spark-not-gpt", isSparkLikeModel(makeModel({ id: "gpt-4" })) === false, "expected gpt-4 to NOT match Spark");
+  expect("detect.spark-not-hunyuan", isSparkLikeModel(makeModel({ id: "hunyuan-large" })) === false, "expected hunyuan-large to NOT match Spark");
+
+  // InternLM detection
+  expect("detect.internlm-id", isInternLMLikeModel(makeModel({ id: "internlm2-pro" })) === true, "expected internlm2-pro ID to match");
+  expect("detect.internlm-name", isInternLMLikeModel(makeModel({ id: "custom", name: "InternLM 2" })) === true, "expected InternLM 2 name to match");
+  expect("detect.internlm-intern-lm", isInternLMLikeModel(makeModel({ id: "intern-lm-20b" })) === true, "expected intern-lm-20b ID to match");
+  expect("detect.internlm-书生", isInternLMLikeModel(makeModel({ id: "书生-internlm" })) === true, "expected 书生-internlm ID to match");
+  expect("detect.internlm-not-gpt", isInternLMLikeModel(makeModel({ id: "gpt-4" })) === false, "expected gpt-4 to NOT match InternLM");
+
+  // Gemma detection
+  expect("detect.gemma-id", isGemmaLikeModel(makeModel({ id: "gemma-3-27b" })) === true, "expected gemma-3-27b ID to match");
+  expect("detect.gemma-name", isGemmaLikeModel(makeModel({ id: "custom", name: "Gemma 3" })) === true, "expected Gemma 3 name to match");
+  expect("detect.gemma-not-gpt", isGemmaLikeModel(makeModel({ id: "gpt-4" })) === false, "expected gpt-4 to NOT match Gemma");
+  expect("detect.gemma-not-gemini", isGemmaLikeModel(makeModel({ id: "gemini-2.5" })) === false, "expected gemini-2.5 to NOT match Gemma");
+
+  // Phi detection
+  expect("detect.phi-id", isPhiLikeModel(makeModel({ id: "phi-3-mini" })) === true, "expected phi-3-mini ID to match via phi- prefix");
+  expect("detect.phi-name", isPhiLikeModel(makeModel({ id: "custom", name: "Phi-3" })) === true, "expected Phi-3 name to match via phi- prefix");
+  expect("detect.phi-boundary", isPhiLikeModel(makeModel({ id: "microsoft/phi-4" })) === true, "expected microsoft/phi-4 to match via phi safe boundary");
+  expect("detect.phi-not-sophia", isPhiLikeModel(makeModel({ id: "sophia-v1" })) === false, "expected sophia-v1 to NOT match Phi (phi inside prose)");
+  expect("detect.phi-not-gpt", isPhiLikeModel(makeModel({ id: "gpt-4" })) === false, "expected gpt-4 to NOT match Phi");
+
+  // Jamba / AI21 detection
+  expect("detect.jamba-id", isJambaLikeModel(makeModel({ id: "jamba-1.5-large" })) === true, "expected jamba-1.5-large ID to match");
+  expect("detect.jamba-name", isJambaLikeModel(makeModel({ id: "custom", name: "Jamba 1.5" })) === true, "expected Jamba 1.5 name to match");
+  expect("detect.jamba-ai21", isJambaLikeModel(makeModel({ id: "ai21-jamba-1.5" })) === true, "expected ai21-jamba-1.5 ID to match");
+  expect("detect.jamba-not-gpt", isJambaLikeModel(makeModel({ id: "gpt-4" })) === false, "expected gpt-4 to NOT match Jamba");
+
+  // Solar / Upstage detection
+  expect("detect.solar-id", isSolarLikeModel(makeModel({ id: "solar-mini" })) === true, "expected solar-mini ID to match");
+  expect("detect.solar-name", isSolarLikeModel(makeModel({ id: "custom", name: "Solar Mini" })) === true, "expected Solar Mini name to match");
+  expect("detect.solar-upstage", isSolarLikeModel(makeModel({ id: "upstage-solar-pro" })) === true, "expected upstage-solar-pro ID to match");
+  expect("detect.solar-not-gpt", isSolarLikeModel(makeModel({ id: "gpt-4" })) === false, "expected gpt-4 to NOT match Solar");
+}
+
+// ==========================================================================
+// Test 47: New model-family assistant message detection (batch 2)
+// ==========================================================================
+{
+  // Doubao assistant
+  expect(
+    "detect.doubao-assistant",
+    isDoubaoLikeAssistantMessage({ role: "assistant", model: "doubao-pro-32k" }, undefined) === true,
+    "expected Doubao assistant message to match",
+  );
+  expect(
+    "detect.doubao-byte-dance-assistant",
+    isDoubaoLikeAssistantMessage({ role: "assistant", name: "byte-dance-seed-v1" }, undefined) === true,
+    "expected ByteDance Seed assistant message with name to match",
+  );
+
+  // ERNIE assistant
+  expect(
+    "detect.ernie-assistant",
+    isErnieLikeAssistantMessage({ role: "assistant", model: "ernie-4.0" }, undefined) === true,
+    "expected ERNIE assistant message to match",
+  );
+  expect(
+    "detect.ernie-baidu-assistant",
+    isErnieLikeAssistantMessage({ role: "assistant", model: "baidu-ernie-bot" }, undefined) === true,
+    "expected Baidu ERNIE assistant message to match",
+  );
+
+  // Baichuan assistant
+  expect(
+    "detect.baichuan-assistant",
+    isBaichuanLikeAssistantMessage({ role: "assistant", model: "baichuan-2-pro" }, undefined) === true,
+    "expected Baichuan assistant message to match",
+  );
+
+  // StepFun assistant
+  expect(
+    "detect.stepfun-assistant",
+    isStepFunLikeAssistantMessage({ role: "assistant", model: "stepfun-pro-v1" }, undefined) === true,
+    "expected StepFun assistant message to match",
+  );
+  expect(
+    "detect.stepfun-step-prefix-assistant",
+    isStepFunLikeAssistantMessage({ role: "assistant", model: "step-2-pro" }, undefined) === true,
+    "expected step-2-pro assistant message to match",
+  );
+
+  // Spark assistant
+  expect(
+    "detect.spark-assistant",
+    isSparkLikeAssistantMessage({ role: "assistant", model: "spark-4.0" }, undefined) === true,
+    "expected Spark assistant message to match",
+  );
+
+  // InternLM assistant
+  expect(
+    "detect.internlm-assistant",
+    isInternLMLikeAssistantMessage({ role: "assistant", model: "internlm2-pro" }, undefined) === true,
+    "expected InternLM assistant message to match",
+  );
+
+  // Gemma assistant
+  expect(
+    "detect.gemma-assistant",
+    isGemmaLikeAssistantMessage({ role: "assistant", model: "gemma-3-27b" }, undefined) === true,
+    "expected Gemma assistant message to match",
+  );
+
+  // Phi assistant
+  expect(
+    "detect.phi-assistant",
+    isPhiLikeAssistantMessage({ role: "assistant", model: "phi-3-mini" }, undefined) === true,
+    "expected Phi assistant message to match",
+  );
+
+  // Jamba assistant
+  expect(
+    "detect.jamba-assistant",
+    isJambaLikeAssistantMessage({ role: "assistant", model: "jamba-1.5-large" }, undefined) === true,
+    "expected Jamba assistant message to match",
+  );
+
+  // Solar assistant
+  expect(
+    "detect.solar-assistant",
+    isSolarLikeAssistantMessage({ role: "assistant", model: "solar-mini" }, undefined) === true,
+    "expected Solar assistant message to match",
+  );
+}
+
+// ==========================================================================
+// Test 48: New model-family adapter labels and stats separation (batch 2)
+// ==========================================================================
+{
+  // Doubao adapter label
+  const doubaoFormatted = formatCacheStats(
+    { id: "openai", label: "Doubao cache", showCacheWrite: false } as Parameters<typeof formatCacheStats>[0],
+    emptyCacheStats("2026-05-24"),
+  );
+  expect("newAdapter.doubao-label", doubaoFormatted.startsWith("Doubao cache"), `expected label "Doubao cache", got: "${doubaoFormatted}"`);
+
+  // ERNIE adapter label
+  const ernieFormatted = formatCacheStats(
+    { id: "openai", label: "ERNIE cache", showCacheWrite: false } as Parameters<typeof formatCacheStats>[0],
+    emptyCacheStats("2026-05-24"),
+  );
+  expect("newAdapter.ernie-label", ernieFormatted.startsWith("ERNIE cache"), `expected label "ERNIE cache", got: "${ernieFormatted}"`);
+
+  // Baichuan adapter label
+  const baichuanFormatted = formatCacheStats(
+    { id: "openai", label: "Baichuan cache", showCacheWrite: false } as Parameters<typeof formatCacheStats>[0],
+    emptyCacheStats("2026-05-24"),
+  );
+  expect("newAdapter.baichuan-label", baichuanFormatted.startsWith("Baichuan cache"), `expected label "Baichuan cache", got: "${baichuanFormatted}"`);
+
+  // StepFun adapter label
+  const stepfunFormatted = formatCacheStats(
+    { id: "openai", label: "StepFun cache", showCacheWrite: false } as Parameters<typeof formatCacheStats>[0],
+    emptyCacheStats("2026-05-24"),
+  );
+  expect("newAdapter.stepfun-label", stepfunFormatted.startsWith("StepFun cache"), `expected label "StepFun cache", got: "${stepfunFormatted}"`);
+
+  // Spark adapter label
+  const sparkFormatted = formatCacheStats(
+    { id: "openai", label: "Spark cache", showCacheWrite: false } as Parameters<typeof formatCacheStats>[0],
+    emptyCacheStats("2026-05-24"),
+  );
+  expect("newAdapter.spark-label", sparkFormatted.startsWith("Spark cache"), `expected label "Spark cache", got: "${sparkFormatted}"`);
+
+  // InternLM adapter label
+  const internlmFormatted = formatCacheStats(
+    { id: "openai", label: "InternLM cache", showCacheWrite: false } as Parameters<typeof formatCacheStats>[0],
+    emptyCacheStats("2026-05-24"),
+  );
+  expect("newAdapter.internlm-label", internlmFormatted.startsWith("InternLM cache"), `expected label "InternLM cache", got: "${internlmFormatted}"`);
+
+  // Gemma adapter label
+  const gemmaFormatted = formatCacheStats(
+    { id: "openai", label: "Gemma cache", showCacheWrite: false } as Parameters<typeof formatCacheStats>[0],
+    emptyCacheStats("2026-05-24"),
+  );
+  expect("newAdapter.gemma-label", gemmaFormatted.startsWith("Gemma cache"), `expected label "Gemma cache", got: "${gemmaFormatted}"`);
+
+  // Phi adapter label
+  const phiFormatted = formatCacheStats(
+    { id: "openai", label: "Phi cache", showCacheWrite: false } as Parameters<typeof formatCacheStats>[0],
+    emptyCacheStats("2026-05-24"),
+  );
+  expect("newAdapter.phi-label", phiFormatted.startsWith("Phi cache"), `expected label "Phi cache", got: "${phiFormatted}"`);
+
+  // Jamba adapter label
+  const jambaFormatted = formatCacheStats(
+    { id: "openai", label: "Jamba cache", showCacheWrite: false } as Parameters<typeof formatCacheStats>[0],
+    emptyCacheStats("2026-05-24"),
+  );
+  expect("newAdapter.jamba-label", jambaFormatted.startsWith("Jamba cache"), `expected label "Jamba cache", got: "${jambaFormatted}"`);
+
+  // Solar adapter label
+  const solarFormatted = formatCacheStats(
+    { id: "openai", label: "Solar cache", showCacheWrite: false } as Parameters<typeof formatCacheStats>[0],
+    emptyCacheStats("2026-05-24"),
+  );
+  expect("newAdapter.solar-label", solarFormatted.startsWith("Solar cache"), `expected label "Solar cache", got: "${solarFormatted}"`);
+
+  // Model key separation: same id under different providers
+  const doubaoKey1 = modelKey(makeModel({ provider: "byte-dance", id: "doubao-pro-32k" }));
+  const doubaoKey2 = modelKey(makeModel({ provider: "volcengine", id: "doubao-pro-32k" }));
+  expect(
+    "newAdapter.modelKey-distinct-doubao",
+    doubaoKey1 !== doubaoKey2,
+    "expected different keys for different providers with same doubao-pro-32k id",
+  );
+
+  const ernieKey1 = modelKey(makeModel({ provider: "baidu", id: "ernie-4.0" }));
+  const ernieKey2 = modelKey(makeModel({ provider: "custom", id: "ernie-4.0" }));
+  expect(
+    "newAdapter.modelKey-distinct-ernie",
+    ernieKey1 !== ernieKey2,
+    "expected different keys for different providers with same ernie-4.0 id",
+  );
+}
+
+// ==========================================================================
+// Test 49: New model families — compat warnings through describeMissingOpenAICompatibleProxyCompat (batch 2)
+// ==========================================================================
+{
+  // Doubao proxy (non-official baseUrl) — should fire compat warning
+  const doubaoProxy = makeModel({
+    id: "doubao-pro-32k",
+    provider: "volcengine",
+    api: "openai-completions",
+    baseUrl: "https://volcengine.example.com/v1",
+    compat: {},
+  });
+  const doubaoMissing = describeMissingOpenAICompatibleProxyCompat(doubaoProxy);
+  expect(
+    "broadCompat.doubao-both-missing",
+    doubaoMissing.length === 2,
+    `expected both flags missing for Doubao proxy, got: ${JSON.stringify(doubaoMissing)}`,
+  );
+
+  // ERNIE proxy — should fire compat warning
+  const ernieProxy = makeModel({
+    id: "ernie-4.0",
+    provider: "baidu",
+    api: "openai-completions",
+    baseUrl: "https://baidu.example.com/v1",
+    compat: {},
+  });
+  const ernieMissing = describeMissingOpenAICompatibleProxyCompat(ernieProxy);
+  expect(
+    "broadCompat.ernie-both-missing",
+    ernieMissing.length === 2,
+    `expected both flags missing for ERNIE proxy, got: ${JSON.stringify(ernieMissing)}`,
+  );
+
+  // Phi model with official OpenAI baseUrl — should NOT fire warning
+  const phiOfficial = makeModel({
+    id: "phi-3-mini",
+    provider: "microsoft",
+    api: "openai-completions",
+    baseUrl: "https://api.openai.com/v1",
+    compat: {},
+  });
+  const phiOfficialMissing = describeMissingOpenAICompatibleProxyCompat(phiOfficial);
+  expect(
+    "broadCompat.phi-official-skip",
+    phiOfficialMissing.length === 0,
+    `expected no compat warnings for Phi with official baseUrl, got: ${JSON.stringify(phiOfficialMissing)}`,
+  );
+
+  // Solar with openai-responses — should NOT fire (responses, not completions)
+  const solarResponses = makeModel({
+    id: "solar-mini",
+    provider: "upstage",
+    api: "openai-responses",
+    baseUrl: "https://upstage.example.com/v1",
+    compat: {},
+  });
+  const solarResponsesMissing = describeMissingOpenAICompatibleProxyCompat(solarResponses);
+  expect(
+    "broadCompat.solar-responses-skip",
+    solarResponsesMissing.length === 0,
+    `expected no compat warnings for Solar with openai-responses, got: ${JSON.stringify(solarResponsesMissing)}`,
+  );
+
+  // StepFun with kiro-api — should NOT fire
+  const stepfunKiro = makeModel({
+    id: "stepfun-pro-v1",
+    provider: "custom",
+    api: "kiro-api",
+    baseUrl: "https://kiro.example.com/v1",
+    compat: {},
+  });
+  const stepfunKiroMissing = describeMissingOpenAICompatibleProxyCompat(stepfunKiro);
+  expect(
+    "broadCompat.stepfun-kiro-skip",
+    stepfunKiroMissing.length === 0,
+    `expected no compat warnings for StepFun with kiro-api, got: ${JSON.stringify(stepfunKiroMissing)}`,
+  );
+
+  // Baichuan proxy with both compat flags — fully configured
+  const baichuanConfigured = makeModel({
+    id: "baichuan-2-pro",
+    provider: "baichuan",
+    api: "openai-completions",
+    baseUrl: "https://baichuan.example.com/v1",
+    compat: { supportsLongCacheRetention: true, sendSessionAffinityHeaders: true },
+  });
+  const baichuanMissing = describeMissingOpenAICompatibleProxyCompat(baichuanConfigured);
+  expect(
+    "broadCompat.baichuan-configured",
+    baichuanMissing.length === 0,
+    `expected no compat warnings for fully-configured Baichuan proxy, got: ${JSON.stringify(baichuanMissing)}`,
+  );
+}
+
+// ==========================================================================
+// Test 50: New model families — relaxed gate verification (batch 2)
+// ==========================================================================
+{
+  // Doubao with openai-completions — gate should PASS
+  expect(
+    "relaxedGate.doubao-api-match",
+    isOpenAICompatibleApi("openai-completions") === true,
+    "expected isOpenAICompatibleApi to accept openai-completions for Doubao",
+  );
+
+  // ERNIE with kiro-api — gate should BLOCK
+  expect(
+    "relaxedGate.ernie-kiro-block",
+    isOpenAICompatibleApi("kiro-api") === false,
+    "expected kiro-api to block injection even for ERNIE model",
+  );
+
+  // InternLM with openai-completions — gate should PASS
+  expect(
+    "relaxedGate.internlm-api-match",
+    isOpenAICompatibleApi("openai-completions") === true,
+    "expected isOpenAICompatibleApi to accept openai-completions for InternLM",
+  );
+
+  // Gemma with openai-responses — gate should PASS
+  expect(
+    "relaxedGate.gemma-responses-match",
+    isOpenAICompatibleApi("openai-responses") === true,
+    "expected isOpenAICompatibleApi to accept openai-responses for Gemma",
+  );
+
+  // Phi model with undefined api — gate should BLOCK
+  expect(
+    "relaxedGate.phi-undefined-block",
+    isOpenAICompatibleApi(undefined) === false,
+    "expected undefined api to block injection for Phi",
+  );
+
+  // Jamba with openai-completions — gate should PASS
+  expect(
+    "relaxedGate.jamba-api-match",
+    isOpenAICompatibleApi("openai-completions") === true,
+    "expected isOpenAICompatibleApi to accept openai-completions for Jamba",
+  );
+
+  // Solar with openai-completions — gate should PASS
+  expect(
+    "relaxedGate.solar-api-match",
+    isOpenAICompatibleApi("openai-completions") === true,
+    "expected isOpenAICompatibleApi to accept openai-completions for Solar",
+  );
 }
 
 // ==========================================================================

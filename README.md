@@ -46,6 +46,16 @@ This release keeps the original DeepSeek behavior and adds read-only stats adapt
 | NVIDIA Nemotron | Model id/name contains `nemotron` | `Nemotron cache` | Pi-normalized usage, or raw OpenAI-shaped fields when visible |
 | Cohere / Command | Model id/name contains `cohere` or `command-r` | `Cohere cache` | Pi-normalized usage, or raw OpenAI-shaped fields when visible |
 | Yi / 零一万物 | Model id/name contains `yi-`, `01-ai`, `zero-one`, or pattern `yi` with safe boundaries | `Yi cache` | Pi-normalized usage, or raw OpenAI-shaped fields when visible |
+| Doubao / ByteDance / Seed | Model id/name contains `doubao`, `豆包`, `volcengine`, `bytedance`, `byte-dance`, or pattern `seed` with safe boundaries | `Doubao cache` | Pi-normalized usage, or raw OpenAI-shaped fields when visible |
+| Baidu ERNIE / Wenxin | Model id/name contains `ernie`, `wenxin`, `文心`, `yiyan`, `一言`, or `baidu` | `ERNIE cache` | Pi-normalized usage, or raw OpenAI-shaped fields when visible |
+| Baichuan / 百川 | Model id/name contains `baichuan` or `百川` | `Baichuan cache` | Pi-normalized usage, or raw OpenAI-shaped fields when visible |
+| StepFun / 阶跃星辰 | Model id/name contains `stepfun` or `step-` prefix | `StepFun cache` | Pi-normalized usage, or raw OpenAI-shaped fields when visible |
+| iFlytek Spark / 讯飞星火 | Model id/name contains `spark`, `xinghuo`, `星火`, `iflytek`, or `讯飞` | `Spark cache` | Pi-normalized usage, or raw OpenAI-shaped fields when visible |
+| InternLM / 书生 | Model id/name contains `internlm`, `intern-lm`, or `书生` | `InternLM cache` | Pi-normalized usage, or raw OpenAI-shaped fields when visible |
+| Google Gemma | Model id/name contains `gemma` | `Gemma cache` | Pi-normalized usage, or raw OpenAI-shaped fields when visible |
+| Microsoft Phi | Model id/name contains `phi-` prefix, or pattern `phi` with safe boundaries | `Phi cache` | Pi-normalized usage, or raw OpenAI-shaped fields when visible |
+| AI21 Jamba | Model id/name contains `jamba` or `ai21` | `Jamba cache` | Pi-normalized usage, or raw OpenAI-shaped fields when visible |
+| Upstage Solar | Model id/name contains `solar` or `upstage` | `Solar cache` | Pi-normalized usage, or raw OpenAI-shaped fields when visible |
 | Anthropic / Claude | Model id/name contains `anthropic` or `claude` | `Claude cache` | Pi-normalized usage, or raw `cache_read_input_tokens`, `cache_creation_input_tokens`, `input_tokens` |
 | Gemini / Vertex | Model id/name contains `gemini` or `vertex` | `Gemini cache` | Pi-normalized usage, or raw Gemini/Vertex cached-content token metadata when visible |
 

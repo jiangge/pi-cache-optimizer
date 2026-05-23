@@ -42,6 +42,16 @@ OpenAI-family just because they use an OpenAI-shaped API.
 | NVIDIA Nemotron | `nemotron` | `Nemotron cache` |
 | Cohere / Command | `cohere`, `command-r` | `Cohere cache` |
 | Yi / 零一万物 | `yi-`, `01-ai`, `zero-one`, or pattern `yi` with safe boundaries | `Yi cache` |
+| Doubao / ByteDance / Seed | `doubao`, `豆包`, `volcengine`, `bytedance`, `byte-dance`, or pattern `seed` with safe boundaries | `Doubao cache` |
+| Baidu ERNIE / Wenxin | `ernie`, `wenxin`, `文心`, `yiyan`, `一言`, `baidu` | `ERNIE cache` |
+| Baichuan / 百川 | `baichuan`, `百川` | `Baichuan cache` |
+| StepFun / 阶跃星辰 | `stepfun`, `step-` prefix | `StepFun cache` |
+| iFlytek Spark / 讯飞星火 | `spark`, `xinghuo`, `星火`, `iflytek`, `讯飞` | `Spark cache` |
+| InternLM / 书生 | `internlm`, `intern-lm`, `书生` | `InternLM cache` |
+| Google Gemma | `gemma` | `Gemma cache` |
+| Microsoft Phi | `phi-` prefix, or pattern `phi` with safe boundaries | `Phi cache` |
+| AI21 Jamba | `jamba`, `ai21` | `Jamba cache` |
+| Upstage Solar | `solar`, `upstage` | `Solar cache` |
 | Anthropic / Claude | `anthropic`, `claude` | `Claude cache` |
 | Gemini / Vertex | `gemini`, `vertex` | `Gemini cache` |
 

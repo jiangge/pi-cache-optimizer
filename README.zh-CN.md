@@ -49,6 +49,16 @@
 | NVIDIA Nemotron | model id/name 包含 `nemotron` | `Nemotron cache` | Pi 归一化 usage，或可见 OpenAI 形状字段 |
 | Cohere / Command | model id/name 包含 `cohere` 或 `command-r` | `Cohere cache` | Pi 归一化 usage，或可见 OpenAI 形状字段 |
 | Yi / 零一万物 | model id/name 包含 `yi-`、`01-ai`、`zero-one`，或安全边界内 `yi` 模式 | `Yi cache` | Pi 归一化 usage，或可见 OpenAI 形状字段 |
+| Doubao / ByteDance / Seed | model id/name 包含 `doubao`、`豆包`、`volcengine`、`bytedance`、`byte-dance`，或安全边界内 `seed` 模式 | `Doubao cache` | Pi 归一化 usage，或可见 OpenAI 形状字段 |
+| Baidu ERNIE / 文心一言 | model id/name 包含 `ernie`、`wenxin`、`文心`、`yiyan`、`一言` 或 `baidu` | `ERNIE cache` | Pi 归一化 usage，或可见 OpenAI 形状字段 |
+| Baichuan / 百川 | model id/name 包含 `baichuan` 或 `百川` | `Baichuan cache` | Pi 归一化 usage，或可见 OpenAI 形状字段 |
+| StepFun / 阶跃星辰 | model id/name 包含 `stepfun` 或 `step-` 前缀 | `StepFun cache` | Pi 归一化 usage，或可见 OpenAI 形状字段 |
+| iFlytek Spark / 讯飞星火 | model id/name 包含 `spark`、`xinghuo`、`星火`、`iflytek` 或 `讯飞` | `Spark cache` | Pi 归一化 usage，或可见 OpenAI 形状字段 |
+| InternLM / 书生 | model id/name 包含 `internlm`、`intern-lm` 或 `书生` | `InternLM cache` | Pi 归一化 usage，或可见 OpenAI 形状字段 |
+| Google Gemma | model id/name 包含 `gemma` | `Gemma cache` | Pi 归一化 usage，或可见 OpenAI 形状字段 |
+| Microsoft Phi | model id/name 包含 `phi-` 前缀，或安全边界内 `phi` 模式 | `Phi cache` | Pi 归一化 usage，或可见 OpenAI 形状字段 |
+| AI21 Jamba | model id/name 包含 `jamba` 或 `ai21` | `Jamba cache` | Pi 归一化 usage，或可见 OpenAI 形状字段 |
+| Upstage Solar | model id/name 包含 `solar` 或 `upstage` | `Solar cache` | Pi 归一化 usage，或可见 OpenAI 形状字段 |
 | Anthropic / Claude | model id/name 包含 `anthropic` 或 `claude` | `Claude cache` | Pi 归一化 usage，或可见 raw 字段 `cache_read_input_tokens`、`cache_creation_input_tokens`、`input_tokens` |
 | Gemini / Vertex | model id/name 包含 `gemini` 或 `vertex` | `Gemini cache` | Pi 归一化 usage，或可见 Gemini/Vertex cached-content token metadata |
 
