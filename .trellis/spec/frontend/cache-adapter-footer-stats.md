@@ -15,7 +15,7 @@ below as binding when changing `extension.ts`.
 | npm package name | `pi-cache-optimizer` | Renamed from `pi-deepseek-cache-optimizer` in 2.0.0. |
 | Status key | `pi-cache-stats` | Passed to `ctx.ui.setStatus(STATUS_KEY, ...)`. Renamed from `deepseek-cache-stats`. |
 | Stats file path | `~/.pi/agent/pi-cache-optimizer-stats.json` | Renamed from `~/.pi/agent/deepseek-cache-optimizer-stats.json`. |
-| Models JSON path | `~/.pi/agent/models.json` | Reference path for compat warnings; `%USERPROFILE%\.pi\agent\models.json` on Windows. |
+| Models JSON path | `~/.pi/agent/models.json` | Reference path for compat warnings; shown as `%USERPROFILE%\.pi\agent\models.json` on Windows via `getModelsJsonDisplayPath()`. |
 
 ---
 
@@ -139,7 +139,22 @@ one or both of:
 }
 ```
 
-This warning is advisory only and MUST NOT mutate `~/.pi/agent/models.json`.
+This warning is advisory only and MUST NOT mutate the user's `models.json`.
+
+### Platform-friendly models.json path
+
+The helper `getModelsJsonDisplayPath(platform?)` returns a user-facing path
+string for `models.json`, adapted to the user's platform:
+
+| Platform | Returns |
+|----------|---------|
+| Windows (`win32`, `win64`, etc.) | `%USERPROFILE%\\.pi\\agent\\models.json` |
+| Linux, macOS, others | `~/.pi/agent/models.json` |
+
+This is used in all user-facing compat warning texts, `/cache-optimizer doctor`,
+`/cache-optimizer compat`, and README documentation so users on any platform
+see a copyable path they recognize. The string is never used for I/O — actual
+path resolution is handled by Pi via Node `os.homedir()`.
 It exists because many third-party OpenAI-compatible proxies fan out to multiple
 upstream instances; a body `prompt_cache_key` alone may not keep requests on the
 same cache-bearing backend unless the proxy also honors session-affinity headers.
@@ -532,6 +547,16 @@ When the user sees ` ⚠️ integrity` in the footer:
    update, or a new extension introducing a substring collision).
 3. `/reload` may help if the collision depends on per-turn state;
    otherwise, degrades gracefully (cache miss, no prompt corruption).
+
+### Integrity diagnostics
+
+When `⚠️ integrity` first triggers in a session, a one-time notification
+with recovery steps is shown. The `lastPromptIntegrityWarningAt` timestamp
+is updated on every integrity event and preserved for the session. The
+`/cache-optimizer doctor` command shows integrity diagnosis (with recovery
+steps) if an event was detected within the last 5 minutes, helping users
+diagnose without prompt content or API key exposure. On `/reload` the
+timestamp is reset to 0 and the one-time notification is re-armed.
 
 ---
 

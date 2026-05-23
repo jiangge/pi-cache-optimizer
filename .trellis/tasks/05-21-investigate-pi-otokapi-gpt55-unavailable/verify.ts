@@ -70,6 +70,8 @@ const {
   getCompat,
   modelKey,
   buildOpenAIProxyCompatWarningText,
+  getModelsJsonDisplayPath,
+  getLastPromptIntegrityWarningAt,
   // Cache stats helpers
   addUsageToCacheStats,
   formatCacheStats,
@@ -1521,11 +1523,12 @@ Line count: 10 / 1000
   const bothMissing = ["supportsLongCacheRetention", "sendSessionAffinityHeaders"];
   const bothText = buildOpenAIProxyCompatWarningText("otokapi/gpt-5.5", bothMissing);
 
-  // Must mention the file path
+  // Must mention the file path (platform-friendly)
+  const modelsJsonPath = getModelsJsonDisplayPath();
   expect(
     "warning-v2.includes-models-json",
-    bothText.includes("~/.pi/agent/models.json"),
-    "expected warning text to mention ~/.pi/agent/models.json",
+    bothText.includes(modelsJsonPath),
+    `expected warning text to mention models.json (${modelsJsonPath})`,
   );
 
   // Must mention the provider selector
@@ -1574,14 +1577,15 @@ Line count: 10 / 1000
   // Simulate the deepseek warningText logic
   const slashIdx = key.indexOf("/");
   const providerLabel = slashIdx > 0 ? key.slice(0, slashIdx) : key;
+  const modelsJsonPath = getModelsJsonDisplayPath();
   const text =
     `💡 pi-cache-optimizer: ${key} is DeepSeek-like but merged compat lacks ${missing.join(" and ")}. ` +
-    `Proxies may reduce or hide cache hits. Edit ~/.pi/agent/models.json -> providers["${providerLabel}"] -> compat (at the same level as baseUrl/api/apiKey/models).`;
+    `Proxies may reduce or hide cache hits. Edit ${modelsJsonPath} -> providers["${providerLabel}"] -> compat (at the same level as baseUrl/api/apiKey/models).`;
 
   expect(
     "deepseek-warning.includes-models-json",
-    text.includes("~/.pi/agent/models.json"),
-    "expected deepseek warning to mention models.json",
+    text.includes(modelsJsonPath),
+    `expected deepseek warning to mention models.json path (${modelsJsonPath})`,
   );
   expect(
     "deepseek-warning.includes-provider-path",
@@ -1712,10 +1716,11 @@ Line count: 10 / 1000
   );
 
   // Output MUST contain file path if flags missing
+  const modelsJsonPath = getModelsJsonDisplayPath();
   expect(
     "doctor-output.contains-file-path",
-    output.includes("~/.pi/agent/models.json"),
-    "expected doctor output to mention the models.json file path",
+    output.includes(modelsJsonPath),
+    `expected doctor output to mention the models.json file path (${modelsJsonPath})`,
   );
 
   // Output MUST mention provider path
@@ -1792,6 +1797,139 @@ Line count: 10 / 1000
     allXhigh === false,
     "expected proper template to NOT map all levels to xhigh — levels should be distinct",
   );
+}
+
+// ==========================================================================
+// Test 38: getModelsJsonDisplayPath — platform-specific display paths
+// ==========================================================================
+{
+  // Windows path uses %USERPROFILE% with backslashes
+  const winPath = getModelsJsonDisplayPath("win32");
+  expect(
+    "modelsPath.win32-contains-userprofile",
+    winPath.includes("%USERPROFILE%"),
+    `expected Windows path to contain %USERPROFILE%, got "${winPath}"`,
+  );
+  expect(
+    "modelsPath.win32-uses-backslash",
+    winPath.includes("\\"),
+    `expected Windows path to use backslashes, got "${winPath}"`,
+  );
+  expect(
+    "modelsPath.win32-ends-correctly",
+    winPath.endsWith(".pi\\agent\\models.json"),
+    `expected Windows path to end with .pi\\agent\\models.json, got "${winPath}"`,
+  );
+
+  // macOS path uses tilde + forward slash
+  const macPath = getModelsJsonDisplayPath("darwin");
+  expect(
+    "modelsPath.darwin",
+    macPath === "~/.pi/agent/models.json",
+    `expected darwin path to be "~/.pi/agent/models.json", got "${macPath}"`,
+  );
+
+  // Linux path uses tilde + forward slash
+  const linuxPath = getModelsJsonDisplayPath("linux");
+  expect(
+    "modelsPath.linux",
+    linuxPath === "~/.pi/agent/models.json",
+    `expected linux path to be "~/.pi/agent/models.json", got "${linuxPath}"`,
+  );
+
+  // Default (no arg) should match current platform — at minimum not be empty
+  const defaultPath = getModelsJsonDisplayPath();
+  expect(
+    "modelsPath.default-not-empty",
+    defaultPath.length > 0,
+    "expected default getModelsJsonDisplayPath() to return a non-empty string",
+  );
+
+  // Distinctness: Windows and Unix paths differ
+  expect(
+    "modelsPath.win-vs-unix-distinct",
+    winPath !== macPath,
+    "expected Windows path to differ from macOS/Linux path",
+  );
+}
+
+// ==========================================================================
+// Test 39: getLastPromptIntegrityWarningAt — integrity diagnostics state
+// ==========================================================================
+{
+  // Verify the getter returns 0 by default (no issue detected yet)
+  expect(
+    "integrity.default-zero",
+    getLastPromptIntegrityWarningAt() === 0,
+    `expected getLastPromptIntegrityWarningAt to default to 0, got ${getLastPromptIntegrityWarningAt()}`,
+  );
+}
+
+// ==========================================================================
+// Test 40: getModelsJsonDisplayPath used in buildOpenAIProxyCompatWarningText
+// ==========================================================================
+{
+  const bothMissing = ["supportsLongCacheRetention", "sendSessionAffinityHeaders"];
+  const bothText = buildOpenAIProxyCompatWarningText("otokapi/gpt-5.5", bothMissing);
+  const modelsJsonPath = getModelsJsonDisplayPath();
+
+  // The warning text must include the platform-friendly path
+  expect(
+    "warning-path.platform-friendly",
+    bothText.includes(modelsJsonPath),
+    `expected warning text to include platform path (${modelsJsonPath})`,
+  );
+
+  // The warning text must NOT contain the opposite platform's style
+  if (modelsJsonPath.includes("~")) {
+    // Running on Unix — must NOT contain Windows-style backslash paths
+    expect(
+      "warning-path.no-windows-backslash",
+      !bothText.includes("\\"),
+      "expected Unix warning text to NOT contain Windows backslash paths",
+    );
+  } else {
+    // Running on Windows — must NOT contain Unix tilde paths
+    expect(
+      "warning-path.no-unix-tilde",
+      !bothText.includes("~/"),
+      "expected Windows warning text to NOT contain Unix tilde paths",
+    );
+  }
+}
+
+// ==========================================================================
+// Test 41: getModelsJsonDisplayPath used in deepseek warning
+// ==========================================================================
+{
+  const key = "deepseek/deepseek-v4-pro";
+  const missing = ["supportsLongCacheRetention", "sendSessionAffinityHeaders"];
+  const slashIdx = key.indexOf("/");
+  const providerLabel = slashIdx > 0 ? key.slice(0, slashIdx) : key;
+  const modelsJsonPath = getModelsJsonDisplayPath();
+  const text =
+    `💡 pi-cache-optimizer: ${key} is DeepSeek-like but merged compat lacks ${missing.join(" and ")}. ` +
+    `Proxies may reduce or hide cache hits. Edit ${modelsJsonPath} -> providers["${providerLabel}"] -> compat (at the same level as baseUrl/api/apiKey/models).`;
+
+  expect(
+    "deepseek-warning-path.platform-friendly",
+    text.includes(modelsJsonPath),
+    `expected deepseek warning to include platform path (${modelsJsonPath})`,
+  );
+
+  if (modelsJsonPath.includes("~")) {
+    expect(
+      "deepseek-warning-path.no-windows-backslash",
+      !text.includes("\\"),
+      "expected Unix deepseek warning to NOT contain Windows backslash paths",
+    );
+  } else {
+    expect(
+      "deepseek-warning-path.no-unix-tilde",
+      !text.includes("~/"),
+      "expected Windows deepseek warning to NOT contain Unix tilde paths",
+    );
+  }
 }
 
 // ==========================================================================

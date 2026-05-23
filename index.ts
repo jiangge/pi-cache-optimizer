@@ -48,6 +48,16 @@ const NO_PROMPT_REWRITE_ENV = "PI_CACHE_OPTIMIZER_NO_PROMPT_REWRITE";
 // persisted metrics.
 let promptTruncationDetected = false;
 
+// Timestamp (ms) of the most recent integrity truncation event.
+// Used by /cache-optimizer doctor to surface recovery guidance.
+// Reset to 0 on reload.
+let lastPromptIntegrityWarningAt = 0;
+
+/** Getter for lastPromptIntegrityWarningAt (exported for tests via __internals_for_tests). */
+function getLastPromptIntegrityWarningAt(): number {
+  return lastPromptIntegrityWarningAt;
+}
+
 // Minimum count of skills before compression is worth applying.
 // Below this, pi's verbose XML block is small enough that the overhead of
 // an additional one-line index isn't worth the loss of per-skill
@@ -548,6 +558,26 @@ function getCompat(model: PiModel | undefined): CacheCompat {
   return (model?.compat ?? {}) as CacheCompat;
 }
 
+/**
+ * Return a platform-friendly display path for `~/.pi/agent/models.json`.
+ *
+ * On Windows (platform starts with "win") the path is shown as
+ * `%USERPROFILE%\.pi\agent\models.json` to match Windows conventions.
+ * On all other platforms (Linux, macOS, etc.) it is shown as
+ * `~/.pi/agent/models.json` (the Unix-style tilde shorthand).
+ *
+ * This is a DISPLAY helper only. Actual path resolution is done by Pi
+ * (via Node `os.homedir()` + path.join), and this string is never used
+ * for I/O — only for warning/doctor/README text so that users on any
+ * platform see a copyable path they recognize.
+ */
+function getModelsJsonDisplayPath(platform: string = process.platform): string {
+  if (platform.startsWith("win")) {
+    return `%USERPROFILE%\\.pi\\agent\\models.json`;
+  }
+  return "~/.pi/agent/models.json";
+}
+
 function isEnabledEnv(value: string | undefined): boolean {
   if (!value) return false;
   const normalized = value.trim().toLowerCase();
@@ -999,9 +1029,10 @@ function buildOpenAIProxyCompatWarningText(key: string, missing: string[]): stri
   const slashIdx = key.indexOf("/");
   const providerLabel = slashIdx > 0 ? key.slice(0, slashIdx) : key;
 
+  const modelsJsonPath = getModelsJsonDisplayPath();
   const lines: string[] = [
     `💡 pi-cache-optimizer: ${key} is a third-party GPT/OpenAI-compatible proxy but merged compat lacks ${missing.join(" and ")}.`,
-    `Edit ~/.pi/agent/models.json -> providers["${providerLabel}"] -> compat (at the same level as baseUrl/api/apiKey/models):`,
+    `Edit ${modelsJsonPath} -> providers["${providerLabel}"] -> compat (at the same level as baseUrl/api/apiKey/models):`,
     ``,
     JSON.stringify(suggestion, null, 2),
     ``,
@@ -1057,9 +1088,10 @@ const CACHE_PROVIDER_ADAPTERS: CacheProviderAdapter[] = [
       const key = modelKey(model);
       const slashIdx = key.indexOf("/");
       const providerLabel = slashIdx > 0 ? key.slice(0, slashIdx) : key;
+      const modelsJsonPath = getModelsJsonDisplayPath();
       return (
         `💡 pi-cache-optimizer: ${key} is DeepSeek-like but merged compat lacks ${missing.join(" and ")}. ` +
-        `Proxies may reduce or hide cache hits. Edit ~/.pi/agent/models.json -> providers["${providerLabel}"] -> compat (at the same level as baseUrl/api/apiKey/models).`
+        `Proxies may reduce or hide cache hits. Edit ${modelsJsonPath} -> providers["${providerLabel}"] -> compat (at the same level as baseUrl/api/apiKey/models).`
       );
     },
   },
@@ -1583,6 +1615,10 @@ export const __internals_for_tests = {
   getAssistantMessageModelTokenValues,
   getCompat,
   modelKey,
+  // Platform-friendly path helper
+  getModelsJsonDisplayPath,
+  // Integrity diagnostics
+  getLastPromptIntegrityWarningAt,
   // Cache stats helpers (module-level, usable from verify script)
   addUsageToCacheStats,
   formatCacheStats,
@@ -1599,6 +1635,7 @@ export default function (pi: ExtensionAPI) {
   let lastStatusText: string | undefined;
   let persistenceWarningShown = false;
   let persistTimer: ReturnType<typeof setTimeout> | null = null;
+  let integrityNotificationShown = false;
   const PERSIST_DEBOUNCE_MS = 2000;
 
 
@@ -1706,6 +1743,9 @@ export default function (pi: ExtensionAPI) {
       cacheStatsByModel = {};
       cacheStatsLegacyFamily = emptyAllCacheStats();
       lastStatusText = undefined;
+      // Reset integrity diagnostics on reload
+      lastPromptIntegrityWarningAt = 0;
+      integrityNotificationShown = false;
       await flushPersistCacheStats(ctx);
       return;
     }
@@ -1745,6 +1785,21 @@ export default function (pi: ExtensionAPI) {
     if (promptTruncationDetected && statusText !== undefined) {
       statusText = statusText + " ⚠️ integrity";
       promptTruncationDetected = false;
+      lastPromptIntegrityWarningAt = Date.now();
+
+      // One-time notification with recovery steps (per session).
+      if (!integrityNotificationShown) {
+        integrityNotificationShown = true;
+        ctx.ui.notify(
+          `⚠️ ${LOG_PREFIX}: A prompt structural marker was lost during reorder on this turn. ` +
+          `The original prompt was used instead to preserve integrity.\n\n` +
+          `Recovery steps:\n` +
+          `1. Run /reload to reset (may clear transient issues).\n` +
+          `2. Set PI_CACHE_OPTIMIZER_NO_PROMPT_REWRITE=1 and /reload to disable reorder.\n` +
+          `3. If persistent, run /cache-optimizer doctor and file an issue (no API keys/prompts).`,
+          "warning",
+        );
+      }
     }
 
     // ⚠️ compat footer marker: if the active model is a non-official
@@ -1926,10 +1981,28 @@ export default function (pi: ExtensionAPI) {
           const slashIdx = key.indexOf("/");
           const providerLabel = slashIdx > 0 ? key.slice(0, slashIdx) : key;
           const suggestion = Object.fromEntries(missing.map((f) => [f, true]));
-          lines.push(`Edit ~/.pi/agent/models.json -> providers["${providerLabel}"] -> compat (same level as baseUrl/api/apiKey/models):`);
+          const modelsJsonPath = getModelsJsonDisplayPath();
+          lines.push(`Edit ${modelsJsonPath} -> providers["${providerLabel}"] -> compat (same level as baseUrl/api/apiKey/models):`);
           lines.push(JSON.stringify(suggestion, null, 2));
         } else {
           lines.push("✅ Compat fully configured (or not applicable).");
+        }
+
+        // ── Integrity diagnostics ──
+        if (lastPromptIntegrityWarningAt > 0) {
+          const ago = Date.now() - lastPromptIntegrityWarningAt;
+          const mins = Math.floor(ago / 60000);
+          if (mins < 5) {
+            lines.push("");
+            lines.push("⚠️  Recent prompt integrity issue detected:");
+            lines.push(`   Last detected ${mins > 0 ? `${mins} min` : `${Math.floor(ago / 1000)}s`} ago. The prompt reorder was`);
+            lines.push(`   skipped on that turn to preserve structural markers.`);
+            lines.push(`   Common causes: extension system prompt format change, substring collision.`);
+            lines.push(`   Steps:`);
+            lines.push(`     1. Run /reload to reset (may clear transient issues).`);
+            lines.push(`     2. Set PI_CACHE_OPTIMIZER_NO_PROMPT_REWRITE=1 & /reload to disable reorder.`);
+            lines.push(`     3. If persistent, file an issue with this doctor output.`);
+          }
         }
 
         cmdCtx.ui.notify(lines.join("\n"), "info");
@@ -1947,10 +2020,11 @@ export default function (pi: ExtensionAPI) {
         const slashIdx = key.indexOf("/");
         const providerLabel = slashIdx > 0 ? key.slice(0, slashIdx) : key;
         const suggestion = Object.fromEntries(missing.map((f) => [f, true]));
+        const modelsJsonPath = getModelsJsonDisplayPath();
         const text = (
           `Active model: ${key}\n` +
           `Missing: ${missing.join(", ")}\n\n` +
-          `Edit ~/.pi/agent/models.json -> providers["${providerLabel}"] -> compat` +
+          `Edit ${modelsJsonPath} -> providers["${providerLabel}"] -> compat` +
           ` (at the same level as baseUrl/api/apiKey/models) and add:\n` +
           `${JSON.stringify(suggestion, null, 2)}\n\n` +
           `Only enable if your endpoint supports them.`

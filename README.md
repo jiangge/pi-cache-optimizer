@@ -62,7 +62,7 @@ This extension is pure Node.js — no shell exec, no native bindings, no platfor
 | Windows | Works through the bash shell Pi requires on Windows (Git Bash, Cygwin, MSYS2, or WSL). See Pi's [Windows setup](https://github.com/earendil-works/pi-coding-agent/blob/main/docs/windows.md). |
 | Termux / Android | Works inside Pi's Termux setup. |
 
-State files under `~/.pi/agent/` are resolved via Node's `os.homedir()`, so on Windows the path automatically expands to `C:\Users\<you>\.pi\agent\...`. All shell snippets in this README are bash, matching the shell Pi runs in on every supported platform; no PowerShell or `cmd.exe` translation is needed when commands are executed inside (or for) Pi.
+State files under `~/.pi/agent/` are resolved via Node's `os.homedir()`, so on Windows the path automatically expands to `C:\Users\<you>\.pi\agent\...`. The extension's compat warnings, `/cache-optimizer doctor`, and `/cache-optimizer compat` show the platform-appropriate path automatically (`~/.pi/agent/models.json` on Linux/macOS, `%USERPROFILE%\.pi\agent\models.json` on Windows). All shell snippets in this README are bash, matching the shell Pi runs in on every supported platform; no PowerShell or `cmd.exe` translation is needed when commands are executed inside (or for) Pi.
 
 ## Quickstart
 

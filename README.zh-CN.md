@@ -65,7 +65,7 @@ Generic OpenAI-compatible 代理**不会**仅因为使用 OpenAI 形状 API 或 
 | Windows | 通过 Pi 在 Windows 下要求的 bash shell 运行（Git Bash、Cygwin、MSYS2 或 WSL）。详见 Pi 的 [Windows setup](https://github.com/earendil-works/pi-coding-agent/blob/main/docs/windows.md)。 |
 | Termux / Android | 在 Pi 的 Termux 环境中可用。 |
 
-状态文件 `~/.pi/agent/` 通过 Node 的 `os.homedir()` 解析，所以在 Windows 上会自动展开为 `C:\Users\<你>\.pi\agent\...`。本文档中所有 shell 命令均使用 bash 语法，与 Pi 在每个受支持平台下运行的 shell 一致；只要在 Pi 内（或为 Pi 而执行）运行，就**不需要**改写为 PowerShell 或 `cmd.exe` 形式。
+状态文件 `~/.pi/agent/` 通过 Node 的 `os.homedir()` 解析，所以在 Windows 上会自动展开为 `C:\Users\<你>\.pi\agent\...`。扩展的 compat 提醒、`/cache-optimizer doctor` 和 `/cache-optimizer compat` 会自动显示适合当前平台的路径（Linux/macOS 上显示 `~/.pi/agent/models.json`，Windows 上显示 `%USERPROFILE%\.pi\agent\models.json`）。本文档中所有 shell 命令均使用 bash 语法，与 Pi 在每个受支持平台下运行的 shell 一致；只要在 Pi 内（或为 Pi 而执行）运行，就**不需要**改写为 PowerShell 或 `cmd.exe` 形式。
 
 ## 快速开始
 
