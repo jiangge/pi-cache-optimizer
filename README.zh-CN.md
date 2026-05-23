@@ -71,6 +71,24 @@
 | Naver HyperCLOVA X | model id/name 包含 `hyperclova` 或 `clova-x`（保守检测，不含裸 `clova`/`naver`） | `HyperCLOVA cache` | Pi 归一化 usage，或可见 OpenAI 形状字段 |
 | Aleph Alpha Luminous | model id/name 包含 `luminous`、`aleph-alpha`，或安全边界内 `aleph` 模式 | `Luminous cache` | Pi 归一化 usage，或可见 OpenAI 形状字段 |
 | Nous / Hermes / OpenHermes | model id/name 包含 `nous`、`hermes` 或 `openhermes` | `Hermes cache` | Pi 归一化 usage，或可见 OpenAI 形状字段 |
+| IBM Granite | model id/name 包含 `granite` 或 `ibm-granite` | `Granite cache` | Pi 归一化 usage，或可见 OpenAI 形状字段 |
+| Snowflake Arctic | model id/name 包含 `snowflake-arctic`，或安全边界内 `arctic` 模式 | `Arctic cache` | Pi 归一化 usage，或可见 OpenAI 形状字段 |
+| Huawei Pangu / 盘古 | model id/name 包含 `pangu`、`pan-gu`、`盘古` 或 `huawei-pangu` | `Pangu cache` | Pi 归一化 usage，或可见 OpenAI 形状字段 |
+| SenseTime SenseNova / 商汤 | model id/name 包含 `sensenova`、`sense-nova`、`sensechat` 或 `商汤` | `SenseNova cache` | Pi 归一化 usage，或可见 OpenAI 形状字段 |
+| 360 Zhinao / 智脑 | model id/name 包含 `360gpt`、`360-gpt`、`zhinao` 或 `智脑`（不含裸 `360`） | `Zhinao cache` | Pi 归一化 usage，或可见 OpenAI 形状字段 |
+| OpenBMB MiniCPM | model id/name 包含 `minicpm`、`mini-cpm` 或 `openbmb` | `MiniCPM cache` | Pi 归一化 usage，或可见 OpenAI 形状字段 |
+| XVERSE | model id/name 包含 `xverse` | `XVERSE cache` | Pi 归一化 usage，或可见 OpenAI 形状字段 |
+| OrionStar Orion | model id/name 包含 `orionstar`、`orion-star`，或安全边界内 `orion` 模式 | `Orion cache` | Pi 归一化 usage，或可见 OpenAI 形状字段 |
+| OpenChat | model id/name 包含 `openchat` | `OpenChat cache` | Pi 归一化 usage，或可见 OpenAI 形状字段 |
+| Vicuna | model id/name 包含 `vicuna` | `Vicuna cache` | Pi 归一化 usage，或可见 OpenAI 形状字段 |
+| WizardLM / WizardCoder | model id/name 包含 `wizardlm`、`wizard-lm`、`wizardcoder` 或 `wizard-coder` | `Wizard cache` | Pi 归一化 usage，或可见 OpenAI 形状字段 |
+| Zephyr | model id/name 包含 `zephyr` | `Zephyr cache` | Pi 归一化 usage，或可见 OpenAI 形状字段 |
+| Dolphin | model id/name 包含 `dolphin` | `Dolphin cache` | Pi 归一化 usage，或可见 OpenAI 形状字段 |
+| OpenOrca | model id/name 包含 `openorca` 或 `open-orca` | `OpenOrca cache` | Pi 归一化 usage，或可见 OpenAI 形状字段 |
+| Starling | model id/name 包含 `starling` | `Starling cache` | Pi 归一化 usage，或可见 OpenAI 形状字段 |
+| BLOOM / BigScience | model id/name 包含 `bloom` 或 `bigscience` | `BLOOM cache` | Pi 归一化 usage，或可见 OpenAI 形状字段 |
+| RWKV | model id/name 包含 `rwkv` | `RWKV cache` | Pi 归一化 usage，或可见 OpenAI 形状字段 |
+| Cohere Aya | model id/name 包含 `aya-expanse`，或安全边界内 `aya` 模式（避免 `maya`/`payara`） | `Aya cache` | Pi 归一化 usage，或可见 OpenAI 形状字段 |
 | Anthropic / Claude | model id/name 包含 `anthropic` 或 `claude` | `Claude cache` | Pi 归一化 usage，或可见 raw 字段 `cache_read_input_tokens`、`cache_creation_input_tokens`、`input_tokens` |
 | Gemini / Vertex | model id/name 包含 `gemini` 或 `vertex` | `Gemini cache` | Pi 归一化 usage，或可见 Gemini/Vertex cached-content token metadata |
 

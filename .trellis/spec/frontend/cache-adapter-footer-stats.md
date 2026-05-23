@@ -66,6 +66,24 @@ OpenAI-family just because they use an OpenAI-shaped API.
 | Nous / Hermes / OpenHermes | `nous`, `hermes`, `openhermes` | `Hermes cache` |
 | Anthropic / Claude | `anthropic`, `claude` | `Claude cache` |
 | Gemini / Vertex | `gemini`, `vertex` | `Gemini cache` |
+| IBM Granite | `granite`, `ibm-granite` | `Granite cache` |
+| Snowflake Arctic | `snowflake-arctic`, safe-boundary pattern `arctic` | `Arctic cache` |
+| Huawei Pangu / 盘古 | `pangu`, `pan-gu`, `盘古`, `huawei-pangu` | `Pangu cache` |
+| SenseTime SenseNova / 商汤 | `sensenova`, `sense-nova`, `sensechat`, `商汤` | `SenseNova cache` |
+| 360 Zhinao / 智脑 | `360gpt`, `360-gpt`, `zhinao`, `智脑` (no bare `360`) | `Zhinao cache` |
+| OpenBMB MiniCPM | `minicpm`, `mini-cpm`, `openbmb` | `MiniCPM cache` |
+| XVERSE | `xverse` | `XVERSE cache` |
+| OrionStar Orion | `orionstar`, `orion-star`, or safe-boundary pattern `orion` | `Orion cache` |
+| OpenChat | `openchat` | `OpenChat cache` |
+| Vicuna | `vicuna` | `Vicuna cache` |
+| WizardLM / WizardCoder | `wizardlm`, `wizard-lm`, `wizardcoder`, `wizard-coder` | `Wizard cache` |
+| Zephyr | `zephyr` | `Zephyr cache` |
+| Dolphin | `dolphin` | `Dolphin cache` |
+| OpenOrca | `openorca`, `open-orca` | `OpenOrca cache` |
+| Starling | `starling` | `Starling cache` |
+| BLOOM / BigScience | `bloom`, `bigscience` | `BLOOM cache` |
+| RWKV | `rwkv` | `RWKV cache` |
+| Cohere Aya | `aya-expanse`, or safe-boundary pattern `aya` (avoid `maya`/`payara`) | `Aya cache` |
 
 If no adapter matches, the footer status MUST be cleared (set to `undefined`).
 

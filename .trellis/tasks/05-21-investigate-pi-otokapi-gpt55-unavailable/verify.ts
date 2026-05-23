@@ -115,6 +115,43 @@ const {
   isLuminousLikeAssistantMessage,
   isHermesLikeModel,
   isHermesLikeAssistantMessage,
+  // More OpenAI-compatible model detection (batch 4, 18 families)
+  isGraniteLikeModel,
+  isGraniteLikeAssistantMessage,
+  isArcticLikeModel,
+  isArcticLikeAssistantMessage,
+  isPanguLikeModel,
+  isPanguLikeAssistantMessage,
+  isSenseNovaLikeModel,
+  isSenseNovaLikeAssistantMessage,
+  isZhinaoLikeModel,
+  isZhinaoLikeAssistantMessage,
+  isMiniCPMLikeModel,
+  isMiniCPMLikeAssistantMessage,
+  isXVerseLikeModel,
+  isXVerseLikeAssistantMessage,
+  isOrionLikeModel,
+  isOrionLikeAssistantMessage,
+  isOpenChatLikeModel,
+  isOpenChatLikeAssistantMessage,
+  isVicunaLikeModel,
+  isVicunaLikeAssistantMessage,
+  isWizardLikeModel,
+  isWizardLikeAssistantMessage,
+  isZephyrLikeModel,
+  isZephyrLikeAssistantMessage,
+  isDolphinLikeModel,
+  isDolphinLikeAssistantMessage,
+  isOpenOrcaLikeModel,
+  isOpenOrcaLikeAssistantMessage,
+  isStarlingLikeModel,
+  isStarlingLikeAssistantMessage,
+  isBloomLikeModel,
+  isBloomLikeAssistantMessage,
+  isRwkvLikeModel,
+  isRwkvLikeAssistantMessage,
+  isAyaLikeModel,
+  isAyaLikeAssistantMessage,
   getCompat,
   modelKey,
   buildOpenAIProxyCompatWarningText,
@@ -3048,6 +3085,488 @@ Line count: 10 / 1000
 
   // Hermes with undefined api — gate should BLOCK
   expect("relaxedGate.hermes-undefined-block", isOpenAICompatibleApi(undefined) === false, "expected undefined api to block injection for Hermes");
+}
+
+// ==========================================================================
+// Test 56: New model-family detection (batch 4) — Granite, Arctic, Pangu, SenseNova, Zhinao, MiniCPM, XVERSE, Orion, OpenChat, Vicuna, Wizard, Zephyr, Dolphin, OpenOrca, Starling, BLOOM, RWKV, Aya
+// ==========================================================================
+{
+  // Granite detection
+  expect("detect.granite-id", isGraniteLikeModel(makeModel({ id: "granite-13b-instruct" })) === true, "expected granite-13b-instruct ID to match");
+  expect("detect.granite-ibm", isGraniteLikeModel(makeModel({ id: "ibm-granite-20b" })) === true, "expected ibm-granite-20b ID to match");
+  expect("detect.granite-name", isGraniteLikeModel(makeModel({ id: "custom", name: "IBM Granite" })) === true, "expected IBM Granite name to match");
+  expect("detect.granite-not-gpt", isGraniteLikeModel(makeModel({ id: "gpt-4" })) === false, "expected gpt-4 to NOT match Granite");
+
+  // Arctic detection
+  expect("detect.arctic-snowflake-id", isArcticLikeModel(makeModel({ id: "snowflake-arctic-embed" })) === true, "expected snowflake-arctic-embed ID to match");
+  expect("detect.arctic-boundary", isArcticLikeModel(makeModel({ id: "arctic-2-70b" })) === true, "expected arctic-2-70b to match via arctic safe boundary");
+  expect("detect.arctic-name", isArcticLikeModel(makeModel({ id: "custom", name: "Snowflake Arctic" })) === true, "expected Snowflake Arctic name to match via arctic boundary");
+  expect("detect.arctic-not-gpt", isArcticLikeModel(makeModel({ id: "gpt-4" })) === false, "expected gpt-4 to NOT match Arctic");
+  expect("detect.arctic-not-prose", isArcticLikeModel(makeModel({ id: "fartical-v1" })) === false, "expected fartical-v1 to NOT match Arctic (arctic inside prose)");
+
+  // Pangu detection
+  expect("detect.pangu-id", isPanguLikeModel(makeModel({ id: "pangu-33b" })) === true, "expected pangu-33b ID to match");
+  expect("detect.pangu-pan-gu", isPanguLikeModel(makeModel({ id: "pan-gu-7b" })) === true, "expected pan-gu-7b ID to match");
+  expect("detect.pangu-huawei", isPanguLikeModel(makeModel({ id: "huawei-pangu-100b" })) === true, "expected huawei-pangu-100b ID to match");
+  expect("detect.pangu-name", isPanguLikeModel(makeModel({ id: "custom", name: "盘古 Pangu" })) === true, "expected 盘古 Pangu name to match");
+  expect("detect.pangu-盘古", isPanguLikeModel(makeModel({ id: "盘古-pro" })) === true, "expected 盘古-pro ID to match");
+  expect("detect.pangu-not-gpt", isPanguLikeModel(makeModel({ id: "gpt-4" })) === false, "expected gpt-4 to NOT match Pangu");
+
+  // SenseNova detection
+  expect("detect.sensenova-id", isSenseNovaLikeModel(makeModel({ id: "sensenova-v5" })) === true, "expected sensenova-v5 ID to match");
+  expect("detect.sensenova-sense-nova", isSenseNovaLikeModel(makeModel({ id: "sense-nova-5" })) === true, "expected sense-nova-5 ID to match");
+  expect("detect.sensenova-sensechat", isSenseNovaLikeModel(makeModel({ id: "sensechat-v2" })) === true, "expected sensechat-v2 ID to match");
+  expect("detect.sensenova-name", isSenseNovaLikeModel(makeModel({ id: "custom", name: "商汤 SenseNova" })) === true, "expected 商汤 SenseNova name to match");
+  expect("detect.sensenova-商汤", isSenseNovaLikeModel(makeModel({ id: "商汤-sensenova" })) === true, "expected 商汤-sensenova ID to match");
+  expect("detect.sensenova-not-gpt", isSenseNovaLikeModel(makeModel({ id: "gpt-4" })) === false, "expected gpt-4 to NOT match SenseNova");
+
+  // Zhinao detection
+  expect("detect.zhinao-360gpt", isZhinaoLikeModel(makeModel({ id: "360gpt-pro" })) === true, "expected 360gpt-pro ID to match");
+  expect("detect.zhinao-360-gpt", isZhinaoLikeModel(makeModel({ id: "360-gpt-v2" })) === true, "expected 360-gpt-v2 ID to match");
+  expect("detect.zhinao-name", isZhinaoLikeModel(makeModel({ id: "custom", name: "360 Zhinao" })) === true, "expected 360 Zhinao name to match via zhinao");
+  expect("detect.zhinao-智脑", isZhinaoLikeModel(makeModel({ id: "智脑-v3" })) === true, "expected 智脑-v3 ID to match");
+  expect("detect.zhinao-not-gpt", isZhinaoLikeModel(makeModel({ id: "gpt-4" })) === false, "expected gpt-4 to NOT match Zhinao");
+  expect("detect.zhinao-not-bare-360", isZhinaoLikeModel(makeModel({ id: "360-some-other-model" })) === false, "expected 360-some-other-model to NOT match Zhinao (bare 360 rejected without gpt/zhinao context)");
+
+  // MiniCPM detection
+  expect("detect.minicpm-id", isMiniCPMLikeModel(makeModel({ id: "minicpm-2b" })) === true, "expected minicpm-2b ID to match");
+  expect("detect.minicpm-mini-cpm", isMiniCPMLikeModel(makeModel({ id: "mini-cpm-llama3" })) === true, "expected mini-cpm-llama3 ID to match");
+  expect("detect.minicpm-openbmb", isMiniCPMLikeModel(makeModel({ id: "openbmb/minicpm-2.4b" })) === true, "expected openbmb/minicpm-2.4b ID to match");
+  expect("detect.minicpm-not-gpt", isMiniCPMLikeModel(makeModel({ id: "gpt-4" })) === false, "expected gpt-4 to NOT match MiniCPM");
+
+  // XVERSE detection
+  expect("detect.xverse-id", isXVerseLikeModel(makeModel({ id: "xverse-13b" })) === true, "expected xverse-13b ID to match");
+  expect("detect.xverse-name", isXVerseLikeModel(makeModel({ id: "custom", name: "XVERSE 13B" })) === true, "expected XVERSE 13B name to match");
+  expect("detect.xverse-not-gpt", isXVerseLikeModel(makeModel({ id: "gpt-4" })) === false, "expected gpt-4 to NOT match XVERSE");
+
+  // Orion detection
+  expect("detect.orion-id", isOrionLikeModel(makeModel({ id: "Orion-14B" })) === true, "expected Orion-14B ID to match via orion safe boundary");
+  expect("detect.orion-name", isOrionLikeModel(makeModel({ id: "custom", name: "OrionStar Yi" })) === true, "expected OrionStar Yi name to match via orion boundary");
+  expect("detect.orion-orionstar", isOrionLikeModel(makeModel({ id: "orionstar-yi-34b" })) === true, "expected orionstar-yi-34b ID to match");
+  expect("detect.orion-notch-aware", isOrionLikeModel(makeModel({ id: "notion-v1-custom" })) === false, "expected notion-v1-custom to NOT match Orion (orion inside prose)");
+  expect("detect.orion-not-gpt", isOrionLikeModel(makeModel({ id: "gpt-4" })) === false, "expected gpt-4 to NOT match Orion");
+
+  // OpenChat detection
+  expect("detect.openchat-id", isOpenChatLikeModel(makeModel({ id: "openchat-3.5" })) === true, "expected openchat-3.5 ID to match");
+  expect("detect.openchat-name", isOpenChatLikeModel(makeModel({ id: "custom", name: "OpenChat 3.5" })) === true, "expected OpenChat 3.5 name to match");
+  expect("detect.openchat-not-gpt", isOpenChatLikeModel(makeModel({ id: "gpt-4" })) === false, "expected gpt-4 to NOT match OpenChat");
+
+  // Vicuna detection
+  expect("detect.vicuna-id", isVicunaLikeModel(makeModel({ id: "vicuna-13b-v1.5" })) === true, "expected vicuna-13b-v1.5 ID to match");
+  expect("detect.vicuna-name", isVicunaLikeModel(makeModel({ id: "custom", name: "Vicuna 13B" })) === true, "expected Vicuna 13B name to match");
+  expect("detect.vicuna-not-gpt", isVicunaLikeModel(makeModel({ id: "gpt-4" })) === false, "expected gpt-4 to NOT match Vicuna");
+
+  // Wizard detection
+  expect("detect.wizard-wizardlm", isWizardLikeModel(makeModel({ id: "wizardlm-30b" })) === true, "expected wizardlm-30b ID to match");
+  expect("detect.wizard-wizard-coder", isWizardLikeModel(makeModel({ id: "wizard-coder-15b" })) === true, "expected wizard-coder-15b ID to match");
+  expect("detect.wizard-name", isWizardLikeModel(makeModel({ id: "custom", name: "WizardLM 2" })) === true, "expected WizardLM 2 name to match");
+  expect("detect.wizard-not-gpt", isWizardLikeModel(makeModel({ id: "gpt-4" })) === false, "expected gpt-4 to NOT match Wizard");
+
+  // Zephyr detection
+  expect("detect.zephyr-id", isZephyrLikeModel(makeModel({ id: "zephyr-7b-beta" })) === true, "expected zephyr-7b-beta ID to match");
+  expect("detect.zephyr-name", isZephyrLikeModel(makeModel({ id: "custom", name: "Zephyr 7B" })) === true, "expected Zephyr 7B name to match");
+  expect("detect.zephyr-not-gpt", isZephyrLikeModel(makeModel({ id: "gpt-4" })) === false, "expected gpt-4 to NOT match Zephyr");
+
+  // Dolphin detection
+  expect("detect.dolphin-id", isDolphinLikeModel(makeModel({ id: "dolphin-2.9-llama3" })) === true, "expected dolphin-2.9-llama3 ID to match");
+  expect("detect.dolphin-name", isDolphinLikeModel(makeModel({ id: "custom", name: "Dolphin 2.9" })) === true, "expected Dolphin 2.9 name to match");
+  expect("detect.dolphin-not-gpt", isDolphinLikeModel(makeModel({ id: "gpt-4" })) === false, "expected gpt-4 to NOT match Dolphin");
+
+  // OpenOrca detection
+  expect("detect.openorca-id", isOpenOrcaLikeModel(makeModel({ id: "openorca-platypus2" })) === true, "expected openorca-platypus2 ID to match");
+  expect("detect.openorca-open-orca", isOpenOrcaLikeModel(makeModel({ id: "open-orca-mistral" })) === true, "expected open-orca-mistral ID to match");
+  expect("detect.openorca-not-gpt", isOpenOrcaLikeModel(makeModel({ id: "gpt-4" })) === false, "expected gpt-4 to NOT match OpenOrca");
+
+  // Starling detection
+  expect("detect.starling-id", isStarlingLikeModel(makeModel({ id: "starling-lm-7b" })) === true, "expected starling-lm-7b ID to match");
+  expect("detect.starling-name", isStarlingLikeModel(makeModel({ id: "custom", name: "Starling LM" })) === true, "expected Starling LM name to match");
+  expect("detect.starling-not-gpt", isStarlingLikeModel(makeModel({ id: "gpt-4" })) === false, "expected gpt-4 to NOT match Starling");
+
+  // BLOOM detection
+  expect("detect.bloom-id", isBloomLikeModel(makeModel({ id: "bloom-176b" })) === true, "expected bloom-176b ID to match");
+  expect("detect.bloom-bigscience", isBloomLikeModel(makeModel({ id: "bigscience/bloomz" })) === true, "expected bigscience/bloomz ID to match");
+  expect("detect.bloom-name", isBloomLikeModel(makeModel({ id: "custom", name: "BLOOM 176B" })) === true, "expected BLOOM 176B name to match");
+  expect("detect.bloom-not-gpt", isBloomLikeModel(makeModel({ id: "gpt-4" })) === false, "expected gpt-4 to NOT match BLOOM");
+
+  // RWKV detection
+  expect("detect.rwkv-id", isRwkvLikeModel(makeModel({ id: "rwkv-x-169m" })) === true, "expected rwkv-x-169m ID to match");
+  expect("detect.rwkv-name", isRwkvLikeModel(makeModel({ id: "custom", name: "RWKV 5" })) === true, "expected RWKV 5 name to match");
+  expect("detect.rwkv-not-gpt", isRwkvLikeModel(makeModel({ id: "gpt-4" })) === false, "expected gpt-4 to NOT match RWKV");
+
+  // Aya detection
+  expect("detect.aya-aya-expanse", isAyaLikeModel(makeModel({ id: "aya-expanse-32b" })) === true, "expected aya-expanse-32b ID to match");
+  expect("detect.aya-boundary", isAyaLikeModel(makeModel({ id: "aya-23-8b" })) === true, "expected aya-23-8b to match via aya safe boundary");
+  expect("detect.aya-name", isAyaLikeModel(makeModel({ id: "custom", name: "Cohere Aya" })) === true, "expected Cohere Aya name to match via aya boundary");
+  expect("detect.aya-not-maya", isAyaLikeModel(makeModel({ id: "maya-v1" })) === false, "expected maya-v1 to NOT match Aya (aya inside prose)");
+  expect("detect.aya-not-payara", isAyaLikeModel(makeModel({ id: "payara-v2" })) === false, "expected payara-v2 to NOT match Aya (aya inside prose)");
+  expect("detect.aya-not-gpt", isAyaLikeModel(makeModel({ id: "gpt-4" })) === false, "expected gpt-4 to NOT match Aya");
+}
+
+// ==========================================================================
+// Test 57: New model-family assistant message detection (batch 4)
+// ==========================================================================
+{
+  // Granite assistant
+  expect("detect.granite-assistant", isGraniteLikeAssistantMessage({ role: "assistant", model: "granite-13b-instruct" }, undefined) === true, "expected Granite assistant message to match");
+  expect("detect.granite-ibm-assistant", isGraniteLikeAssistantMessage({ role: "assistant", model: "ibm-granite-20b" }, undefined) === true, "expected ibm-granite-20b assistant message to match");
+
+  // Arctic assistant
+  expect("detect.arctic-assistant", isArcticLikeAssistantMessage({ role: "assistant", model: "snowflake-arctic-embed" }, undefined) === true, "expected Arctic assistant message to match");
+  expect("detect.arctic-boundary-assistant", isArcticLikeAssistantMessage({ role: "assistant", name: "arctic-2-70b" }, undefined) === true, "expected arctic-2-70b assistant message with name to match via arctic boundary");
+
+  // Pangu assistant
+  expect("detect.pangu-assistant", isPanguLikeAssistantMessage({ role: "assistant", model: "pangu-33b" }, undefined) === true, "expected Pangu assistant message to match");
+  expect("detect.pangu-name-assistant", isPanguLikeAssistantMessage({ role: "assistant", name: "盘古" }, undefined) === true, "expected 盘古 assistant message with name to match");
+
+  // SenseNova assistant
+  expect("detect.sensenova-assistant", isSenseNovaLikeAssistantMessage({ role: "assistant", model: "sense-nova-5" }, undefined) === true, "expected SenseNova assistant message to match");
+  expect("detect.sensenova-商汤-assistant", isSenseNovaLikeAssistantMessage({ role: "assistant", name: "商汤" }, undefined) === true, "expected 商汤 assistant message with name to match");
+
+  // Zhinao assistant
+  expect("detect.zhinao-assistant", isZhinaoLikeAssistantMessage({ role: "assistant", model: "360gpt-pro" }, undefined) === true, "expected Zhinao assistant message to match");
+  expect("detect.zhinao-智脑-assistant", isZhinaoLikeAssistantMessage({ role: "assistant", name: "智脑" }, undefined) === true, "expected 智脑 assistant message with name to match");
+
+  // MiniCPM assistant
+  expect("detect.minicpm-assistant", isMiniCPMLikeAssistantMessage({ role: "assistant", model: "minicpm-2b" }, undefined) === true, "expected MiniCPM assistant message to match");
+  expect("detect.minicpm-openbmb-assistant", isMiniCPMLikeAssistantMessage({ role: "assistant", model: "openbmb/minicpm" }, undefined) === true, "expected openbmb/minicpm assistant message to match");
+
+  // XVERSE assistant
+  expect("detect.xverse-assistant", isXVerseLikeAssistantMessage({ role: "assistant", model: "xverse-13b" }, undefined) === true, "expected XVERSE assistant message to match");
+
+  // Orion assistant
+  expect("detect.orion-assistant", isOrionLikeAssistantMessage({ role: "assistant", model: "Orion-14B" }, undefined) === true, "expected Orion assistant message to match via orion boundary");
+  expect("detect.orionstar-assistant", isOrionLikeAssistantMessage({ role: "assistant", model: "orionstar-yi-34b" }, undefined) === true, "expected orionstar-yi-34b assistant message to match");
+
+  // OpenChat assistant
+  expect("detect.openchat-assistant", isOpenChatLikeAssistantMessage({ role: "assistant", model: "openchat-3.5" }, undefined) === true, "expected OpenChat assistant message to match");
+
+  // Vicuna assistant
+  expect("detect.vicuna-assistant", isVicunaLikeAssistantMessage({ role: "assistant", model: "vicuna-13b-v1.5" }, undefined) === true, "expected Vicuna assistant message to match");
+
+  // Wizard assistant
+  expect("detect.wizard-assistant", isWizardLikeAssistantMessage({ role: "assistant", model: "wizardlm-30b" }, undefined) === true, "expected Wizard assistant message to match");
+
+  // Zephyr assistant
+  expect("detect.zephyr-assistant", isZephyrLikeAssistantMessage({ role: "assistant", model: "zephyr-7b-beta" }, undefined) === true, "expected Zephyr assistant message to match");
+
+  // Dolphin assistant
+  expect("detect.dolphin-assistant", isDolphinLikeAssistantMessage({ role: "assistant", model: "dolphin-2.9-llama3" }, undefined) === true, "expected Dolphin assistant message to match");
+
+  // OpenOrca assistant
+  expect("detect.openorca-assistant", isOpenOrcaLikeAssistantMessage({ role: "assistant", model: "openorca-platypus2" }, undefined) === true, "expected OpenOrca assistant message to match");
+
+  // Starling assistant
+  expect("detect.starling-assistant", isStarlingLikeAssistantMessage({ role: "assistant", model: "starling-lm-7b" }, undefined) === true, "expected Starling assistant message to match");
+
+  // BLOOM assistant
+  expect("detect.bloom-assistant", isBloomLikeAssistantMessage({ role: "assistant", model: "bloom-176b" }, undefined) === true, "expected BLOOM assistant message to match");
+  expect("detect.bloom-bigscience-assistant", isBloomLikeAssistantMessage({ role: "assistant", model: "bigscience/bloomz" }, undefined) === true, "expected bigscience/bloomz assistant message to match");
+
+  // RWKV assistant
+  expect("detect.rwkv-assistant", isRwkvLikeAssistantMessage({ role: "assistant", model: "rwkv-x-169m" }, undefined) === true, "expected RWKV assistant message to match");
+
+  // Aya assistant
+  expect("detect.aya-assistant", isAyaLikeAssistantMessage({ role: "assistant", model: "aya-expanse-32b" }, undefined) === true, "expected Aya assistant message to match");
+  expect("detect.aya-boundary-assistant", isAyaLikeAssistantMessage({ role: "assistant", name: "aya-23-8b" }, undefined) === true, "expected aya-23-8b assistant message with name to match via aya boundary");
+}
+
+// ==========================================================================
+// Test 58: New model-family adapter labels and stats separation (batch 4)
+// ==========================================================================
+{
+  // Granite adapter label
+  const graniteFormatted = formatCacheStats(
+    { id: "openai", label: "Granite cache", showCacheWrite: false } as Parameters<typeof formatCacheStats>[0],
+    emptyCacheStats("2026-05-24"),
+  );
+  expect("newAdapter.granite-label", graniteFormatted.startsWith("Granite cache"), `expected label "Granite cache", got: "${graniteFormatted}"`);
+
+  // Arctic adapter label
+  const arcticFormatted = formatCacheStats(
+    { id: "openai", label: "Arctic cache", showCacheWrite: false } as Parameters<typeof formatCacheStats>[0],
+    emptyCacheStats("2026-05-24"),
+  );
+  expect("newAdapter.arctic-label", arcticFormatted.startsWith("Arctic cache"), `expected label "Arctic cache", got: "${arcticFormatted}"`);
+
+  // Pangu adapter label
+  const panguFormatted = formatCacheStats(
+    { id: "openai", label: "Pangu cache", showCacheWrite: false } as Parameters<typeof formatCacheStats>[0],
+    emptyCacheStats("2026-05-24"),
+  );
+  expect("newAdapter.pangu-label", panguFormatted.startsWith("Pangu cache"), `expected label "Pangu cache", got: "${panguFormatted}"`);
+
+  // SenseNova adapter label
+  const sensenovaFormatted = formatCacheStats(
+    { id: "openai", label: "SenseNova cache", showCacheWrite: false } as Parameters<typeof formatCacheStats>[0],
+    emptyCacheStats("2026-05-24"),
+  );
+  expect("newAdapter.sensenova-label", sensenovaFormatted.startsWith("SenseNova cache"), `expected label "SenseNova cache", got: "${sensenovaFormatted}"`);
+
+  // Zhinao adapter label
+  const zhinaoFormatted = formatCacheStats(
+    { id: "openai", label: "Zhinao cache", showCacheWrite: false } as Parameters<typeof formatCacheStats>[0],
+    emptyCacheStats("2026-05-24"),
+  );
+  expect("newAdapter.zhinao-label", zhinaoFormatted.startsWith("Zhinao cache"), `expected label "Zhinao cache", got: "${zhinaoFormatted}"`);
+
+  // MiniCPM adapter label
+  const minicpmFormatted = formatCacheStats(
+    { id: "openai", label: "MiniCPM cache", showCacheWrite: false } as Parameters<typeof formatCacheStats>[0],
+    emptyCacheStats("2026-05-24"),
+  );
+  expect("newAdapter.minicpm-label", minicpmFormatted.startsWith("MiniCPM cache"), `expected label "MiniCPM cache", got: "${minicpmFormatted}"`);
+
+  // XVERSE adapter label
+  const xverseFormatted = formatCacheStats(
+    { id: "openai", label: "XVERSE cache", showCacheWrite: false } as Parameters<typeof formatCacheStats>[0],
+    emptyCacheStats("2026-05-24"),
+  );
+  expect("newAdapter.xverse-label", xverseFormatted.startsWith("XVERSE cache"), `expected label "XVERSE cache", got: "${xverseFormatted}"`);
+
+  // Orion adapter label
+  const orionFormatted = formatCacheStats(
+    { id: "openai", label: "Orion cache", showCacheWrite: false } as Parameters<typeof formatCacheStats>[0],
+    emptyCacheStats("2026-05-24"),
+  );
+  expect("newAdapter.orion-label", orionFormatted.startsWith("Orion cache"), `expected label "Orion cache", got: "${orionFormatted}"`);
+
+  // OpenChat adapter label
+  const openchatFormatted = formatCacheStats(
+    { id: "openai", label: "OpenChat cache", showCacheWrite: false } as Parameters<typeof formatCacheStats>[0],
+    emptyCacheStats("2026-05-24"),
+  );
+  expect("newAdapter.openchat-label", openchatFormatted.startsWith("OpenChat cache"), `expected label "OpenChat cache", got: "${openchatFormatted}"`);
+
+  // Vicuna adapter label
+  const vicunaFormatted = formatCacheStats(
+    { id: "openai", label: "Vicuna cache", showCacheWrite: false } as Parameters<typeof formatCacheStats>[0],
+    emptyCacheStats("2026-05-24"),
+  );
+  expect("newAdapter.vicuna-label", vicunaFormatted.startsWith("Vicuna cache"), `expected label "Vicuna cache", got: "${vicunaFormatted}"`);
+
+  // Wizard adapter label
+  const wizardFormatted = formatCacheStats(
+    { id: "openai", label: "Wizard cache", showCacheWrite: false } as Parameters<typeof formatCacheStats>[0],
+    emptyCacheStats("2026-05-24"),
+  );
+  expect("newAdapter.wizard-label", wizardFormatted.startsWith("Wizard cache"), `expected label "Wizard cache", got: "${wizardFormatted}"`);
+
+  // Zephyr adapter label
+  const zephyrFormatted = formatCacheStats(
+    { id: "openai", label: "Zephyr cache", showCacheWrite: false } as Parameters<typeof formatCacheStats>[0],
+    emptyCacheStats("2026-05-24"),
+  );
+  expect("newAdapter.zephyr-label", zephyrFormatted.startsWith("Zephyr cache"), `expected label "Zephyr cache", got: "${zephyrFormatted}"`);
+
+  // Dolphin adapter label
+  const dolphinFormatted = formatCacheStats(
+    { id: "openai", label: "Dolphin cache", showCacheWrite: false } as Parameters<typeof formatCacheStats>[0],
+    emptyCacheStats("2026-05-24"),
+  );
+  expect("newAdapter.dolphin-label", dolphinFormatted.startsWith("Dolphin cache"), `expected label "Dolphin cache", got: "${dolphinFormatted}"`);
+
+  // OpenOrca adapter label
+  const openorcaFormatted = formatCacheStats(
+    { id: "openai", label: "OpenOrca cache", showCacheWrite: false } as Parameters<typeof formatCacheStats>[0],
+    emptyCacheStats("2026-05-24"),
+  );
+  expect("newAdapter.openorca-label", openorcaFormatted.startsWith("OpenOrca cache"), `expected label "OpenOrca cache", got: "${openorcaFormatted}"`);
+
+  // Starling adapter label
+  const starlingFormatted = formatCacheStats(
+    { id: "openai", label: "Starling cache", showCacheWrite: false } as Parameters<typeof formatCacheStats>[0],
+    emptyCacheStats("2026-05-24"),
+  );
+  expect("newAdapter.starling-label", starlingFormatted.startsWith("Starling cache"), `expected label "Starling cache", got: "${starlingFormatted}"`);
+
+  // BLOOM adapter label
+  const bloomFormatted = formatCacheStats(
+    { id: "openai", label: "BLOOM cache", showCacheWrite: false } as Parameters<typeof formatCacheStats>[0],
+    emptyCacheStats("2026-05-24"),
+  );
+  expect("newAdapter.bloom-label", bloomFormatted.startsWith("BLOOM cache"), `expected label "BLOOM cache", got: "${bloomFormatted}"`);
+
+  // RWKV adapter label
+  const rwkvFormatted = formatCacheStats(
+    { id: "openai", label: "RWKV cache", showCacheWrite: false } as Parameters<typeof formatCacheStats>[0],
+    emptyCacheStats("2026-05-24"),
+  );
+  expect("newAdapter.rwkv-label", rwkvFormatted.startsWith("RWKV cache"), `expected label "RWKV cache", got: "${rwkvFormatted}"`);
+
+  // Aya adapter label
+  const ayaFormatted = formatCacheStats(
+    { id: "openai", label: "Aya cache", showCacheWrite: false } as Parameters<typeof formatCacheStats>[0],
+    emptyCacheStats("2026-05-24"),
+  );
+  expect("newAdapter.aya-label", ayaFormatted.startsWith("Aya cache"), `expected label "Aya cache", got: "${ayaFormatted}"`);
+
+  // Model key separation: same id under different providers
+  const graniteKey1 = modelKey(makeModel({ provider: "ibm", id: "granite-13b" }));
+  const graniteKey2 = modelKey(makeModel({ provider: "custom", id: "granite-13b" }));
+  expect("newAdapter.modelKey-distinct-granite", graniteKey1 !== graniteKey2, "expected different keys for different providers with same granite-13b id");
+
+  const panguKey1 = modelKey(makeModel({ provider: "huawei", id: "pangu-33b" }));
+  const panguKey2 = modelKey(makeModel({ provider: "custom", id: "pangu-33b" }));
+  expect("newAdapter.modelKey-distinct-pangu", panguKey1 !== panguKey2, "expected different keys for different providers with same pangu-33b id");
+}
+
+// ==========================================================================
+// Test 59: New model families (batch 4) — compat warnings through describeMissingOpenAICompatibleProxyCompat
+// ==========================================================================
+{
+  // Granite proxy (non-official) — should fire compat warning
+  const graniteProxy = makeModel({ id: "granite-13b", provider: "ibm", api: "openai-completions", baseUrl: "https://ibm.example.com/v1", compat: {} });
+  const graniteMissing = describeMissingOpenAICompatibleProxyCompat(graniteProxy);
+  expect("broadCompat.granite-both-missing", graniteMissing.length === 2, `expected both flags missing for Granite proxy, got: ${JSON.stringify(graniteMissing)}`);
+
+  // Arctic proxy — should fire compat warning
+  const arcticProxy = makeModel({ id: "snowflake-arctic-embed", provider: "snowflake", api: "openai-completions", baseUrl: "https://arctic.example.com/v1", compat: {} });
+  const arcticMissing = describeMissingOpenAICompatibleProxyCompat(arcticProxy);
+  expect("broadCompat.arctic-both-missing", arcticMissing.length === 2, `expected both flags missing for Arctic proxy, got: ${JSON.stringify(arcticMissing)}`);
+
+  // Pangu with official OpenAI baseUrl — should NOT fire
+  const panguOfficial = makeModel({ id: "pangu-33b", provider: "huawei", api: "openai-completions", baseUrl: "https://api.openai.com/v1", compat: {} });
+  const panguOfficialMissing = describeMissingOpenAICompatibleProxyCompat(panguOfficial);
+  expect("broadCompat.pangu-official-skip", panguOfficialMissing.length === 0, `expected no compat warnings for Pangu with official baseUrl, got: ${JSON.stringify(panguOfficialMissing)}`);
+
+  // SenseNova with kiro-api — should NOT fire
+  const sensenovaKiro = makeModel({ id: "sensenova-v5", provider: "sensetime", api: "kiro-api", baseUrl: "https://kiro.example.com/v1", compat: {} });
+  const sensenovaKiroMissing = describeMissingOpenAICompatibleProxyCompat(sensenovaKiro);
+  expect("broadCompat.sensenova-kiro-skip", sensenovaKiroMissing.length === 0, `expected no compat warnings for SenseNova with kiro-api, got: ${JSON.stringify(sensenovaKiroMissing)}`);
+
+  // Zhinao with both compat flags — fully configured
+  const zhinaoConfigured = makeModel({ id: "360gpt-pro", provider: "360", api: "openai-completions", baseUrl: "https://zhinao.example.com/v1", compat: { supportsLongCacheRetention: true, sendSessionAffinityHeaders: true } });
+  const zhinaoMissing = describeMissingOpenAICompatibleProxyCompat(zhinaoConfigured);
+  expect("broadCompat.zhinao-configured", zhinaoMissing.length === 0, `expected no compat warnings for fully-configured Zhinao proxy, got: ${JSON.stringify(zhinaoMissing)}`);
+
+  // MiniCPM proxy — should fire compat warning
+  const minicpmProxy = makeModel({ id: "minicpm-2b", provider: "openbmb", api: "openai-completions", baseUrl: "https://minicpm.example.com/v1", compat: {} });
+  const minicpmMissing = describeMissingOpenAICompatibleProxyCompat(minicpmProxy);
+  expect("broadCompat.minicpm-both-missing", minicpmMissing.length === 2, `expected both flags missing for MiniCPM proxy, got: ${JSON.stringify(minicpmMissing)}`);
+
+  // XVERSE with openai-responses — should NOT fire
+  const xverseResponses = makeModel({ id: "xverse-13b", provider: "xverse", api: "openai-responses", baseUrl: "https://xverse.example.com/v1", compat: {} });
+  const xverseResponsesMissing = describeMissingOpenAICompatibleProxyCompat(xverseResponses);
+  expect("broadCompat.xverse-responses-skip", xverseResponsesMissing.length === 0, `expected no compat warnings for XVERSE with openai-responses, got: ${JSON.stringify(xverseResponsesMissing)}`);
+
+  // Orion proxy — should fire compat warning
+  const orionProxy = makeModel({ id: "Orion-14B", provider: "orionstar", api: "openai-completions", baseUrl: "https://orion.example.com/v1", compat: {} });
+  const orionMissing = describeMissingOpenAICompatibleProxyCompat(orionProxy);
+  expect("broadCompat.orion-both-missing", orionMissing.length === 2, `expected both flags missing for Orion proxy, got: ${JSON.stringify(orionMissing)}`);
+
+  // OpenChat with kiro-api — should NOT fire
+  const openchatKiro = makeModel({ id: "openchat-3.5", provider: "custom", api: "kiro-api", baseUrl: "https://kiro.example.com/v1", compat: {} });
+  const openchatKiroMissing = describeMissingOpenAICompatibleProxyCompat(openchatKiro);
+  expect("broadCompat.openchat-kiro-skip", openchatKiroMissing.length === 0, `expected no compat warnings for OpenChat with kiro-api, got: ${JSON.stringify(openchatKiroMissing)}`);
+
+  // Vicuna proxy — should fire compat warning
+  const vicunaProxy = makeModel({ id: "vicuna-13b-v1.5", provider: "lmsys", api: "openai-completions", baseUrl: "https://vicuna.example.com/v1", compat: {} });
+  const vicunaMissing = describeMissingOpenAICompatibleProxyCompat(vicunaProxy);
+  expect("broadCompat.vicuna-both-missing", vicunaMissing.length === 2, `expected both flags missing for Vicuna proxy, got: ${JSON.stringify(vicunaMissing)}`);
+
+  // Wizard with both compat flags — fully configured
+  const wizardConfigured = makeModel({ id: "wizardlm-30b", provider: "microsoft", api: "openai-completions", baseUrl: "https://wizard.example.com/v1", compat: { supportsLongCacheRetention: true, sendSessionAffinityHeaders: true } });
+  const wizardMissing = describeMissingOpenAICompatibleProxyCompat(wizardConfigured);
+  expect("broadCompat.wizard-configured", wizardMissing.length === 0, `expected no compat warnings for fully-configured Wizard proxy, got: ${JSON.stringify(wizardMissing)}`);
+
+  // Zephyr proxy — should fire compat warning
+  const zephyrProxy = makeModel({ id: "zephyr-7b-beta", provider: "huggingface", api: "openai-completions", baseUrl: "https://zephyr.example.com/v1", compat: {} });
+  const zephyrMissing = describeMissingOpenAICompatibleProxyCompat(zephyrProxy);
+  expect("broadCompat.zephyr-both-missing", zephyrMissing.length === 2, `expected both flags missing for Zephyr proxy, got: ${JSON.stringify(zephyrMissing)}`);
+
+  // Dolphin with official OpenAI baseUrl — should NOT fire
+  const dolphinOfficial = makeModel({ id: "dolphin-2.9-llama3", provider: "cognitive", api: "openai-completions", baseUrl: "https://api.openai.com/v1", compat: {} });
+  const dolphinOfficialMissing = describeMissingOpenAICompatibleProxyCompat(dolphinOfficial);
+  expect("broadCompat.dolphin-official-skip", dolphinOfficialMissing.length === 0, `expected no compat warnings for Dolphin with official baseUrl, got: ${JSON.stringify(dolphinOfficialMissing)}`);
+
+  // OpenOrca proxy — should fire compat warning
+  const openorcaProxy = makeModel({ id: "openorca-platypus2", provider: "openorca", api: "openai-completions", baseUrl: "https://openorca.example.com/v1", compat: {} });
+  const openorcaMissing = describeMissingOpenAICompatibleProxyCompat(openorcaProxy);
+  expect("broadCompat.openorca-both-missing", openorcaMissing.length === 2, `expected both flags missing for OpenOrca proxy, got: ${JSON.stringify(openorcaMissing)}`);
+
+  // Starling with kiro-api — should NOT fire
+  const starlingKiro = makeModel({ id: "starling-lm-7b", provider: "berkeley", api: "kiro-api", baseUrl: "https://kiro.example.com/v1", compat: {} });
+  const starlingKiroMissing = describeMissingOpenAICompatibleProxyCompat(starlingKiro);
+  expect("broadCompat.starling-kiro-skip", starlingKiroMissing.length === 0, `expected no compat warnings for Starling with kiro-api, got: ${JSON.stringify(starlingKiroMissing)}`);
+
+  // BLOOM with both compat flags — fully configured
+  const bloomConfigured = makeModel({ id: "bloom-176b", provider: "bigscience", api: "openai-completions", baseUrl: "https://bloom.example.com/v1", compat: { supportsLongCacheRetention: true, sendSessionAffinityHeaders: true } });
+  const bloomMissing = describeMissingOpenAICompatibleProxyCompat(bloomConfigured);
+  expect("broadCompat.bloom-configured", bloomMissing.length === 0, `expected no compat warnings for fully-configured BLOOM proxy, got: ${JSON.stringify(bloomMissing)}`);
+
+  // RWKV proxy — should fire compat warning
+  const rwkvProxy = makeModel({ id: "rwkv-x-169m", provider: "blink", api: "openai-completions", baseUrl: "https://rwkv.example.com/v1", compat: {} });
+  const rwkvMissing = describeMissingOpenAICompatibleProxyCompat(rwkvProxy);
+  expect("broadCompat.rwkv-both-missing", rwkvMissing.length === 2, `expected both flags missing for RWKV proxy, got: ${JSON.stringify(rwkvMissing)}`);
+
+  // Aya with official OpenAI baseUrl — should NOT fire
+  const ayaOfficial = makeModel({ id: "aya-expanse-32b", provider: "cohere", api: "openai-completions", baseUrl: "https://api.openai.com/v1", compat: {} });
+  const ayaOfficialMissing = describeMissingOpenAICompatibleProxyCompat(ayaOfficial);
+  expect("broadCompat.aya-official-skip", ayaOfficialMissing.length === 0, `expected no compat warnings for Aya with official baseUrl, got: ${JSON.stringify(ayaOfficialMissing)}`);
+
+  // Aya with both compat flags — fully configured
+  const ayaConfigured = makeModel({ id: "aya-expanse-32b", provider: "cohere", api: "openai-completions", baseUrl: "https://aya.example.com/v1", compat: { supportsLongCacheRetention: true, sendSessionAffinityHeaders: true } });
+  const ayaMissing = describeMissingOpenAICompatibleProxyCompat(ayaConfigured);
+  expect("broadCompat.aya-configured", ayaMissing.length === 0, `expected no compat warnings for fully-configured Aya proxy, got: ${JSON.stringify(ayaMissing)}`);
+}
+
+// ==========================================================================
+// Test 60: New model families (batch 4) — relaxed gate verification
+// ==========================================================================
+{
+  // Granite with openai-completions — gate should PASS
+  expect("relaxedGate.granite-api-match", isOpenAICompatibleApi("openai-completions") === true, "expected isOpenAICompatibleApi to accept openai-completions for Granite");
+
+  // Arctic with kiro-api — gate should BLOCK
+  expect("relaxedGate.arctic-kiro-block", isOpenAICompatibleApi("kiro-api") === false, "expected kiro-api to block injection for Arctic");
+
+  // Pangu with openai-completions — gate should PASS
+  expect("relaxedGate.pangu-api-match", isOpenAICompatibleApi("openai-completions") === true, "expected isOpenAICompatibleApi to accept openai-completions for Pangu");
+
+  // SenseNova with openai-responses — gate should PASS
+  expect("relaxedGate.sensenova-responses-match", isOpenAICompatibleApi("openai-responses") === true, "expected isOpenAICompatibleApi to accept openai-responses for SenseNova");
+
+  // Zhinao with undefined api — gate should BLOCK
+  expect("relaxedGate.zhinao-undefined-block", isOpenAICompatibleApi(undefined) === false, "expected undefined api to block injection for Zhinao");
+
+  // MiniCPM with openai-completions — gate should PASS
+  expect("relaxedGate.minicpm-api-match", isOpenAICompatibleApi("openai-completions") === true, "expected isOpenAICompatibleApi to accept openai-completions for MiniCPM");
+
+  // XVERSE with openai-completions — gate should PASS
+  expect("relaxedGate.xverse-api-match", isOpenAICompatibleApi("openai-completions") === true, "expected isOpenAICompatibleApi to accept openai-completions for XVERSE");
+
+  // Orion with kiro-api — gate should BLOCK
+  expect("relaxedGate.orion-kiro-block", isOpenAICompatibleApi("kiro-api") === false, "expected kiro-api to block injection for Orion");
+
+  // OpenChat with openai-completions — gate should PASS
+  expect("relaxedGate.openchat-api-match", isOpenAICompatibleApi("openai-completions") === true, "expected isOpenAICompatibleApi to accept openai-completions for OpenChat");
+
+  // Vicuna with openai-responses — gate should PASS
+  expect("relaxedGate.vicuna-responses-match", isOpenAICompatibleApi("openai-responses") === true, "expected isOpenAICompatibleApi to accept openai-responses for Vicuna");
+
+  // Wizard with openai-completions — gate should PASS
+  expect("relaxedGate.wizard-api-match", isOpenAICompatibleApi("openai-completions") === true, "expected isOpenAICompatibleApi to accept openai-completions for Wizard");
+
+  // Zephyr with kiro-api — gate should BLOCK
+  expect("relaxedGate.zephyr-kiro-block", isOpenAICompatibleApi("kiro-api") === false, "expected kiro-api to block injection for Zephyr");
+
+  // Dolphin with openai-completions — gate should PASS
+  expect("relaxedGate.dolphin-api-match", isOpenAICompatibleApi("openai-completions") === true, "expected isOpenAICompatibleApi to accept openai-completions for Dolphin");
+
+  // OpenOrca with undefined api — gate should BLOCK
+  expect("relaxedGate.openorca-undefined-block", isOpenAICompatibleApi(undefined) === false, "expected undefined api to block injection for OpenOrca");
+
+  // Starling with openai-completions — gate should PASS
+  expect("relaxedGate.starling-api-match", isOpenAICompatibleApi("openai-completions") === true, "expected isOpenAICompatibleApi to accept openai-completions for Starling");
+
+  // BLOOM with openai-responses — gate should PASS
+  expect("relaxedGate.bloom-responses-match", isOpenAICompatibleApi("openai-responses") === true, "expected isOpenAICompatibleApi to accept openai-responses for BLOOM");
+
+  // RWKV with openai-completions — gate should PASS
+  expect("relaxedGate.rwkv-api-match", isOpenAICompatibleApi("openai-completions") === true, "expected isOpenAICompatibleApi to accept openai-completions for RWKV");
+
+  // Aya with kiro-api — gate should BLOCK
+  expect("relaxedGate.aya-kiro-block", isOpenAICompatibleApi("kiro-api") === false, "expected kiro-api to block injection for Aya");
 }
 
 // ==========================================================================

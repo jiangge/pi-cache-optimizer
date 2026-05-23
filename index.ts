@@ -96,6 +96,11 @@ const NOVA_MODEL_PATTERN = /(^|[/\s:_-])nova($|[-_.:/\s])/i;
 const MPT_MODEL_PATTERN = /(^|[/\s:_-])mpt($|[-_.:/\s])/i;
 const ALEPH_MODEL_PATTERN = /(^|[/\s:_-])aleph($|[-_.:/\s])/i;
 
+// Safe-boundary patterns for models with short or ambiguous tokens
+const ARCTIC_MODEL_PATTERN = /(^|[\/\s:_-])arctic($|[\-_.:\/\s])/i;
+const AYA_MODEL_PATTERN = /(^|[\/\s:_-])aya($|[\-_.:\/\s])/i;
+const ORION_MODEL_PATTERN = /(^|[\/\s:_-])orion($|[\-_.:\/\s])/i;
+
 type CacheCompat = {
   sendSessionAffinityHeaders?: boolean;
   sendSessionIdHeader?: boolean;
@@ -967,6 +972,167 @@ function isHermesLikeModel(model: PiModel | undefined): boolean {
 }
 function isHermesLikeAssistantMessage(message: unknown, model: PiModel | undefined): boolean {
   return modelOrAssistantMessageHas(message, model, ["nous", "hermes", "openhermes"]);
+}
+
+// ── More OpenAI-compatible model detection (batch 4, 18 families) ──
+
+// IBM Granite
+function isGraniteLikeModel(model: PiModel | undefined): boolean {
+  return hasAnyTokenContaining(getModelIdNameTokenValues(model), ["granite", "ibm-granite"]);
+}
+function isGraniteLikeAssistantMessage(message: unknown, model: PiModel | undefined): boolean {
+  return modelOrAssistantMessageHas(message, model, ["granite", "ibm-granite"]);
+}
+
+// Snowflake Arctic
+function isArcticLikeModel(model: PiModel | undefined): boolean {
+  const tokens = getModelIdNameTokenValues(model);
+  return hasAnyTokenContaining(tokens, ["snowflake-arctic"]) || tokens.some((t) => ARCTIC_MODEL_PATTERN.test(t));
+}
+function isArcticLikeAssistantMessage(message: unknown, model: PiModel | undefined): boolean {
+  const allTokens = [
+    ...getModelIdNameTokenValues(model),
+    ...getAssistantMessageModelTokenValues(message),
+  ];
+  return hasAnyTokenContaining(allTokens, ["snowflake-arctic"]) || allTokens.some((t) => ARCTIC_MODEL_PATTERN.test(t));
+}
+
+// Huawei Pangu / 盘古
+function isPanguLikeModel(model: PiModel | undefined): boolean {
+  return hasAnyTokenContaining(getModelIdNameTokenValues(model), ["pangu", "pan-gu", "盘古", "huawei-pangu"]);
+}
+function isPanguLikeAssistantMessage(message: unknown, model: PiModel | undefined): boolean {
+  return modelOrAssistantMessageHas(message, model, ["pangu", "pan-gu", "盘古", "huawei-pangu"]);
+}
+
+// SenseTime SenseNova / 商汤
+function isSenseNovaLikeModel(model: PiModel | undefined): boolean {
+  return hasAnyTokenContaining(getModelIdNameTokenValues(model), ["sensenova", "sense-nova", "sensechat", "商汤"]);
+}
+function isSenseNovaLikeAssistantMessage(message: unknown, model: PiModel | undefined): boolean {
+  return modelOrAssistantMessageHas(message, model, ["sensenova", "sense-nova", "sensechat", "商汤"]);
+}
+
+// 360 Zhinao / 智脑
+function isZhinaoLikeModel(model: PiModel | undefined): boolean {
+  return hasAnyTokenContaining(getModelIdNameTokenValues(model), ["360gpt", "360-gpt", "zhinao", "智脑"]);
+}
+function isZhinaoLikeAssistantMessage(message: unknown, model: PiModel | undefined): boolean {
+  return modelOrAssistantMessageHas(message, model, ["360gpt", "360-gpt", "zhinao", "智脑"]);
+}
+
+// OpenBMB MiniCPM
+function isMiniCPMLikeModel(model: PiModel | undefined): boolean {
+  return hasAnyTokenContaining(getModelIdNameTokenValues(model), ["minicpm", "mini-cpm", "openbmb"]);
+}
+function isMiniCPMLikeAssistantMessage(message: unknown, model: PiModel | undefined): boolean {
+  return modelOrAssistantMessageHas(message, model, ["minicpm", "mini-cpm", "openbmb"]);
+}
+
+// XVERSE
+function isXVerseLikeModel(model: PiModel | undefined): boolean {
+  return hasAnyTokenContaining(getModelIdNameTokenValues(model), ["xverse"]);
+}
+function isXVerseLikeAssistantMessage(message: unknown, model: PiModel | undefined): boolean {
+  return modelOrAssistantMessageHas(message, model, ["xverse"]);
+}
+
+// OrionStar Orion
+function isOrionLikeModel(model: PiModel | undefined): boolean {
+  const tokens = getModelIdNameTokenValues(model);
+  return hasAnyTokenContaining(tokens, ["orionstar", "orion-star"]) || tokens.some((t) => ORION_MODEL_PATTERN.test(t));
+}
+function isOrionLikeAssistantMessage(message: unknown, model: PiModel | undefined): boolean {
+  const allTokens = [
+    ...getModelIdNameTokenValues(model),
+    ...getAssistantMessageModelTokenValues(message),
+  ];
+  return hasAnyTokenContaining(allTokens, ["orionstar", "orion-star"]) || allTokens.some((t) => ORION_MODEL_PATTERN.test(t));
+}
+
+// OpenChat
+function isOpenChatLikeModel(model: PiModel | undefined): boolean {
+  return hasAnyTokenContaining(getModelIdNameTokenValues(model), ["openchat"]);
+}
+function isOpenChatLikeAssistantMessage(message: unknown, model: PiModel | undefined): boolean {
+  return modelOrAssistantMessageHas(message, model, ["openchat"]);
+}
+
+// Vicuna
+function isVicunaLikeModel(model: PiModel | undefined): boolean {
+  return hasAnyTokenContaining(getModelIdNameTokenValues(model), ["vicuna"]);
+}
+function isVicunaLikeAssistantMessage(message: unknown, model: PiModel | undefined): boolean {
+  return modelOrAssistantMessageHas(message, model, ["vicuna"]);
+}
+
+// WizardLM / WizardCoder
+function isWizardLikeModel(model: PiModel | undefined): boolean {
+  return hasAnyTokenContaining(getModelIdNameTokenValues(model), ["wizardlm", "wizard-lm", "wizardcoder", "wizard-coder"]);
+}
+function isWizardLikeAssistantMessage(message: unknown, model: PiModel | undefined): boolean {
+  return modelOrAssistantMessageHas(message, model, ["wizardlm", "wizard-lm", "wizardcoder", "wizard-coder"]);
+}
+
+// Zephyr
+function isZephyrLikeModel(model: PiModel | undefined): boolean {
+  return hasAnyTokenContaining(getModelIdNameTokenValues(model), ["zephyr"]);
+}
+function isZephyrLikeAssistantMessage(message: unknown, model: PiModel | undefined): boolean {
+  return modelOrAssistantMessageHas(message, model, ["zephyr"]);
+}
+
+// Dolphin
+function isDolphinLikeModel(model: PiModel | undefined): boolean {
+  return hasAnyTokenContaining(getModelIdNameTokenValues(model), ["dolphin"]);
+}
+function isDolphinLikeAssistantMessage(message: unknown, model: PiModel | undefined): boolean {
+  return modelOrAssistantMessageHas(message, model, ["dolphin"]);
+}
+
+// OpenOrca
+function isOpenOrcaLikeModel(model: PiModel | undefined): boolean {
+  return hasAnyTokenContaining(getModelIdNameTokenValues(model), ["openorca", "open-orca"]);
+}
+function isOpenOrcaLikeAssistantMessage(message: unknown, model: PiModel | undefined): boolean {
+  return modelOrAssistantMessageHas(message, model, ["openorca", "open-orca"]);
+}
+
+// Starling
+function isStarlingLikeModel(model: PiModel | undefined): boolean {
+  return hasAnyTokenContaining(getModelIdNameTokenValues(model), ["starling"]);
+}
+function isStarlingLikeAssistantMessage(message: unknown, model: PiModel | undefined): boolean {
+  return modelOrAssistantMessageHas(message, model, ["starling"]);
+}
+
+// BLOOM / BigScience
+function isBloomLikeModel(model: PiModel | undefined): boolean {
+  return hasAnyTokenContaining(getModelIdNameTokenValues(model), ["bloom", "bigscience"]);
+}
+function isBloomLikeAssistantMessage(message: unknown, model: PiModel | undefined): boolean {
+  return modelOrAssistantMessageHas(message, model, ["bloom", "bigscience"]);
+}
+
+// RWKV
+function isRwkvLikeModel(model: PiModel | undefined): boolean {
+  return hasAnyTokenContaining(getModelIdNameTokenValues(model), ["rwkv"]);
+}
+function isRwkvLikeAssistantMessage(message: unknown, model: PiModel | undefined): boolean {
+  return modelOrAssistantMessageHas(message, model, ["rwkv"]);
+}
+
+// Cohere Aya
+function isAyaLikeModel(model: PiModel | undefined): boolean {
+  const tokens = getModelIdNameTokenValues(model);
+  return hasAnyTokenContaining(tokens, ["aya-expanse"]) || tokens.some((t) => AYA_MODEL_PATTERN.test(t));
+}
+function isAyaLikeAssistantMessage(message: unknown, model: PiModel | undefined): boolean {
+  const allTokens = [
+    ...getModelIdNameTokenValues(model),
+    ...getAssistantMessageModelTokenValues(message),
+  ];
+  return hasAnyTokenContaining(allTokens, ["aya-expanse"]) || allTokens.some((t) => AYA_MODEL_PATTERN.test(t));
 }
 
 // ── Model key ──────────────────────────────────────────────────────
@@ -1921,6 +2087,313 @@ const CACHE_PROVIDER_ADAPTERS: CacheProviderAdapter[] = [
       return buildOpenAIProxyCompatWarningText(modelKey(model), missing);
     },
   },
+  // ── More OpenAI-compatible adapters (batch 4, 18 families) ────────
+  {
+    id: "openai" as CacheProviderId,
+    label: "Granite cache",
+    matchesModel: isGraniteLikeModel,
+    matchesAssistantMessage(message, model) {
+      if (!isAssistantMessage(message)) return false;
+      return isGraniteLikeAssistantMessage(message, model);
+    },
+    normalizeUsage(message) {
+      return normalizeWithFallback(message, getOpenAIRawUsage);
+    },
+    warningText(model) {
+      const missing = describeMissingOpenAICompatibleProxyCompat(model);
+      if (missing.length === 0) return undefined;
+      return buildOpenAIProxyCompatWarningText(modelKey(model), missing);
+    },
+  },
+  {
+    id: "openai" as CacheProviderId,
+    label: "Arctic cache",
+    matchesModel: isArcticLikeModel,
+    matchesAssistantMessage(message, model) {
+      if (!isAssistantMessage(message)) return false;
+      return isArcticLikeAssistantMessage(message, model);
+    },
+    normalizeUsage(message) {
+      return normalizeWithFallback(message, getOpenAIRawUsage);
+    },
+    warningText(model) {
+      const missing = describeMissingOpenAICompatibleProxyCompat(model);
+      if (missing.length === 0) return undefined;
+      return buildOpenAIProxyCompatWarningText(modelKey(model), missing);
+    },
+  },
+  {
+    id: "openai" as CacheProviderId,
+    label: "Pangu cache",
+    matchesModel: isPanguLikeModel,
+    matchesAssistantMessage(message, model) {
+      if (!isAssistantMessage(message)) return false;
+      return isPanguLikeAssistantMessage(message, model);
+    },
+    normalizeUsage(message) {
+      return normalizeWithFallback(message, getOpenAIRawUsage);
+    },
+    warningText(model) {
+      const missing = describeMissingOpenAICompatibleProxyCompat(model);
+      if (missing.length === 0) return undefined;
+      return buildOpenAIProxyCompatWarningText(modelKey(model), missing);
+    },
+  },
+  {
+    id: "openai" as CacheProviderId,
+    label: "SenseNova cache",
+    matchesModel: isSenseNovaLikeModel,
+    matchesAssistantMessage(message, model) {
+      if (!isAssistantMessage(message)) return false;
+      return isSenseNovaLikeAssistantMessage(message, model);
+    },
+    normalizeUsage(message) {
+      return normalizeWithFallback(message, getOpenAIRawUsage);
+    },
+    warningText(model) {
+      const missing = describeMissingOpenAICompatibleProxyCompat(model);
+      if (missing.length === 0) return undefined;
+      return buildOpenAIProxyCompatWarningText(modelKey(model), missing);
+    },
+  },
+  {
+    id: "openai" as CacheProviderId,
+    label: "Zhinao cache",
+    matchesModel: isZhinaoLikeModel,
+    matchesAssistantMessage(message, model) {
+      if (!isAssistantMessage(message)) return false;
+      return isZhinaoLikeAssistantMessage(message, model);
+    },
+    normalizeUsage(message) {
+      return normalizeWithFallback(message, getOpenAIRawUsage);
+    },
+    warningText(model) {
+      const missing = describeMissingOpenAICompatibleProxyCompat(model);
+      if (missing.length === 0) return undefined;
+      return buildOpenAIProxyCompatWarningText(modelKey(model), missing);
+    },
+  },
+  {
+    id: "openai" as CacheProviderId,
+    label: "MiniCPM cache",
+    matchesModel: isMiniCPMLikeModel,
+    matchesAssistantMessage(message, model) {
+      if (!isAssistantMessage(message)) return false;
+      return isMiniCPMLikeAssistantMessage(message, model);
+    },
+    normalizeUsage(message) {
+      return normalizeWithFallback(message, getOpenAIRawUsage);
+    },
+    warningText(model) {
+      const missing = describeMissingOpenAICompatibleProxyCompat(model);
+      if (missing.length === 0) return undefined;
+      return buildOpenAIProxyCompatWarningText(modelKey(model), missing);
+    },
+  },
+  {
+    id: "openai" as CacheProviderId,
+    label: "XVERSE cache",
+    matchesModel: isXVerseLikeModel,
+    matchesAssistantMessage(message, model) {
+      if (!isAssistantMessage(message)) return false;
+      return isXVerseLikeAssistantMessage(message, model);
+    },
+    normalizeUsage(message) {
+      return normalizeWithFallback(message, getOpenAIRawUsage);
+    },
+    warningText(model) {
+      const missing = describeMissingOpenAICompatibleProxyCompat(model);
+      if (missing.length === 0) return undefined;
+      return buildOpenAIProxyCompatWarningText(modelKey(model), missing);
+    },
+  },
+  {
+    id: "openai" as CacheProviderId,
+    label: "Orion cache",
+    matchesModel: isOrionLikeModel,
+    matchesAssistantMessage(message, model) {
+      if (!isAssistantMessage(message)) return false;
+      return isOrionLikeAssistantMessage(message, model);
+    },
+    normalizeUsage(message) {
+      return normalizeWithFallback(message, getOpenAIRawUsage);
+    },
+    warningText(model) {
+      const missing = describeMissingOpenAICompatibleProxyCompat(model);
+      if (missing.length === 0) return undefined;
+      return buildOpenAIProxyCompatWarningText(modelKey(model), missing);
+    },
+  },
+  {
+    id: "openai" as CacheProviderId,
+    label: "OpenChat cache",
+    matchesModel: isOpenChatLikeModel,
+    matchesAssistantMessage(message, model) {
+      if (!isAssistantMessage(message)) return false;
+      return isOpenChatLikeAssistantMessage(message, model);
+    },
+    normalizeUsage(message) {
+      return normalizeWithFallback(message, getOpenAIRawUsage);
+    },
+    warningText(model) {
+      const missing = describeMissingOpenAICompatibleProxyCompat(model);
+      if (missing.length === 0) return undefined;
+      return buildOpenAIProxyCompatWarningText(modelKey(model), missing);
+    },
+  },
+  {
+    id: "openai" as CacheProviderId,
+    label: "Vicuna cache",
+    matchesModel: isVicunaLikeModel,
+    matchesAssistantMessage(message, model) {
+      if (!isAssistantMessage(message)) return false;
+      return isVicunaLikeAssistantMessage(message, model);
+    },
+    normalizeUsage(message) {
+      return normalizeWithFallback(message, getOpenAIRawUsage);
+    },
+    warningText(model) {
+      const missing = describeMissingOpenAICompatibleProxyCompat(model);
+      if (missing.length === 0) return undefined;
+      return buildOpenAIProxyCompatWarningText(modelKey(model), missing);
+    },
+  },
+  {
+    id: "openai" as CacheProviderId,
+    label: "Wizard cache",
+    matchesModel: isWizardLikeModel,
+    matchesAssistantMessage(message, model) {
+      if (!isAssistantMessage(message)) return false;
+      return isWizardLikeAssistantMessage(message, model);
+    },
+    normalizeUsage(message) {
+      return normalizeWithFallback(message, getOpenAIRawUsage);
+    },
+    warningText(model) {
+      const missing = describeMissingOpenAICompatibleProxyCompat(model);
+      if (missing.length === 0) return undefined;
+      return buildOpenAIProxyCompatWarningText(modelKey(model), missing);
+    },
+  },
+  {
+    id: "openai" as CacheProviderId,
+    label: "Zephyr cache",
+    matchesModel: isZephyrLikeModel,
+    matchesAssistantMessage(message, model) {
+      if (!isAssistantMessage(message)) return false;
+      return isZephyrLikeAssistantMessage(message, model);
+    },
+    normalizeUsage(message) {
+      return normalizeWithFallback(message, getOpenAIRawUsage);
+    },
+    warningText(model) {
+      const missing = describeMissingOpenAICompatibleProxyCompat(model);
+      if (missing.length === 0) return undefined;
+      return buildOpenAIProxyCompatWarningText(modelKey(model), missing);
+    },
+  },
+  {
+    id: "openai" as CacheProviderId,
+    label: "Dolphin cache",
+    matchesModel: isDolphinLikeModel,
+    matchesAssistantMessage(message, model) {
+      if (!isAssistantMessage(message)) return false;
+      return isDolphinLikeAssistantMessage(message, model);
+    },
+    normalizeUsage(message) {
+      return normalizeWithFallback(message, getOpenAIRawUsage);
+    },
+    warningText(model) {
+      const missing = describeMissingOpenAICompatibleProxyCompat(model);
+      if (missing.length === 0) return undefined;
+      return buildOpenAIProxyCompatWarningText(modelKey(model), missing);
+    },
+  },
+  {
+    id: "openai" as CacheProviderId,
+    label: "OpenOrca cache",
+    matchesModel: isOpenOrcaLikeModel,
+    matchesAssistantMessage(message, model) {
+      if (!isAssistantMessage(message)) return false;
+      return isOpenOrcaLikeAssistantMessage(message, model);
+    },
+    normalizeUsage(message) {
+      return normalizeWithFallback(message, getOpenAIRawUsage);
+    },
+    warningText(model) {
+      const missing = describeMissingOpenAICompatibleProxyCompat(model);
+      if (missing.length === 0) return undefined;
+      return buildOpenAIProxyCompatWarningText(modelKey(model), missing);
+    },
+  },
+  {
+    id: "openai" as CacheProviderId,
+    label: "Starling cache",
+    matchesModel: isStarlingLikeModel,
+    matchesAssistantMessage(message, model) {
+      if (!isAssistantMessage(message)) return false;
+      return isStarlingLikeAssistantMessage(message, model);
+    },
+    normalizeUsage(message) {
+      return normalizeWithFallback(message, getOpenAIRawUsage);
+    },
+    warningText(model) {
+      const missing = describeMissingOpenAICompatibleProxyCompat(model);
+      if (missing.length === 0) return undefined;
+      return buildOpenAIProxyCompatWarningText(modelKey(model), missing);
+    },
+  },
+  {
+    id: "openai" as CacheProviderId,
+    label: "BLOOM cache",
+    matchesModel: isBloomLikeModel,
+    matchesAssistantMessage(message, model) {
+      if (!isAssistantMessage(message)) return false;
+      return isBloomLikeAssistantMessage(message, model);
+    },
+    normalizeUsage(message) {
+      return normalizeWithFallback(message, getOpenAIRawUsage);
+    },
+    warningText(model) {
+      const missing = describeMissingOpenAICompatibleProxyCompat(model);
+      if (missing.length === 0) return undefined;
+      return buildOpenAIProxyCompatWarningText(modelKey(model), missing);
+    },
+  },
+  {
+    id: "openai" as CacheProviderId,
+    label: "RWKV cache",
+    matchesModel: isRwkvLikeModel,
+    matchesAssistantMessage(message, model) {
+      if (!isAssistantMessage(message)) return false;
+      return isRwkvLikeAssistantMessage(message, model);
+    },
+    normalizeUsage(message) {
+      return normalizeWithFallback(message, getOpenAIRawUsage);
+    },
+    warningText(model) {
+      const missing = describeMissingOpenAICompatibleProxyCompat(model);
+      if (missing.length === 0) return undefined;
+      return buildOpenAIProxyCompatWarningText(modelKey(model), missing);
+    },
+  },
+  {
+    id: "openai" as CacheProviderId,
+    label: "Aya cache",
+    matchesModel: isAyaLikeModel,
+    matchesAssistantMessage(message, model) {
+      if (!isAssistantMessage(message)) return false;
+      return isAyaLikeAssistantMessage(message, model);
+    },
+    normalizeUsage(message) {
+      return normalizeWithFallback(message, getOpenAIRawUsage);
+    },
+    warningText(model) {
+      const missing = describeMissingOpenAICompatibleProxyCompat(model);
+      if (missing.length === 0) return undefined;
+      return buildOpenAIProxyCompatWarningText(modelKey(model), missing);
+    },
+  },
 ];
 
 function selectAdapterForModel(model: PiModel | undefined): CacheProviderAdapter | undefined {
@@ -2312,6 +2785,43 @@ export const __internals_for_tests = {
   isLuminousLikeAssistantMessage,
   isHermesLikeModel,
   isHermesLikeAssistantMessage,
+  // More OpenAI-compatible model detection (batch 4, 18 families)
+  isGraniteLikeModel,
+  isGraniteLikeAssistantMessage,
+  isArcticLikeModel,
+  isArcticLikeAssistantMessage,
+  isPanguLikeModel,
+  isPanguLikeAssistantMessage,
+  isSenseNovaLikeModel,
+  isSenseNovaLikeAssistantMessage,
+  isZhinaoLikeModel,
+  isZhinaoLikeAssistantMessage,
+  isMiniCPMLikeModel,
+  isMiniCPMLikeAssistantMessage,
+  isXVerseLikeModel,
+  isXVerseLikeAssistantMessage,
+  isOrionLikeModel,
+  isOrionLikeAssistantMessage,
+  isOpenChatLikeModel,
+  isOpenChatLikeAssistantMessage,
+  isVicunaLikeModel,
+  isVicunaLikeAssistantMessage,
+  isWizardLikeModel,
+  isWizardLikeAssistantMessage,
+  isZephyrLikeModel,
+  isZephyrLikeAssistantMessage,
+  isDolphinLikeModel,
+  isDolphinLikeAssistantMessage,
+  isOpenOrcaLikeModel,
+  isOpenOrcaLikeAssistantMessage,
+  isStarlingLikeModel,
+  isStarlingLikeAssistantMessage,
+  isBloomLikeModel,
+  isBloomLikeAssistantMessage,
+  isRwkvLikeModel,
+  isRwkvLikeAssistantMessage,
+  isAyaLikeModel,
+  isAyaLikeAssistantMessage,
   buildOpenAIProxyCompatWarningText,
   getModelIdNameTokenValues,
   getAssistantMessageModelTokenValues,

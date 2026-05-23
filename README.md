@@ -68,6 +68,24 @@ This release keeps the original DeepSeek behavior and adds read-only stats adapt
 | Naver HyperCLOVA X | Model id/name contains `hyperclova` or `clova-x` (conservative, not bare `clova`/`naver`) | `HyperCLOVA cache` | Pi-normalized usage, or raw OpenAI-shaped fields when visible |
 | Aleph Alpha Luminous | Model id/name contains `luminous`, `aleph-alpha`, or pattern `aleph` with safe boundaries | `Luminous cache` | Pi-normalized usage, or raw OpenAI-shaped fields when visible |
 | Nous / Hermes / OpenHermes | Model id/name contains `nous`, `hermes`, or `openhermes` | `Hermes cache` | Pi-normalized usage, or raw OpenAI-shaped fields when visible |
+| IBM Granite | Model id/name contains `granite` or `ibm-granite` | `Granite cache` | Pi-normalized usage, or raw OpenAI-shaped fields when visible |
+| Snowflake Arctic | Model id/name contains `snowflake-arctic`, or safe-boundary pattern `arctic` | `Arctic cache` | Pi-normalized usage, or raw OpenAI-shaped fields when visible |
+| Huawei Pangu / 盘古 | Model id/name contains `pangu`, `pan-gu`, `盘古`, or `huawei-pangu` | `Pangu cache` | Pi-normalized usage, or raw OpenAI-shaped fields when visible |
+| SenseTime SenseNova / 商汤 | Model id/name contains `sensenova`, `sense-nova`, `sensechat`, or `商汤` | `SenseNova cache` | Pi-normalized usage, or raw OpenAI-shaped fields when visible |
+| 360 Zhinao / 智脑 | Model id/name contains `360gpt`, `360-gpt`, `zhinao`, or `智脑` (no bare `360`) | `Zhinao cache` | Pi-normalized usage, or raw OpenAI-shaped fields when visible |
+| OpenBMB MiniCPM | Model id/name contains `minicpm`, `mini-cpm`, or `openbmb` | `MiniCPM cache` | Pi-normalized usage, or raw OpenAI-shaped fields when visible |
+| XVERSE | Model id/name contains `xverse` | `XVERSE cache` | Pi-normalized usage, or raw OpenAI-shaped fields when visible |
+| OrionStar Orion | Model id/name contains `orionstar`, `orion-star`, or safe-boundary pattern `orion` | `Orion cache` | Pi-normalized usage, or raw OpenAI-shaped fields when visible |
+| OpenChat | Model id/name contains `openchat` | `OpenChat cache` | Pi-normalized usage, or raw OpenAI-shaped fields when visible |
+| Vicuna | Model id/name contains `vicuna` | `Vicuna cache` | Pi-normalized usage, or raw OpenAI-shaped fields when visible |
+| WizardLM / WizardCoder | Model id/name contains `wizardlm`, `wizard-lm`, `wizardcoder`, or `wizard-coder` | `Wizard cache` | Pi-normalized usage, or raw OpenAI-shaped fields when visible |
+| Zephyr | Model id/name contains `zephyr` | `Zephyr cache` | Pi-normalized usage, or raw OpenAI-shaped fields when visible |
+| Dolphin | Model id/name contains `dolphin` | `Dolphin cache` | Pi-normalized usage, or raw OpenAI-shaped fields when visible |
+| OpenOrca | Model id/name contains `openorca` or `open-orca` | `OpenOrca cache` | Pi-normalized usage, or raw OpenAI-shaped fields when visible |
+| Starling | Model id/name contains `starling` | `Starling cache` | Pi-normalized usage, or raw OpenAI-shaped fields when visible |
+| BLOOM / BigScience | Model id/name contains `bloom` or `bigscience` | `BLOOM cache` | Pi-normalized usage, or raw OpenAI-shaped fields when visible |
+| RWKV | Model id/name contains `rwkv` | `RWKV cache` | Pi-normalized usage, or raw OpenAI-shaped fields when visible |
+| Cohere Aya | Model id/name contains `aya-expanse`, or safe-boundary pattern `aya` (avoid `maya`/`payara`) | `Aya cache` | Pi-normalized usage, or raw OpenAI-shaped fields when visible |
 | Anthropic / Claude | Model id/name contains `anthropic` or `claude` | `Claude cache` | Pi-normalized usage, or raw `cache_read_input_tokens`, `cache_creation_input_tokens`, `input_tokens` |
 | Gemini / Vertex | Model id/name contains `gemini` or `vertex` | `Gemini cache` | Pi-normalized usage, or raw Gemini/Vertex cached-content token metadata when visible |
 
