@@ -126,6 +126,64 @@ rm -f ~/.pi/agent/deepseek-cache-optimizer-stats.json
 
 
 
+## Adding an OpenAI-compatible proxy channel
+
+When adding a third-party OpenAI-compatible proxy provider (e.g. `otokapi`, `cafecode`,
+OpenRouter, etc.) to `~/.pi/agent/models.json`, the `compat` flags for cache optimization
+are NOT required for the model to work — but they dramatically improve cache durability.
+
+### Minimal provider config template
+
+```jsonc
+{
+  "providers": {
+    "your-provider-id": {
+      "api": "openai-completions",  // or "openai-responses"
+      "baseUrl": "https://your-proxy.example.com/v1",
+      "apiKey": "your-api-key",
+      "models": {
+        "gpt-5.5": {
+          "id": "gpt-5.5",
+          "name": "GPT 5.5",
+          "contextWindowTokens": 128000,
+          "maxOutputTokens": 8192,
+          "thinking": {
+            // Use the thinking modes your proxy actually supports.
+            // Pi maps --thinking <level> to tokens via thinkingLevelMap.
+            // The template below keeps each level distinct — DO NOT
+            // map everything to "xhigh". Your proxy may not support
+            // all levels; remove unsupported ones or test each.
+            "thinkingLevelMap": {
+              "off": null,
+              "minimal": "minimal",
+              "low": "low",
+              "medium": "medium",
+              "high": "high",
+              "xhigh": "xhigh"
+            }
+          },
+          "compat": {
+            "supportsLongCacheRetention": true,
+            "sendSessionAffinityHeaders": true
+          }
+        }
+      }
+    }
+  }
+}
+```
+
+Key points:
+
+- `thinkingLevelMap` keeps distinct levels. If your proxy does not support a particular
+  level (e.g. `minimal`), remove that entry or set to `null`. Do **not** collapse all
+  levels to `"xhigh"` — that defeats user control over reasoning effort.
+- `compat` flags help Pi request longer cache retention and send session-affinity
+  headers for proxy-side cache locality. Only enable them if your proxy supports them.
+- The extension detects model families by `id`/`name` strings, not by provider id,
+  base URL, or API type. Use recognizable model ids (e.g. `gpt-5.5`, `kimi-k2.5`) for
+  correct stats adapter selection.
+
 ## Footer cache stats
 
 The Pi footer displays stats for the **active model family** only, for example:
@@ -166,10 +224,18 @@ Reset behavior:
 
 For direct DeepSeek or DeepSeek-like OpenAI-compatible proxies, configure the provider or model `compat` like this:
 
-```json
+The `compat` block goes inside your provider object in `~/.pi/agent/models.json`, at
+the same level as `baseUrl`, `api`, `apiKey`, and `models`:
+
+```jsonc
 {
   "providers": {
     "deepseek": {
+      "api": "openai-completions",
+      "baseUrl": "https://api.deepseek.com/v1",
+      "apiKey": "sk-...",
+      "models": { /* ... */ },
+      // 👇 compat goes here, NOT inside models
       "compat": {
         "thinkingFormat": "deepseek",
         "supportsLongCacheRetention": true,
@@ -190,6 +256,50 @@ The extension warns at most once per provider/model per session when a DeepSeek-
 For Claude/Anthropic models behind an OpenAI-compatible endpoint, the extension may warn when the model is clearly Claude-like but `cacheControlFormat: "anthropic"` is missing. Only enable that compat flag if your endpoint supports Anthropic-style cache-control markers.
 
 > Reminder: only enable session-affinity headers or cache-control compat when your endpoint or proxy supports them.
+
+## Diagnostic command
+
+The extension registers a Pi command `/cache-optimizer` for interactive diagnosis.
+
+```
+/cache-optimizer              — show help + current model compat status
+/cache-optimizer doctor        — show provider, model, API, base URL, compat status
+/cache-optimizer compat        — show compat suggestion with edit instructions
+```
+
+### `/cache-optimizer doctor`
+
+Displays the active model's provider, model id, name, API type, base URL, current
+`compat` flags, and any missing cache/session-affinity flags. If flags are missing,
+it also shows a copyable JSON snippet and the exact edit location:
+
+```text
+Provider: otokapi
+Model:    gpt-5.5
+API:      openai-completions
+Base URL: https://otokapi.example.com/v1
+Compat:   {}
+⚠️  Missing compat flags: supportsLongCacheRetention, sendSessionAffinityHeaders
+Edit ~/.pi/agent/models.json -> providers["otokapi"] -> compat (same level as baseUrl/api/apiKey/models):
+{
+  "supportsLongCacheRetention": true,
+  "sendSessionAffinityHeaders": true
+}
+```
+
+### `/cache-optimizer compat`
+
+Shorts the compat suggestion only, including file path and provider path.
+
+### Security
+
+The command reads only metadata exposed by Pi through `ctx.model`:
+provider, id, name, api, baseUrl, compat. It does NOT read or expose:
+- API keys or environment secrets
+- Request/response payloads
+- Prompts or model outputs
+- HTTP headers
+- Raw `~/.pi/agent/models.json` content
 
 ## How it works
 

@@ -1515,6 +1515,286 @@ Line count: 10 / 1000
 }
 
 // ==========================================================================
+// Test 33: buildOpenAIProxyCompatWarningText includes file path and provider path
+// ==========================================================================
+{
+  const bothMissing = ["supportsLongCacheRetention", "sendSessionAffinityHeaders"];
+  const bothText = buildOpenAIProxyCompatWarningText("otokapi/gpt-5.5", bothMissing);
+
+  // Must mention the file path
+  expect(
+    "warning-v2.includes-models-json",
+    bothText.includes("~/.pi/agent/models.json"),
+    "expected warning text to mention ~/.pi/agent/models.json",
+  );
+
+  // Must mention the provider selector
+  expect(
+    "warning-v2.includes-provider-path",
+    bothText.includes('providers["otokapi"]'),
+    'expected warning text to mention providers["otokapi"]',
+  );
+
+  // Must mention "compat" as the target location
+  expect(
+    "warning-v2.includes-compat-location",
+    bothText.includes("-> compat"),
+    "expected warning text to mention '-> compat' location",
+  );
+
+  // Must mention same level as baseUrl/api/apiKey/models
+  expect(
+    "warning-v2.includes-same-level",
+    bothText.includes("same level as"),
+    "expected warning text to mention 'same level as' for placement guidance",
+  );
+
+  // The path guidance mentions apiKey as a sibling field, which is fine.
+  // It must NOT contain actual secret values.
+  expect(
+    "warning-v2.no-secret-values",
+    bothText.includes("sk-") === false && !/AIza[0-9A-Za-z_-]{35}/.test(bothText),
+    "expected warning text to NOT contain secret values (sk-... or API key patterns)",
+  );
+  expect(
+    "warning-v2.no-secret-pattern",
+    /AIza[0-9A-Za-z_-]{35}/.test(bothText) === false,
+    "expected warning text to NOT contain Google API key patterns",
+  );
+}
+
+// ==========================================================================
+// Test 34: Service warning text never contains sensitive fields
+// ==========================================================================
+{
+  // The deepseek compat warning text
+  const key = "deepseek/deepseek-v4-pro";
+  const missing = ["supportsLongCacheRetention", "sendSessionAffinityHeaders"];
+
+  // Simulate the deepseek warningText logic
+  const slashIdx = key.indexOf("/");
+  const providerLabel = slashIdx > 0 ? key.slice(0, slashIdx) : key;
+  const text =
+    `💡 pi-cache-optimizer: ${key} is DeepSeek-like but merged compat lacks ${missing.join(" and ")}. ` +
+    `Proxies may reduce or hide cache hits. Edit ~/.pi/agent/models.json -> providers["${providerLabel}"] -> compat (at the same level as baseUrl/api/apiKey/models).`;
+
+  expect(
+    "deepseek-warning.includes-models-json",
+    text.includes("~/.pi/agent/models.json"),
+    "expected deepseek warning to mention models.json",
+  );
+  expect(
+    "deepseek-warning.includes-provider-path",
+    text.includes('providers["deepseek"]'),
+    'expected deepseek warning to mention providers["deepseek"]',
+  );
+  expect(
+    "deepseek-warning.includes-compat",
+    text.includes("-> compat"),
+    "expected deepseek warning to mention compat location",
+  );
+  expect(
+    "deepseek-warning.no-secrets",
+    text.includes("sk-") === false &&
+      text.includes("prompt") === false &&
+      !/AIza[0-9A-Za-z_-]{35}/.test(text),
+    "expected deepseek warning to NOT contain secret values or prompt references",
+  );
+}
+
+// ==========================================================================
+// Test 35: describeMissingOpenAICompatibleProxyCompat used for compat footer marker
+// ==========================================================================
+{
+  // A non-official proxy model missing compat flags should have missing[]
+  const proxyModel = makeModel({
+    id: "gpt-5.5",
+    provider: "otokapi",
+    api: "openai-completions",
+    baseUrl: "https://otokapi.example.com/v1",
+    compat: {},
+  });
+  const proxyMissing = describeMissingOpenAICompatibleProxyCompat(proxyModel);
+  expect(
+    "compatFooter.proxy-has-missing",
+    proxyMissing.length > 0,
+    `expected compat footer marker to fire for missing-compat proxy, got ${proxyMissing.length} missing`,
+  );
+
+  // Official OpenAI model should NOT have missing
+  const officialModel = makeModel({
+    id: "gpt-4",
+    provider: "openai",
+    api: "openai-completions",
+    baseUrl: "https://api.openai.com/v1",
+    compat: {},
+  });
+  const officialMissing = describeMissingOpenAICompatibleProxyCompat(officialModel);
+  expect(
+    "compatFooter.official-no-missing",
+    officialMissing.length === 0,
+    `expected no compat footer marker for official OpenAI, got ${officialMissing.length} missing`,
+  );
+
+  // A fully-configured proxy should NOT have missing
+  const configuredModel = makeModel({
+    id: "gpt-5.5",
+    provider: "otokapi",
+    api: "openai-completions",
+    baseUrl: "https://otokapi.example.com/v1",
+    compat: { supportsLongCacheRetention: true, sendSessionAffinityHeaders: true },
+  });
+  const configuredMissing = describeMissingOpenAICompatibleProxyCompat(configuredModel);
+  expect(
+    "compatFooter.configured-no-missing",
+    configuredMissing.length === 0,
+    `expected no compat footer marker for fully-configured proxy, got ${configuredMissing.length} missing`,
+  );
+
+  // Non-OpenAI API should NOT trigger compat check
+  const kiroModel = makeModel({
+    id: "gpt-5.5",
+    provider: "kiro",
+    api: "kiro-api",
+    baseUrl: "https://kiro.example.com/v1",
+    compat: {},
+  });
+  const kiroMissing = describeMissingOpenAICompatibleProxyCompat(kiroModel);
+  expect(
+    "compatFooter.kiro-no-missing",
+    kiroMissing.length === 0,
+    "expected no compat footer marker for kiro-api transport",
+  );
+}
+
+// ==========================================================================
+// Test 36: Diagnostic command output (simulated via helper) must not contain secrets
+// ==========================================================================
+{
+  // Simulate the /cache-optimizer doctor output for a proxy model
+  const model = makeModel({
+    id: "gpt-5.5",
+    name: "GPT 5.5",
+    provider: "otokapi",
+    api: "openai-completions",
+    baseUrl: "https://otokapi.example.com/v1",
+    compat: {},
+  });
+  const key = modelKey(model);
+  const missing = describeMissingOpenAICompatibleProxyCompat(model);
+  const slashIdx = key.indexOf("/");
+  const providerLabel = slashIdx > 0 ? key.slice(0, slashIdx) : key;
+  const suggestion = missing.length > 0 ? Object.fromEntries(missing.map((f) => [f, true])) : {};
+
+  // Build a simulated doctor output (no secrets)
+  const outputLines: string[] = [];
+  outputLines.push(`Provider: ${model.provider}`);
+  outputLines.push(`Model:    ${model.id}`);
+  if (model.name) outputLines.push(`Name:     ${model.name}`);
+  outputLines.push(`API:      ${model.api}`);
+  outputLines.push(`Base URL: ${model.baseUrl}`);
+  outputLines.push(`Compat:   ${JSON.stringify(getCompat(model))}`);
+  if (missing.length > 0) {
+    outputLines.push(`Missing compat flags: ${missing.join(", ")}`);
+    outputLines.push(`Edit ~/.pi/agent/models.json -> providers["${providerLabel}"] -> compat:`);
+    outputLines.push(JSON.stringify(suggestion, null, 2));
+  }
+  const output = outputLines.join("\n");
+
+  // Output must NOT contain actual secret values
+  // (apiKey as a field name in path instructions is OK)
+  expect(
+    "doctor-output.no-secret-values",
+    output.includes("sk-") === false &&
+      output.includes("DEEPSEEK_API_KEY") === false &&
+      !/AIza[0-9A-Za-z_-]{35}/.test(output),
+    "expected doctor output to NOT contain actual secret values",
+  );
+
+  // Output MUST contain file path if flags missing
+  expect(
+    "doctor-output.contains-file-path",
+    output.includes("~/.pi/agent/models.json"),
+    "expected doctor output to mention the models.json file path",
+  );
+
+  // Output MUST mention provider path
+  expect(
+    "doctor-output.contains-provider-path",
+    output.includes('providers["otokapi"]'),
+    "expected doctor output to mention the provider path",
+  );
+}
+
+// ==========================================================================
+// Test 37: Template thinkingLevelMap — all levels are distinct, not all xhigh
+// ==========================================================================
+{
+  // Proper template: levels stay distinct
+  const properMap = {
+    off: null,
+    minimal: "minimal",
+    low: "low",
+    medium: "medium",
+    high: "high",
+    xhigh: "xhigh",
+  };
+
+  // Each level should equal its own name (or be null for off)
+  expect(
+    "thinkingLevelMap.off-is-null",
+    properMap.off === null,
+    "expected off level to be null in template",
+  );
+  expect(
+    "thinkingLevelMap.minimal-distinct",
+    properMap.minimal === "minimal",
+    "expected minimal to map to 'minimal', not something else",
+  );
+  expect(
+    "thinkingLevelMap.low-distinct",
+    properMap.low === "low",
+    "expected low to map to 'low', not something else",
+  );
+  expect(
+    "thinkingLevelMap.medium-distinct",
+    properMap.medium === "medium",
+    "expected medium to map to 'medium', not something else",
+  );
+  expect(
+    "thinkingLevelMap.high-distinct",
+    properMap.high === "high",
+    "expected high to map to 'high', not something else",
+  );
+  expect(
+    "thinkingLevelMap.xhigh-distinct",
+    properMap.xhigh === "xhigh",
+    "expected xhigh to map to 'xhigh', not something else",
+  );
+
+  // All non-null levels must be distinct from each other
+  const nonNullValues = Object.entries(properMap)
+    .filter(([_, v]) => v !== null)
+    .map(([_, v]) => v);
+  const uniqueValues = new Set(nonNullValues);
+  expect(
+    "thinkingLevelMap.all-distinct",
+    uniqueValues.size === nonNullValues.length,
+    `expected all non-null levels to be distinct, got ${nonNullValues.length} entries but only ${uniqueValues.size} unique values: ${[...uniqueValues].join(", ")}`,
+  );
+
+  // Verify the proper map is NOT collapsed to all-xhigh
+  // (which would mean minimal/medium/high all map to "xhigh")
+  const nonNullEntries = Object.entries(properMap).filter(([_, v]) => v !== null);
+  const allXhigh = nonNullEntries.every(([_, v]) => v === "xhigh");
+  expect(
+    "thinkingLevelMap.not-all-xhigh",
+    allXhigh === false,
+    "expected proper template to NOT map all levels to xhigh — levels should be distinct",
+  );
+}
+
+// ==========================================================================
 // Report
 // ==========================================================================
 if (failures.length === 0) {

@@ -532,3 +532,77 @@ When the user sees ` ⚠️ integrity` in the footer:
    update, or a new extension introducing a substring collision).
 3. `/reload` may help if the collision depends on per-turn state;
    otherwise, degrades gracefully (cache miss, no prompt corruption).
+
+---
+
+## Compat footer marker (`⚠️ compat`)
+
+When the active model is a non-official OpenAI-compatible proxy (`openai-completions`
+API through a non-`api.openai.com` base URL) and its merged `compat` lacks one
+or both of `supportsLongCacheRetention` or `sendSessionAffinityHeaders`, the
+footer status line appends `⚠️ compat`:
+
+```text
+OpenAI cache 0/0 · 0M/0M tok ⚠️ compat
+```
+
+Rules:
+
+* The marker is one-shot per model key (provider/id). It shows once and persists
+  while that model remains active and compat is still missing.
+* When the model is switched or its compat is fixed, the marker clears.
+* The marker coexists with `⚠️ integrity` — both can appear:
+  `OpenAI cache 0/0 · 0M/0M tok ⚠️ integrity ⚠️ compat`
+* The marker uses `describeMissingOpenAICompatibleProxyCompat` internally, which
+  does NOT require the model to be GPT-family — it fires for ANY model using
+  `openai-completions` through a non-official base URL.
+* Official OpenAI base URLs (`api.openai.com`) never trigger the marker.
+* Custom transports (`kiro-api`, `anthropic-messages`, etc.) never trigger the marker.
+
+---
+
+## Diagnostic command (`/cache-optimizer`)
+
+The extension registers a Pi command `/cache-optimizer` with two subcommands:
+
+### `/cache-optimizer doctor`
+
+Shows current active model status: provider, model id/name, API type, base URL,
+merged compat flags, and whether any cache/session-affinity compat flags are missing.
+If compat flags are missing, includes a copyable JSON suggestion and the edit location
+(`~/.pi/agent/models.json -> providers.<id> -> compat`).
+
+The output MUST NOT include API keys, secrets, prompts, payloads, headers, or model
+output.
+
+### `/cache-optimizer compat`
+
+Shows only the compat suggestion for the active model, including the file path,
+provider selector, exact edit location, and the copyable JSON snippet.
+
+### No arguments
+
+Displays a short help listing available subcommands and a one-line summary of the
+active model's compat status.
+
+### Security
+
+The command reads only `ctx.model` metadata (provider, id, name, api, baseUrl,
+compat). It does NOT read or expose:
+- API keys or environment secrets
+- Request/response payloads
+- Prompts or model outputs
+- HTTP headers
+- Any content from `~/.pi/agent/models.json` beyond what the Pi runtime exposes
+  via `ctx.model`
+
+### Validation matrix (additional rows)
+
+| Scenario | Expected behavior |
+|---|---|
+| `/cache-optimizer doctor` with model that has missing compat flags | Output includes `Missing compat flags: supportsLongCacheRetention, sendSessionAffinityHeaders` and a copyable JSON suggestion with `~/.pi/agent/models.json -> providers["<id>"]` path |
+| `/cache-optimizer doctor` without an active model | Notification: "No active model selected" |
+| `/cache-optimizer compat` with a fully configured model | Notification: "No missing compat flags" |
+| `/cache-optimizer` (no args) | Shows help text and current model compat status summary |
+| Footer status for missing-compat model | Shows `⚠️ compat` appended to the cache stats line |
+| Footer status when compat is fixed or model changes | `⚠️ compat` marker clears

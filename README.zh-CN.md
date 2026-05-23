@@ -129,6 +129,56 @@ rm -f ~/.pi/agent/deepseek-cache-optimizer-stats.json
 
 
 
+## 添加 OpenAI-compatible 代理渠道
+
+当在 `~/.pi/agent/models.json` 中添加第三方 OpenAI-compatible 代理 provider（例如 `otokapi`、`cafecode`、OpenRouter 等）时，缓存优化的 `compat` 标志对模型正常使用不是必需的，但它们能显著提高缓存持久性。
+
+### 最小 provider 配置模板
+
+```jsonc
+{
+  "providers": {
+    "your-provider-id": {
+      "api": "openai-completions",  // 或 "openai-responses"
+      "baseUrl": "https://your-proxy.example.com/v1",
+      "apiKey": "your-api-key",
+      "models": {
+        "gpt-5.5": {
+          "id": "gpt-5.5",
+          "name": "GPT 5.5",
+          "contextWindowTokens": 128000,
+          "maxOutputTokens": 8192,
+          "thinking": {
+            // 使用你的代理实际支持的 thinking 级别。
+            // Pi 通过 thinkingLevelMap 将 --thinking <level> 映射为 token。
+            // 下面模板保持各级别独立 —— 不要全部映射为 "xhigh"。
+            // 你的代理可能不支持所有级别；移除不支持的或逐个测试。
+            "thinkingLevelMap": {
+              "off": null,
+              "minimal": "minimal",
+              "low": "low",
+              "medium": "medium",
+              "high": "high",
+              "xhigh": "xhigh"
+            }
+          },
+          "compat": {
+            "supportsLongCacheRetention": true,
+            "sendSessionAffinityHeaders": true
+          }
+        }
+      }
+    }
+  }
+}
+```
+
+关键点：
+
+- `thinkingLevelMap` 保持不同的 level 独立。如果你的代理不支持某个级别（例如 `minimal`），请移除该条目或设为 `null`。**不要**将所有级别都映射为 `"xhigh"` —— 那会破坏用户对推理努力度的控制。
+- `compat` 标志帮助 Pi 请求更长的缓存保留时间，并通过发送 session-affinity headers 实现代理侧缓存本地性。仅在代理支持时才启用。
+- 扩展通过模型 `id`/`name` 字符串来检测模型家族，而不是通过 provider id、base URL 或 API 类型。请使用易识别的模型 id（例如 `gpt-5.5`、`kimi-k2.5`），以便正确匹配统计 adapter。
+
 ## 底部缓存统计
 
 Pi footer 只显示**当前活跃模型 family** 的统计，例如：
@@ -167,12 +217,19 @@ Gemini cache 1/2 · 0.18M/0.50M tok (36%)
 
 ## 建议的 compat 配置
 
-对直连 DeepSeek 或 DeepSeek-like OpenAI-compatible 代理，建议在对应 provider 或 model 的 `compat` 中配置：
+对直连 DeepSeek 或 DeepSeek-like OpenAI-compatible 代理，建议在对应 provider 或 model 的 `compat` 中配置。
 
-```json
+`compat` 块应该放在 `~/.pi/agent/models.json` 中 provider 对象内部，与 `baseUrl`、`api`、`apiKey`、`models` 同级：
+
+```jsonc
 {
   "providers": {
     "deepseek": {
+      "api": "openai-completions",
+      "baseUrl": "https://api.deepseek.com/v1",
+      "apiKey": "sk-...",
+      "models": { /* ... */ },
+      // 👇 compat 在此位置，而不是在 models 内部
       "compat": {
         "thinkingFormat": "deepseek",
         "supportsLongCacheRetention": true,
@@ -193,6 +250,47 @@ Gemini cache 1/2 · 0.18M/0.50M tok (36%)
 对于通过 OpenAI-compatible endpoint 暴露的 Claude/Anthropic 模型，如果模型明显 Claude-like 但缺少 `cacheControlFormat: "anthropic"`，扩展可能提醒。只有在 endpoint 支持 Anthropic-style cache-control markers 时才应启用该 compat flag。
 
 > 提醒：只有在 endpoint 或代理明确支持时，才建议启用 session-affinity headers 或 cache-control compat。
+
+## 诊断命令
+
+扩展注册了 Pi 命令 `/cache-optimizer` 用于交互式诊断。
+
+```
+/cache-optimizer              — 显示帮助 + 当前模型 compat 状态
+/cache-optimizer doctor        — 显示 provider、model、API、base URL、compat 状态
+/cache-optimizer compat        — 显示 compat 建议和编辑说明
+```
+
+### `/cache-optimizer doctor`
+
+显示当前模型的 provider、model id、名称、API 类型、base URL、当前 `compat` 标志以及缺少的缓存/session-affinity 标志。如果缺少标志，还会显示可复制的 JSON 片段和精确编辑位置：
+
+```text
+Provider: otokapi
+Model:    gpt-5.5
+API:      openai-completions
+Base URL: https://otokapi.example.com/v1
+Compat:   {}
+⚠️  Missing compat flags: supportsLongCacheRetention, sendSessionAffinityHeaders
+Edit ~/.pi/agent/models.json -> providers["otokapi"] -> compat (same level as baseUrl/api/apiKey/models):
+{
+  "supportsLongCacheRetention": true,
+  "sendSessionAffinityHeaders": true
+}
+```
+
+### `/cache-optimizer compat`
+
+仅显示 compat 建议，包括文件路径和 provider 路径。
+
+### 安全说明
+
+命令只读取 Pi 通过 `ctx.model` 暴露的元数据：provider、id、name、api、baseUrl、compat。它**不会**读取或暴露：
+- API key 或环境密钥
+- 请求/响应 payload
+- Prompt 或模型输出
+- HTTP headers
+- `~/.pi/agent/models.json` 的原始内容
 
 ## 原理
 

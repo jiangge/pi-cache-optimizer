@@ -994,9 +994,14 @@ function buildOpenAIProxyCompatWarningText(key: string, missing: string[]): stri
     suggestion[flag] = true;
   }
 
+  // Extract provider id from the model key (e.g. "otokapi/gpt-5.5" -> "otokapi").
+  // If no slash is found, fall back to the key itself.
+  const slashIdx = key.indexOf("/");
+  const providerLabel = slashIdx > 0 ? key.slice(0, slashIdx) : key;
+
   const lines: string[] = [
     `💡 pi-cache-optimizer: ${key} is a third-party GPT/OpenAI-compatible proxy but merged compat lacks ${missing.join(" and ")}.`,
-    `Add under the model's compat in ~/.pi/agent/models.json (only if the endpoint supports them):`,
+    `Edit ~/.pi/agent/models.json -> providers["${providerLabel}"] -> compat (at the same level as baseUrl/api/apiKey/models):`,
     ``,
     JSON.stringify(suggestion, null, 2),
     ``,
@@ -1050,9 +1055,11 @@ const CACHE_PROVIDER_ADAPTERS: CacheProviderAdapter[] = [
       if (missing.length === 0) return undefined;
 
       const key = modelKey(model);
+      const slashIdx = key.indexOf("/");
+      const providerLabel = slashIdx > 0 ? key.slice(0, slashIdx) : key;
       return (
         `💡 pi-cache-optimizer: ${key} is DeepSeek-like but merged compat lacks ${missing.join(" and ")}. ` +
-        "Proxies may reduce or hide cache hits; add these compat flags in ~/.pi/agent/models.json when the endpoint supports them."
+        `Proxies may reduce or hide cache hits. Edit ~/.pi/agent/models.json -> providers["${providerLabel}"] -> compat (at the same level as baseUrl/api/apiKey/models).`
       );
     },
   },
@@ -1594,6 +1601,7 @@ export default function (pi: ExtensionAPI) {
   let persistTimer: ReturnType<typeof setTimeout> | null = null;
   const PERSIST_DEBOUNCE_MS = 2000;
 
+
   function getCacheStatsState(): CacheStatsState {
     return { statsByModel: cacheStatsByModel, legacyFamily: cacheStatsLegacyFamily };
   }
@@ -1739,6 +1747,20 @@ export default function (pi: ExtensionAPI) {
       promptTruncationDetected = false;
     }
 
+    // ⚠️ compat footer marker: if the active model is a non-official
+    // openai-completions model with missing supportsLongCacheRetention
+    // or sendSessionAffinityHeaders, append the marker to indicate that
+    // compat configuration is incomplete. Re-evaluated on every status
+    // update so the marker persists through stats changes and day
+    // rollovers. Redundant setStatus calls are blocked by the
+    // `lastStatusText` early return above.
+    if (statusText !== undefined && model) {
+      const compatMissing = describeMissingOpenAICompatibleProxyCompat(model);
+      if (compatMissing.length > 0) {
+        statusText = statusText + " ⚠️ compat";
+      }
+    }
+
     if (statusText === lastStatusText) return;
 
     lastStatusText = statusText;
@@ -1867,5 +1889,93 @@ export default function (pi: ExtensionAPI) {
 
     schedulePersistCacheStats(ctx);
     await publishStatus(ctx);
+  });
+
+  // ────────────────────────────────────────────────────────────────
+  // Register /cache-optimizer command
+  // Subcommands:
+  //   doctor  — show current model/provider/api/baseUrl/compat status
+  //   compat  — show compat suggestion with file path
+  //   (no args) — show help summary + current diagnosis
+  // ────────────────────────────────────────────────────────────────
+  pi.registerCommand("cache-optimizer", {
+    description: "Diagnose Pi cache configuration",
+    handler: async (args: string, cmdCtx) => {
+      const model = cmdCtx.model;
+      const subcommand = args.trim().toLowerCase().split(/\s+/)[0] || "help";
+
+      if (subcommand === "doctor") {
+        if (!model) {
+          cmdCtx.ui.notify("No active model selected. Select a model first with /model or pi --model.", "warning");
+          return;
+        }
+        const lines: string[] = [];
+        lines.push(`Provider: ${model.provider}`);
+        lines.push(`Model:    ${model.id}`);
+        if (model.name && model.name !== model.id) lines.push(`Name:     ${model.name}`);
+        lines.push(`API:      ${model.api}`);
+        lines.push(`Base URL: ${model.baseUrl || "(default)"}`);
+
+        const compat = getCompat(model);
+        lines.push(`Compat:   ${JSON.stringify(compat)}`);
+
+        const missing = describeMissingOpenAICompatibleProxyCompat(model);
+        if (missing.length > 0) {
+          lines.push(`⚠️  Missing compat flags: ${missing.join(", ")}`);
+          const key = modelKey(model);
+          const slashIdx = key.indexOf("/");
+          const providerLabel = slashIdx > 0 ? key.slice(0, slashIdx) : key;
+          const suggestion = Object.fromEntries(missing.map((f) => [f, true]));
+          lines.push(`Edit ~/.pi/agent/models.json -> providers["${providerLabel}"] -> compat (same level as baseUrl/api/apiKey/models):`);
+          lines.push(JSON.stringify(suggestion, null, 2));
+        } else {
+          lines.push("✅ Compat fully configured (or not applicable).");
+        }
+
+        cmdCtx.ui.notify(lines.join("\n"), "info");
+      } else if (subcommand === "compat") {
+        if (!model) {
+          cmdCtx.ui.notify("No active model selected. Select a model first with /model or pi --model.", "warning");
+          return;
+        }
+        const missing = describeMissingOpenAICompatibleProxyCompat(model);
+        if (missing.length === 0) {
+          cmdCtx.ui.notify("✅ No missing OpenAPI-compatible compat flags for the active model.", "info");
+          return;
+        }
+        const key = modelKey(model);
+        const slashIdx = key.indexOf("/");
+        const providerLabel = slashIdx > 0 ? key.slice(0, slashIdx) : key;
+        const suggestion = Object.fromEntries(missing.map((f) => [f, true]));
+        const text = (
+          `Active model: ${key}\n` +
+          `Missing: ${missing.join(", ")}\n\n` +
+          `Edit ~/.pi/agent/models.json -> providers["${providerLabel}"] -> compat` +
+          ` (at the same level as baseUrl/api/apiKey/models) and add:\n` +
+          `${JSON.stringify(suggestion, null, 2)}\n\n` +
+          `Only enable if your endpoint supports them.`
+        );
+        cmdCtx.ui.notify(text, "warning");
+      } else {
+        // Help text
+        const diagnosis: string[] = [];
+        diagnosis.push("📋 /cache-optimizer commands:");
+        diagnosis.push("  doctor  — Show current model/provider/api/baseUrl/compat status");
+        diagnosis.push("  compat  — Show compat suggestion with edit location");
+        diagnosis.push("");
+        if (model) {
+          const missing = describeMissingOpenAICompatibleProxyCompat(model);
+          if (missing.length > 0) {
+            diagnosis.push(`⚠️  Active model "${modelKey(model)}" missing compat: ${missing.join(", ")}`);
+            diagnosis.push('Run "/cache-optimizer compat" for edit instructions.');
+          } else {
+            diagnosis.push(`✅ Active model "${modelKey(model)}": compat OK or not applicable.`);
+          }
+        } else {
+          diagnosis.push("No active model selected.");
+        }
+        cmdCtx.ui.notify(diagnosis.join("\n"), "info");
+      }
+    },
   });
 }
