@@ -132,33 +132,86 @@ same cache-bearing backend unless the proxy also honors session-affinity headers
 
 ## Persisted stats schema
 
-* Stats are persisted in version 2 schema:
+Stats are persisted per provider/model, not only per provider family. Adapter
+selection remains id/name-only; the active model's `provider` participates only
+after adapter selection, as part of the stats bucket key.
 
-  ```ts
-  type PersistedCacheStatsV2 = {
-    version: 2;
-    statsByProvider: Partial<Record<"deepseek" | "openai" | "claude" | "gemini", CacheStats>>;
-  };
-  ```
+```ts
+type CacheProviderId = "deepseek" | "openai" | "claude" | "gemini";
 
-* `CacheStats` MUST contain `day`, `totalRequests`, `hitRequests`,
-  `cachedInputTokens`, `cacheWriteInputTokens`, `totalInputTokens` (all
-  non-negative integers; `hitRequests <= totalRequests`;
-  `cachedInputTokens <= totalInputTokens`).
-* The schema version is NOT bumped by the rename; existing v2 files written by
-  1.x continue to load unchanged.
-* `version: 1` files (DeepSeek-only, single-stats shape) MUST keep migrating
-  into the `deepseek` slot.
+type CacheStats = {
+  day: string; // local YYYY-MM-DD
+  totalRequests: number;
+  hitRequests: number;
+  cachedInputTokens: number;
+  cacheWriteInputTokens: number;
+  totalInputTokens: number;
+};
+
+type PersistedCacheStatsV3 = {
+  version: 3;
+  statsByModel: Record<string, CacheStats>; // key = `${model.provider}/${model.id}`
+  legacyFamily: Partial<Record<CacheProviderId, CacheStats>>;
+};
+```
+
+* `CacheStats` counters MUST be non-negative integers; `hitRequests <=
+  totalRequests`; `cachedInputTokens <= totalInputTokens`;
+  `cacheWriteInputTokens <= totalInputTokens`.
+* `statsByModel` is authoritative for all turns where `ctx.model` is known.
+  This separates e.g. `otokapi/gpt-5.5` from `cafecode/gpt-5.5` while keeping
+  the footer label (`OpenAI cache`) provider-family based.
+* `legacyFamily` exists only as a migration/fallback bucket for pre-v3 data and
+  rare `message_end` updates where no active model is available. New normal
+  updates MUST write `statsByModel[modelKey(ctx.model)]`.
+* The persisted file MUST contain only counters and local dates. Never persist
+  API keys, prompts, request payloads, response bodies, HTTP headers, model
+  outputs, or provider config snapshots.
+* Writes MUST remain atomic: write a temp file then `rename` into
+  `~/.pi/agent/pi-cache-optimizer-stats.json`; never update the JSON in place.
+
+### Stats migration
+
+| Input state | Behavior |
+|---|---|
+| `version: 3` | Parse valid `statsByModel` entries and valid `legacyFamily` entries; silently drop malformed entries. |
+| `version: 2` with `statsByProvider` | Migrate valid family buckets to `legacyFamily`; initialize `statsByModel` as `{}`. |
+| `version: 1` single DeepSeek stats | Migrate valid stats to `legacyFamily.deepseek`; initialize `statsByModel` as `{}`. |
+| Unknown version / invalid top-level shape | Treat as unreadable stats and fall back to empty in-memory state. |
 
 ### Migration on first run after rename
 
 | Condition | Behavior |
 |---|---|
-| New path readable | Use it. Do not read or touch the old path. |
-| New path missing AND old path readable | Parse old path, write new path atomically, best-effort `unlink` old path. |
-| New path missing AND old path also missing | Initialize empty in-memory counters. |
-| New path readable but corrupt JSON | Log a one-line warning, fall back to empty counters; do NOT overwrite with empty data on next write — let the regular write path replace it on the next valid update. |
+| New path readable | Use it. Do not read or touch the old path. If it is v1/v2, migrate in memory to v3 and persist on the next normal write. |
+| New path missing AND old path readable | Parse old path (v1/v2/v3), write the v3 shape to the new path atomically, best-effort `unlink` old path. |
+| New path missing AND old path also missing | Initialize `statsByModel: {}` and empty family buckets in memory. |
+| New path readable but corrupt JSON | Log a one-line warning, fall back to empty counters; do NOT delete it. The next valid write may replace it through the regular atomic write path. |
 | Old path corrupt | Log a one-line warning, do NOT delete the old file, do NOT write the new file from corrupt data. |
+
+### Display and update semantics
+
+* `modelKey(model)` is exactly ``${model.provider}/${model.id}``. Do not use
+  `name`, `baseUrl`, `api`, or compat flags in the key.
+* `session_start` restores persisted stats unless `event.reason === "reload"`.
+  On reload, clear `statsByModel`, reset family buckets to empty stats, clear the
+  last footer text, and flush the empty v3 state immediately.
+* `model_select` and `session_start` publish status for the selected/current
+  model. If the model matches an adapter but has no `statsByModel` entry yet,
+  display an empty same-day footer (`0/0`, `0M/0M`) instead of showing migrated
+  family aggregate data from `legacyFamily`.
+* `message_end` chooses the provider-family adapter from assistant message
+  `model`/`name` plus active model id/name, normalizes usage, then updates
+  `statsByModel[modelKey(ctx.model)]` when `ctx.model` exists. Only when
+  `ctx.model` is unavailable may it update `legacyFamily[adapter.id]`.
+* Footer text remains provider-family labelled (`DS cache`, `OpenAI cache`,
+  `Claude cache`, `Gemini cache`) but the counters shown are for the active
+  provider/model key.
+* Local day rollover is checked before publish/update. Any entry in
+  `statsByModel` or `legacyFamily` whose `day` differs from the current local
+  day is replaced with empty same-day stats and persisted immediately.
+* Debounced persistence is allowed for ordinary `message_end` writes, but reload
+  and day rollover MUST flush/persist immediately.
 
 ---
 
@@ -172,8 +225,37 @@ same cache-bearing backend unless the proxy also honors session-affinity headers
 | Payload has `prompt_cache_key: undefined`, `null`, `""`, or whitespace | Treat as missing; extension may add the session-id fallback. |
 | Model id/name looks GPT-like but API is a custom transport (e.g. `kiro-api`) | Do not add OpenAI `prompt_cache_key`; do not assume compat layers reach custom transports. |
 | Third-party GPT `openai-completions` proxy missing cache/session-affinity compat | Warn once per model with a copyable `compat` suggestion; do not edit `models.json`. |
-| Old stats path exists, new stats path missing | Read old, write new atomically, best-effort `unlink` old. `version: 2` `statsByProvider` data preserved unchanged. |
-| New stats path corrupt | Log warning, fall back to empty in-memory counters; do not delete. Next valid write replaces it. |
+| Old stats path exists, new stats path missing | Read old v1/v2/v3 data, write the new path atomically in v3 shape, best-effort `unlink` old. v2 `statsByProvider` data moves to `legacyFamily`. |
+| New v2 stats file exists | Load v2 `statsByProvider` into `legacyFamily`; start with empty `statsByModel`; next write persists v3. |
+| New v3 stats file has entries for `otokapi/gpt-5.5` and `cafecode/gpt-5.5` | Selecting either model displays only that key's counters, even though both use the OpenAI-family footer label. |
+| Selected matching model has no `statsByModel` entry yet | Display empty same-day stats (`0/0`, `0M/0M`) instead of legacy family aggregate counters. |
+| `/reload` session_start reason | Clear model-scoped and legacy counters, persist empty v3 state immediately, then publish empty current-model footer. |
+| Local day changes | Reset every stale `statsByModel` and `legacyFamily` entry to empty current-day stats before publishing/updating, and persist immediately. |
+| New stats path corrupt | Log warning, fall back to empty in-memory counters; do not delete. Next valid write may replace it atomically. |
+
+---
+
+## Tests required for footer stats changes
+
+When modifying cache stats, migration, rollover, or footer behavior, add/update a
+task-level verification script that asserts:
+
+* `modelKey()` returns distinct `provider/id` keys for same-id models under
+  different providers (for example `otokapi/gpt-5.5` vs `cafecode/gpt-5.5`).
+* v3 parse/round-trip preserves valid `statsByModel` and `legacyFamily` entries
+  and drops malformed entries without throwing.
+* v2 `statsByProvider` migrates to `legacyFamily` with empty `statsByModel`; v1
+  migrates only to `legacyFamily.deepseek`.
+* `message_end` with an active model updates only that model key; selecting a
+  different provider with the same model id does not show or mutate the first
+  provider's counters.
+* A matched-but-unseen model displays empty current-day stats rather than
+  migrated family aggregate data.
+* `/reload` clears persisted and in-memory v3 state, and local-day rollover
+  resets both `statsByModel` and `legacyFamily` entries.
+* Existing validation still passes: unsupported models clear the footer, corrupt
+  stats fall back safely, and atomic write / `npm pack --dry-run` / `git diff
+  --check` remain green.
 
 ---
 
@@ -266,7 +348,7 @@ to a control run with the noise pre-filtered).
 
 ## Forbidden patterns
 
-* Never creating, backing up, overwriting, or deleting provider/model entries in `models.json`. This extension may mention `models.json` only in advisory compat text.
+* Creating, backing up, overwriting, or deleting provider/model entries in `models.json`. This extension may mention `models.json` only in advisory compat text.
 * Reading or logging the value of `DEEPSEEK_API_KEY` (or any other API key env var).
 * Storing prompts, request payloads, response bodies, or HTTP headers in any
   on-disk file produced by this extension.
@@ -274,7 +356,9 @@ to a control run with the noise pre-filtered).
 * Deriving OpenAI `prompt_cache_key` from prompt content or stable-prefix hashes; use the Pi session id fallback instead.
 * Overwriting a non-empty user/Pi-provided `prompt_cache_key` or `promptCacheKey`.
 * Adapter selection by `provider` id, API type, base URL, or compat flags.
-* Using `version: 3+` schema or marker fields inside the stats file.
+* Reverting footer stats to provider-family-only buckets for normal updates; use
+  v3 `statsByModel` provider/id buckets for active-model turns and keep
+  `legacyFamily` only for migration/fallback.
 * Generating in-place writes to the stats file.
 * Re-emitting per-session notifications or duplicate warnings.
 * Special-casing `kiro-api` (or any other custom-API extension whose

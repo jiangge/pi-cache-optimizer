@@ -102,6 +102,18 @@ type PersistedCacheStatsV2 = {
   statsByProvider: Partial<Record<CacheProviderId, CacheStats>>;
 };
 
+/** Per-model-key scoped state. Used in memory and for v3 persistence. */
+type CacheStatsState = {
+  statsByModel: Record<string, CacheStats>;
+  legacyFamily: Partial<Record<CacheProviderId, CacheStats>>;
+};
+
+type PersistedCacheStatsV3 = {
+  version: 3;
+  statsByModel: Record<string, CacheStats>;
+  legacyFamily: Partial<Record<CacheProviderId, CacheStats>>;
+};
+
 type UsageSnapshot = {
   cacheRead: number;
   cacheWrite: number;
@@ -831,7 +843,7 @@ function describeMissingOpenAIFamilyProxyCompat(model: PiModel): string[] {
   const missing: string[] = [];
 
   if (!isOpenAIFamilyModel(model)) return missing;
-  if (model.api !== "openai-completions") return missing;
+  if (lower(model.api) !== "openai-completions") return missing;
   if (isOfficialOpenAIBaseUrl(model)) return missing;
 
   if (compat.supportsLongCacheRetention !== true) {
@@ -1061,30 +1073,56 @@ function parseCacheStats(value: unknown): CacheStats | undefined {
   };
 }
 
-function parsePersistedCacheStats(value: unknown): Partial<Record<CacheProviderId, CacheStats>> | undefined {
+function parsePersistedCacheStats(value: unknown): CacheStatsState | undefined {
   const record = asRecord(value);
   if (!record) return undefined;
 
+  // version 3: model-scoped stats + legacy family fallback
+  if (record.version === 3) {
+    const statsByModel: Record<string, CacheStats> = {};
+    const rawModelMap = asRecord(record.statsByModel);
+    if (rawModelMap) {
+      for (const [key, val] of Object.entries(rawModelMap)) {
+        const parsed = parseCacheStats(val);
+        if (parsed) statsByModel[key] = parsed;
+      }
+    }
+
+    const legacyFamily: Partial<Record<CacheProviderId, CacheStats>> = {};
+    const rawFamily = asRecord(record.legacyFamily);
+    if (rawFamily) {
+      for (const id of CACHE_PROVIDER_IDS) {
+        const stats = parseCacheStats(rawFamily[id]);
+        if (stats) legacyFamily[id] = stats;
+      }
+    }
+
+    return { statsByModel, legacyFamily };
+  }
+
+  // version 2: migrate statsByProvider into legacyFamily
+  if (record.version === 2) {
+    const statsByProvider = asRecord(record.statsByProvider);
+    const legacyFamily: Partial<Record<CacheProviderId, CacheStats>> = {};
+    if (statsByProvider) {
+      for (const id of CACHE_PROVIDER_IDS) {
+        const stats = parseCacheStats(statsByProvider[id]);
+        if (stats) legacyFamily[id] = stats;
+      }
+    }
+    return { statsByModel: {}, legacyFamily };
+  }
+
+  // version 1: single DeepSeek stats -> migrate to legacyFamily.deepseek
   if (record.version === 1) {
     const migrated = parseCacheStats(record.stats);
-    return migrated ? { deepseek: migrated } : undefined;
+    return migrated ? { statsByModel: {}, legacyFamily: { deepseek: migrated } } : undefined;
   }
 
-  if (record.version !== 2) return undefined;
-
-  const statsByProvider = asRecord(record.statsByProvider);
-  if (!statsByProvider) return undefined;
-
-  const parsed: Partial<Record<CacheProviderId, CacheStats>> = {};
-  for (const id of CACHE_PROVIDER_IDS) {
-    const stats = parseCacheStats(statsByProvider[id]);
-    if (stats) parsed[id] = stats;
-  }
-
-  return parsed;
+  return undefined;
 }
 
-async function readPersistedCacheStats(): Promise<Partial<Record<CacheProviderId, CacheStats>> | undefined> {
+async function readPersistedCacheStats(): Promise<CacheStatsState | undefined> {
   try {
     const raw = await readFile(STATE_FILE_PATH, "utf8");
     return parsePersistedCacheStats(JSON.parse(raw));
@@ -1124,9 +1162,13 @@ async function readPersistedCacheStats(): Promise<Partial<Record<CacheProviderId
   return undefined;
 }
 
-async function writePersistedCacheStats(statsByProvider: Partial<Record<CacheProviderId, CacheStats>>): Promise<void> {
+async function writePersistedCacheStats(state: CacheStatsState): Promise<void> {
   await mkdir(STATE_DIR, { recursive: true });
-  const payload: PersistedCacheStatsV2 = { version: 2, statsByProvider };
+  const payload: PersistedCacheStatsV3 = {
+    version: 3,
+    statsByModel: state.statsByModel,
+    legacyFamily: state.legacyFamily,
+  };
   const tempPath = `${STATE_FILE_PATH}.${process.pid}.${Date.now()}.tmp`;
 
   await writeFile(tempPath, JSON.stringify(payload, null, 2) + "\n", "utf8");
@@ -1164,26 +1206,59 @@ export const __internals_for_tests = {
   getAssistantMessageModelTokenValues,
   getCompat,
   modelKey,
+  // Cache stats helpers (module-level, usable from verify script)
+  addUsageToCacheStats,
+  formatCacheStats,
+  emptyCacheStats,
+  emptyAllCacheStats,
+  parseCacheStats,
+  parsePersistedCacheStats,
 };
 
 export default function (pi: ExtensionAPI) {
   const warnedModels = new Set<string>();
-  let cacheStatsByProvider: Partial<Record<CacheProviderId, CacheStats>> = emptyAllCacheStats();
+  let cacheStatsByModel: Record<string, CacheStats> = {};
+  let cacheStatsLegacyFamily: Partial<Record<CacheProviderId, CacheStats>> = emptyAllCacheStats();
   let lastStatusText: string | undefined;
   let persistenceWarningShown = false;
+  let persistTimer: ReturnType<typeof setTimeout> | null = null;
+  const PERSIST_DEBOUNCE_MS = 2000;
 
-  function getStatsForAdapter(adapter: CacheProviderAdapter): CacheStats {
-    const existing = cacheStatsByProvider[adapter.id];
+  function getCacheStatsState(): CacheStatsState {
+    return { statsByModel: cacheStatsByModel, legacyFamily: cacheStatsLegacyFamily };
+  }
+
+  /** Look up active stats for a model, falling back to legacy family. */
+  function getStatsForModel(model: PiModel | undefined, adapter: CacheProviderAdapter): CacheStats {
+    if (model) {
+      const key = modelKey(model);
+      const existing = cacheStatsByModel[key];
+      if (existing) return existing;
+    }
+
+    // Fallback: legacy family bucket — used when model key is unknown
+    // or this model hasn't been seen yet in this session.
+    const family = cacheStatsLegacyFamily[adapter.id];
+    if (family) return family;
+
+    const created = emptyCacheStats();
+    cacheStatsLegacyFamily[adapter.id] = created;
+    return created;
+  }
+
+  /** Get or create a stats entry for the given model key. */
+  function getOrCreateStatsByModelKey(key: string): CacheStats {
+    const existing = cacheStatsByModel[key];
     if (existing) return existing;
 
     const created = emptyCacheStats();
-    cacheStatsByProvider[adapter.id] = created;
+    cacheStatsByModel[key] = created;
     return created;
   }
 
   async function persistCacheStats(ctx?: ExtensionContext): Promise<void> {
     try {
-      await writePersistedCacheStats(cacheStatsByProvider);
+      await writePersistedCacheStats(getCacheStatsState());
     } catch (error) {
       console.warn(`${LOG_PREFIX}: failed to persist cache stats`, error);
       if (!persistenceWarningShown) {
@@ -1196,14 +1271,48 @@ export default function (pi: ExtensionAPI) {
     }
   }
 
+  /** Schedule a debounced persist. Coalesces rapid message_end writes
+   *  into a single disk write after PERSIST_DEBOUNCE_MS of silence.
+   *  In-memory stats remain instantly up-to-date for the footer; only
+   *  the on-disk persistence is delayed. */
+  function schedulePersistCacheStats(ctx?: ExtensionContext): void {
+    if (persistTimer !== null) clearTimeout(persistTimer);
+    persistTimer = setTimeout(() => {
+      persistTimer = null;
+      persistCacheStats(ctx).catch((err) => {
+        console.warn(`${LOG_PREFIX}: debounced persist failed`, err);
+      });
+    }, PERSIST_DEBOUNCE_MS);
+  }
+
+  /** Flush any pending debounced persist immediately (cancels timer + writes).
+   *  Used on reload and day-rollover where immediate durability matters. */
+  async function flushPersistCacheStats(ctx?: ExtensionContext): Promise<void> {
+    if (persistTimer !== null) {
+      clearTimeout(persistTimer);
+      persistTimer = null;
+    }
+    await persistCacheStats(ctx);
+  }
+
   async function rollOverStatsIfNeeded(ctx?: ExtensionContext): Promise<void> {
     const day = currentLocalDay();
     let changed = false;
 
-    for (const id of CACHE_PROVIDER_IDS) {
-      const stats = cacheStatsByProvider[id];
+    // Roll over per-model entries.
+    for (const key of Object.keys(cacheStatsByModel)) {
+      const stats = cacheStatsByModel[key];
       if (stats && stats.day !== day) {
-        cacheStatsByProvider[id] = emptyCacheStats(day);
+        cacheStatsByModel[key] = emptyCacheStats(day);
+        changed = true;
+      }
+    }
+
+    // Roll over legacy family entries.
+    for (const id of CACHE_PROVIDER_IDS) {
+      const stats = cacheStatsLegacyFamily[id];
+      if (stats && stats.day !== day) {
+        cacheStatsLegacyFamily[id] = emptyCacheStats(day);
         changed = true;
       }
     }
@@ -1216,13 +1325,21 @@ export default function (pi: ExtensionAPI) {
 
   async function restoreCacheStats(reason: string, ctx: ExtensionContext): Promise<void> {
     if (reason === "reload") {
-      cacheStatsByProvider = emptyAllCacheStats();
+      cacheStatsByModel = {};
+      cacheStatsLegacyFamily = emptyAllCacheStats();
       lastStatusText = undefined;
-      await persistCacheStats(ctx);
+      await flushPersistCacheStats(ctx);
       return;
     }
 
-    cacheStatsByProvider = (await readPersistedCacheStats()) ?? emptyAllCacheStats();
+    const persisted = await readPersistedCacheStats();
+    if (persisted) {
+      cacheStatsByModel = persisted.statsByModel;
+      cacheStatsLegacyFamily = persisted.legacyFamily;
+    } else {
+      cacheStatsByModel = {};
+      cacheStatsLegacyFamily = emptyAllCacheStats();
+    }
     lastStatusText = undefined;
     await rollOverStatsIfNeeded(ctx);
   }
@@ -1231,7 +1348,17 @@ export default function (pi: ExtensionAPI) {
     await rollOverStatsIfNeeded(ctx);
 
     const adapter = selectAdapterForModel(model);
-    let statusText: string | undefined = adapter ? formatCacheStats(adapter, getStatsForAdapter(adapter)) : undefined;
+    let statusText: string | undefined;
+    if (adapter) {
+      // Display only per-model scoped stats. A model that has never been
+      // used in this session shows 0/0 rather than falling back to legacy
+      // family aggregated stats (which could span different providers with
+      // the same model-family name). The message_end hook populates
+      // cacheStatsByModel[key] on first use with that model.
+      const key = model ? modelKey(model) : undefined;
+      const stats = key ? cacheStatsByModel[key] : undefined;
+      statusText = formatCacheStats(adapter, stats ?? emptyCacheStats());
+    }
 
     // If optimizeSystemPrompt detected structural truncation on this or
     // a recent turn, flag it once in the footer so the user knows to
@@ -1351,8 +1478,17 @@ export default function (pi: ExtensionAPI) {
     if (!usage) return;
 
     await rollOverStatsIfNeeded(ctx);
-    addUsageToCacheStats(getStatsForAdapter(adapter), usage);
-    await persistCacheStats(ctx);
+
+    // Update stats scoped to the active model (provider/id key).
+    // Falls back to legacy family when ctx.model is undefined.
+    if (ctx.model) {
+      const key = modelKey(ctx.model);
+      addUsageToCacheStats(getOrCreateStatsByModelKey(key), usage);
+    } else {
+      addUsageToCacheStats(getStatsForModel(undefined, adapter), usage);
+    }
+
+    schedulePersistCacheStats(ctx);
     await publishStatus(ctx);
   });
 }

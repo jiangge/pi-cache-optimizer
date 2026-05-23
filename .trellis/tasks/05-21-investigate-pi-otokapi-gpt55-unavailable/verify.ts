@@ -17,6 +17,12 @@
 //    official OpenAI baseUrl or non-OpenAI model id/name).
 // 6. Adapter selection (isOpenAIFamilyModel / isOpenAIFamilyAssistantMessage)
 //    remains name-only, not influenced by provider/api/baseUrl.
+// 7. modelKey() produces correct provider/id key for model-scoped stats.
+// 8. emptyCacheStats / emptyAllCacheStats produce valid structures.
+// 9. addUsageToCacheStats increments stats correctly.
+// 10. parsePersistedCacheStats migrates v2->v3 (legacyFamily), v1->v3, and
+//     preserves v3 statsByModel + legacyFamily.
+// 11. formatCacheStats produces correct footer text.
 //
 // Exits 0 on success, 1 on any failed assertion.
 
@@ -38,6 +44,13 @@ const {
   getAssistantMessageModelTokenValues,
   getCompat,
   modelKey,
+  // Cache stats helpers
+  addUsageToCacheStats,
+  formatCacheStats,
+  emptyCacheStats,
+  emptyAllCacheStats,
+  parseCacheStats,
+  parsePersistedCacheStats,
 } = __internals_for_tests;
 
 type Failure = { name: string; detail: string };
@@ -59,6 +72,10 @@ function makeModel(overrides: Record<string, unknown> = {}) {
     cost: {},
     ...overrides,
   } as unknown as Parameters<typeof isOpenAIFamilyModel>[0];
+}
+
+function makeUsageSnapshot(overrides: Partial<ReturnType<typeof emptyCacheStats>> = {}) {
+  return { cacheRead: 0, cacheWrite: 0, totalInput: 0, ...overrides };
 }
 
 // ==========================================================================
@@ -542,6 +559,225 @@ function makeModel(overrides: Record<string, unknown> = {}) {
     proxyNamed && proxyApi === true,
     "expected combined check to allow injection",
   );
+}
+
+// ==========================================================================
+// Test 15: modelKey() produces correct provider/id key for scoped stats
+// ==========================================================================
+{
+  const key1 = modelKey(makeModel({ provider: "otokapi", id: "gpt-5.5" }));
+  expect("modelKey.otokapi-gpt55", key1 === "otokapi/gpt-5.5", `expected "otokapi/gpt-5.5", got "${key1}"`);
+
+  const key2 = modelKey(makeModel({ provider: "cafecode", id: "gpt-5.5" }));
+  expect("modelKey.cafecode-gpt55", key2 === "cafecode/gpt-5.5", `expected "cafecode/gpt-5.5", got "${key2}"`);
+
+  const key3 = modelKey(makeModel({ provider: "openai", id: "gpt-4" }));
+  expect("modelKey.openai-gpt4", key3 === "openai/gpt-4", `expected "openai/gpt-4", got "${key3}"`);
+
+  // Different providers with the same model id produce different keys
+  expect(
+    "modelKey.distinct-providers",
+    modelKey(makeModel({ provider: "otokapi", id: "gpt-5.5" })) !== modelKey(makeModel({ provider: "cafecode", id: "gpt-5.5" })),
+    "expected different keys for different providers with same model id",
+  );
+}
+
+// ==========================================================================
+// Test 16: emptyCacheStats / emptyAllCacheStats produce valid structures
+// ==========================================================================
+{
+  const empty = emptyCacheStats("2026-05-21");
+  expect("emptyCacheStats.day", empty.day === "2026-05-21", `expected day "2026-05-21", got "${empty.day}"`);
+  expect("emptyCacheStats.totalRequests", empty.totalRequests === 0, "expected 0 totalRequests");
+  expect("emptyCacheStats.hitRequests", empty.hitRequests === 0, "expected 0 hitRequests");
+  expect("emptyCacheStats.cachedInputTokens", empty.cachedInputTokens === 0, "expected 0 cachedInputTokens");
+  expect("emptyCacheStats.cacheWriteInputTokens", empty.cacheWriteInputTokens === 0, "expected 0 cacheWriteInputTokens");
+  expect("emptyCacheStats.totalInputTokens", empty.totalInputTokens === 0, "expected 0 totalInputTokens");
+
+  const allEmpty = emptyAllCacheStats("2026-05-21");
+  for (const id of ["deepseek", "openai", "claude", "gemini"] as const) {
+    expect(`emptyAllCacheStats.${id}`, allEmpty[id]?.day === "2026-05-21" && allEmpty[id]?.totalRequests === 0, `expected empty stats for ${id}`);
+  }
+}
+
+// ==========================================================================
+// Test 17: addUsageToCacheStats correctly increments stats
+// ==========================================================================
+{
+  const stats = emptyCacheStats("2026-05-21");
+
+  // A cache MISS (cacheRead=0, totalInput=1000)
+  addUsageToCacheStats(stats, makeUsageSnapshot({ cacheRead: 0, totalInput: 1000 }));
+  expect("addUsage.miss.totalRequests", stats.totalRequests === 1, "expected 1 totalRequest after miss");
+  expect("addUsage.miss.hitRequests", stats.hitRequests === 0, "expected 0 hitRequests after miss");
+  expect("addUsage.miss.cachedInputTokens", stats.cachedInputTokens === 0, "expected 0 cachedInputTokens after miss");
+  expect("addUsage.miss.totalInputTokens", stats.totalInputTokens === 1000, "expected 1000 totalInputTokens after miss");
+
+  // A cache HIT (cacheRead=800, totalInput=1000)
+  addUsageToCacheStats(stats, makeUsageSnapshot({ cacheRead: 800, totalInput: 1000 }));
+  expect("addUsage.hit.totalRequests", stats.totalRequests === 2, "expected 2 totalRequests after hit");
+  expect("addUsage.hit.hitRequests", stats.hitRequests === 1, "expected 1 hitRequests after hit");
+  expect("addUsage.hit.cachedInputTokens", stats.cachedInputTokens === 800, "expected 800 cachedInputTokens after hit");
+  expect("addUsage.hit.totalInputTokens", stats.totalInputTokens === 2000, "expected 2000 totalInputTokens after hit");
+
+  // Another miss (cacheRead=0, totalInput=500)
+  addUsageToCacheStats(stats, makeUsageSnapshot({ cacheRead: 0, totalInput: 500 }));
+  expect("addUsage.another-miss.totalRequests", stats.totalRequests === 3, "expected 3 totalRequests");
+  expect("addUsage.another-miss.hitRequests", stats.hitRequests === 1, "expected 1 hitRequests (only one hit so far)");
+  expect("addUsage.another-miss.cachedInputTokens", stats.cachedInputTokens === 800, "expected 800 cachedInputTokens (unchanged)");
+  expect("addUsage.another-miss.totalInputTokens", stats.totalInputTokens === 2500, "expected 2500 totalInputTokens");
+}
+
+// ==========================================================================
+// Test 18: formatCacheStats produces correct footer text
+// ==========================================================================
+{
+  // Use an openai-family adapter stats
+  const stats = emptyCacheStats("2026-05-21");
+  const openaiAdapter = { id: "openai" as const, label: "OpenAI cache", showCacheWrite: false } as const;
+  // Note: formatCacheStats only needs `label` and `showCacheWrite` from adapter
+
+  // Zero stats → "OpenAI cache 0/0 · 0M/0M tok"
+  const formatted0 = formatCacheStats(openaiAdapter as unknown as Parameters<typeof formatCacheStats>[0], stats);
+  expect("formatCacheStats.zero", formatted0 === "OpenAI cache 0/0 · 0M/0M tok", `got "${formatted0}"`);
+
+  // Add some usage: 1 hit out of 2 requests, 800/2000 cached
+  addUsageToCacheStats(stats, makeUsageSnapshot({ cacheRead: 800, totalInput: 1000 })); // hit
+  addUsageToCacheStats(stats, makeUsageSnapshot({ cacheRead: 0, totalInput: 1000 }));   // miss
+  const formatted1 = formatCacheStats(openaiAdapter as unknown as Parameters<typeof formatCacheStats>[0], stats);
+  expect("formatCacheStats.with-data", formatted1.includes("1/2"), "expected 1/2 requests count");
+  expect("formatCacheStats.with-data-percent", formatted1.includes("(40%)"), "expected 40% hit rate");
+  expect("formatCacheStats.no-write", formatted1.includes("write") === false, "expected no write count for openai adapter");
+
+  // Claude adapter with cacheWrite
+  const claudeAdapter = { id: "claude" as const, label: "Claude cache", showCacheWrite: true } as const;
+  const claudeStats = emptyCacheStats("2026-05-21");
+  addUsageToCacheStats(claudeStats, makeUsageSnapshot({ cacheRead: 500, cacheWrite: 200, totalInput: 1000 }));
+  const formattedClaude = formatCacheStats(claudeAdapter as unknown as Parameters<typeof formatCacheStats>[0], claudeStats);
+  expect("formatCacheStats.claude-has-write", formattedClaude.includes("write"), `expected write count for claude, got: "${formattedClaude}"`);
+}
+
+// ==========================================================================
+// Test 19: parsePersistedCacheStats — v3 format round-trip
+// ==========================================================================
+{
+  const v3Input = {
+    version: 3,
+    statsByModel: {
+      "otokapi/gpt-5.5": {
+        day: "2026-05-21",
+        totalRequests: 5,
+        hitRequests: 2,
+        cachedInputTokens: 3000,
+        cacheWriteInputTokens: 0,
+        totalInputTokens: 10000,
+      },
+      "cafecode/gpt-5.5": {
+        day: "2026-05-21",
+        totalRequests: 3,
+        hitRequests: 1,
+        cachedInputTokens: 1500,
+        cacheWriteInputTokens: 0,
+        totalInputTokens: 6000,
+      },
+    },
+    legacyFamily: {
+      deepseek: {
+        day: "2026-05-21",
+        totalRequests: 10,
+        hitRequests: 8,
+        cachedInputTokens: 50000,
+        cacheWriteInputTokens: 1000,
+        totalInputTokens: 60000,
+      },
+    },
+  };
+
+  const parsed = parsePersistedCacheStats(v3Input);
+  expect("parseV3.not-undefined", parsed !== undefined, "expected v3 parse to succeed");
+
+  if (parsed) {
+    expect("parseV3.statsByModel.otokapi", parsed.statsByModel["otokapi/gpt-5.5"]?.hitRequests === 2, "expected otokapi/gpt-5.5 hits to be 2");
+    expect("parseV3.statsByModel.cafecode", parsed.statsByModel["cafecode/gpt-5.5"]?.hitRequests === 1, "expected cafecode/gpt-5.5 hits to be 1");
+    expect("parseV3.legacyFamily.deepseek", parsed.legacyFamily.deepseek?.hitRequests === 8, "expected deepseek legacy hits to be 8");
+    expect("parseV3.legacyFamily.openai", parsed.legacyFamily.openai === undefined, "expected no openai legacy entry");
+  }
+}
+
+// ==========================================================================
+// Test 20: parsePersistedCacheStats — v2 → v3 migration
+// ==========================================================================
+{
+  const v2Input = {
+    version: 2,
+    statsByProvider: {
+      deepseek: {
+        day: "2026-05-21",
+        totalRequests: 10,
+        hitRequests: 8,
+        cachedInputTokens: 50000,
+        cacheWriteInputTokens: 1000,
+        totalInputTokens: 60000,
+      },
+      openai: {
+        day: "2026-05-21",
+        totalRequests: 5,
+        hitRequests: 2,
+        cachedInputTokens: 3000,
+        cacheWriteInputTokens: 0,
+        totalInputTokens: 10000,
+      },
+    },
+  };
+
+  const parsed = parsePersistedCacheStats(v2Input);
+  expect("parseV2.not-undefined", parsed !== undefined, "expected v2 parse to succeed");
+
+  if (parsed) {
+    expect("parseV2.statsByModel.empty", Object.keys(parsed.statsByModel).length === 0, "expected empty statsByModel after v2 migration");
+    expect("parseV2.legacyFamily.deepseek", parsed.legacyFamily.deepseek?.hitRequests === 8, "expected deepseek legacy hits to be 8");
+    expect("parseV2.legacyFamily.openai", parsed.legacyFamily.openai?.hitRequests === 2, "expected openai legacy hits to be 2");
+    expect("parseV2.legacyFamily.claude", parsed.legacyFamily.claude === undefined, "expected no claude legacy entry (not in source)");
+  }
+}
+
+// ==========================================================================
+// Test 21: parsePersistedCacheStats — v1 → v3 migration
+// ==========================================================================
+{
+  const v1Input = {
+    version: 1,
+    stats: {
+      day: "2026-05-21",
+      totalRequests: 20,
+      hitRequests: 15,
+      cachedInputTokens: 100000,
+      cacheWriteInputTokens: 5000,
+      totalInputTokens: 150000,
+    },
+  };
+
+  const parsed = parsePersistedCacheStats(v1Input);
+  expect("parseV1.not-undefined", parsed !== undefined, "expected v1 parse to succeed");
+
+  if (parsed) {
+    expect("parseV1.statsByModel.empty", Object.keys(parsed.statsByModel).length === 0, "expected empty statsByModel after v1 migration");
+    expect("parseV1.legacyFamily.deepseek", parsed.legacyFamily.deepseek?.hitRequests === 15, "expected deepseek legacy hits to be 15");
+    expect("parseV1.legacyFamily.openai", parsed.legacyFamily.openai === undefined, "expected no openai legacy entry from v1");
+  }
+}
+
+// ==========================================================================
+// Test 22: parsePersistedCacheStats — invalid input
+// ==========================================================================
+{
+  expect("parseInvalid.null", parsePersistedCacheStats(null) === undefined, "expected undefined for null");
+  expect("parseInvalid.string", parsePersistedCacheStats("bad") === undefined, "expected undefined for string");
+  expect("parseInvalid.unknown-version", parsePersistedCacheStats({ version: 99 }) === undefined, "expected undefined for unknown version");
+  expect("parseInvalid.no-version", parsePersistedCacheStats({}) === undefined, "expected undefined for object without version");
+  // Corrupt individual entries are skipped; the parser returns a valid state.
+  const corruptV2Result = parsePersistedCacheStats({ version: 2, statsByProvider: { deepseek: "not-stats" } });
+  expect("parseInvalid.corrupt-v2", corruptV2Result !== undefined && Object.keys(corruptV2Result!.statsByModel).length === 0 && Object.keys(corruptV2Result!.legacyFamily).length === 0, "expected valid state with empty legacyFamily for corrupt v2");
 }
 
 // ==========================================================================
