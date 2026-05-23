@@ -54,6 +54,19 @@ const {
   isMiniMaxLikeAssistantMessage,
   isHunyuanLikeModel,
   isHunyuanLikeAssistantMessage,
+  // Additional OpenAI-compatible model detection
+  isMistralLikeModel,
+  isMistralLikeAssistantMessage,
+  isGrokLikeModel,
+  isGrokLikeAssistantMessage,
+  isLlamaLikeModel,
+  isLlamaLikeAssistantMessage,
+  isNemotronLikeModel,
+  isNemotronLikeAssistantMessage,
+  isCohereLikeModel,
+  isCohereLikeAssistantMessage,
+  isYiLikeModel,
+  isYiLikeAssistantMessage,
   getCompat,
   modelKey,
   buildOpenAIProxyCompatWarningText,
@@ -1307,6 +1320,197 @@ Line count: 10 / 1000
     "existing.modelKey-distinct",
     modelKey(makeModel({ provider: "tencent", id: "kimi-k2.5" })) !== modelKey(makeModel({ provider: "zhoumo", id: "kimi-k2.5" })),
     "expected different keys for different providers with same kimi-k2.5 id",
+  );
+}
+
+// ==========================================================================
+// Test 29: New model-family detection — Mistral, Grok, Llama, Nemotron, Cohere, Yi
+// ==========================================================================
+{
+  // Mistral detection
+  expect("detect.mistral-id", isMistralLikeModel(makeModel({ id: "mistral-large" })) === true, "expected mistral-large ID to match");
+  expect("detect.mistral-name", isMistralLikeModel(makeModel({ id: "custom", name: "Mistral Large" })) === true, "expected Mistral Large name to match");
+  expect("detect.mixtral-id", isMistralLikeModel(makeModel({ id: "mixtral-8x7b" })) === true, "expected mixtral-8x7b ID to match");
+  expect("detect.codestral-id", isMistralLikeModel(makeModel({ id: "codestral-latest" })) === true, "expected codestral-latest ID to match");
+  expect("detect.mistral-not-gpt", isMistralLikeModel(makeModel({ id: "gpt-4" })) === false, "expected gpt-4 to NOT match Mistral");
+
+  // Grok/xAI detection
+  expect("detect.grok-id", isGrokLikeModel(makeModel({ id: "grok-3" })) === true, "expected grok-3 ID to match");
+  expect("detect.grok-name", isGrokLikeModel(makeModel({ id: "custom", name: "Grok 3" })) === true, "expected Grok 3 name to match");
+  expect("detect.xai-boundary", isGrokLikeModel(makeModel({ id: "xai/grok-3" })) === true, "expected xai/grok-3 to match via xai pattern");
+  expect("detect.xai-name", isGrokLikeModel(makeModel({ id: "custom", name: "xAI Grok" })) === true, "expected xAI Grok name to match via xai pattern");
+  expect("detect.grok-not-llama", isGrokLikeModel(makeModel({ id: "llama-3" })) === false, "expected llama-3 to NOT match Grok");
+
+  // Llama detection
+  expect("detect.llama-id", isLlamaLikeModel(makeModel({ id: "llama-3-70b" })) === true, "expected llama-3-70b ID to match");
+  expect("detect.llama-name", isLlamaLikeModel(makeModel({ id: "custom", name: "Llama 3" })) === true, "expected Llama 3 name to match");
+  expect("detect.meta-llama-id", isLlamaLikeModel(makeModel({ id: "meta-llama/Llama-3.1-8B" })) === true, "expected meta-llama id to match");
+  expect("detect.llama-not-grok", isLlamaLikeModel(makeModel({ id: "grok-3" })) === false, "expected grok-3 to NOT match Llama");
+
+  // Nemotron detection
+  expect("detect.nemotron-id", isNemotronLikeModel(makeModel({ id: "nemotron-3-super" })) === true, "expected nemotron-3-super ID to match");
+  expect("detect.nemotron-name", isNemotronLikeModel(makeModel({ id: "custom", name: "Nemotron 4" })) === true, "expected Nemotron 4 name to match");
+  expect("detect.nemotron-not-llama", isNemotronLikeModel(makeModel({ id: "llama-3" })) === false, "expected llama-3 to NOT match Nemotron");
+
+  // Cohere detection
+  expect("detect.cohere-id", isCohereLikeModel(makeModel({ id: "cohere-command-r" })) === true, "expected cohere-command-r ID to match");
+  expect("detect.command-r-id", isCohereLikeModel(makeModel({ id: "command-r-plus" })) === true, "expected command-r-plus ID to match");
+  expect("detect.cohere-name", isCohereLikeModel(makeModel({ id: "custom", name: "Cohere Command R+" })) === true, "expected Cohere name to match");
+  expect("detect.cohere-not-mistral", isCohereLikeModel(makeModel({ id: "mistral-large" })) === false, "expected mistral-large to NOT match Cohere");
+
+  // Yi detection
+  expect("detect.yi-id", isYiLikeModel(makeModel({ id: "yi-lightning" })) === true, "expected yi-lightning ID to match");
+  expect("detect.yi-name", isYiLikeModel(makeModel({ id: "custom", name: "Yi 34B" })) === true, "expected Yi 34B name to match via yi pattern");
+  expect("detect.yi-01-ai-id", isYiLikeModel(makeModel({ id: "01-ai-yi-34b" })) === true, "expected 01-ai-yi-34b to match");
+  expect("detect.yi-zero-one-name", isYiLikeModel(makeModel({ id: "custom", name: "Zero-One Yi" })) === true, "expected Zero-One Yi name to match");
+  expect("detect.yi-not-gpt", isYiLikeModel(makeModel({ id: "gpt-4" })) === false, "expected gpt-4 to NOT match Yi");
+}
+
+// ==========================================================================
+// Test 30: New model-family assistant message detection
+// ==========================================================================
+{
+  // Mistral assistant
+  expect(
+    "detect.mistral-assistant",
+    isMistralLikeAssistantMessage({ role: "assistant", model: "mistral-large" }, undefined) === true,
+    "expected Mistral assistant message to match",
+  );
+
+  // Grok assistant
+  expect(
+    "detect.grok-assistant",
+    isGrokLikeAssistantMessage({ role: "assistant", model: "grok-3" }, undefined) === true,
+    "expected Grok assistant message to match",
+  );
+  expect(
+    "detect.xai-assistant",
+    isGrokLikeAssistantMessage({ role: "assistant", name: "xAI Grok" }, undefined) === true,
+    "expected xAI Grok assistant message with name to match",
+  );
+
+  // Llama assistant
+  expect(
+    "detect.llama-assistant",
+    isLlamaLikeAssistantMessage({ role: "assistant", model: "llama-3-70b" }, undefined) === true,
+    "expected Llama assistant message to match",
+  );
+
+  // Nemotron assistant
+  expect(
+    "detect.nemotron-assistant",
+    isNemotronLikeAssistantMessage({ role: "assistant", model: "nemotron-3-super" }, undefined) === true,
+    "expected Nemotron assistant message to match",
+  );
+
+  // Cohere assistant
+  expect(
+    "detect.cohere-assistant",
+    isCohereLikeAssistantMessage({ role: "assistant", model: "command-r-plus" }, undefined) === true,
+    "expected Cohere assistant message to match",
+  );
+
+  // Yi assistant
+  expect(
+    "detect.yi-assistant",
+    isYiLikeAssistantMessage({ role: "assistant", model: "yi-lightning" }, undefined) === true,
+    "expected Yi assistant message to match",
+  );
+}
+
+// ==========================================================================
+// Test 31: New model-family adapter labels and stats separation
+// ==========================================================================
+{
+  // Mistral adapter label
+  const mistralFormatted = formatCacheStats(
+    { id: "openai", label: "Mistral cache", showCacheWrite: false } as Parameters<typeof formatCacheStats>[0],
+    emptyCacheStats("2026-05-23"),
+  );
+  expect("newAdapter.mistral-label", mistralFormatted.startsWith("Mistral cache"), `expected label "Mistral cache", got: "${mistralFormatted}"`);
+
+  // Grok adapter label
+  const grokFormatted = formatCacheStats(
+    { id: "openai", label: "Grok cache", showCacheWrite: false } as Parameters<typeof formatCacheStats>[0],
+    emptyCacheStats("2026-05-23"),
+  );
+  expect("newAdapter.grok-label", grokFormatted.startsWith("Grok cache"), `expected label "Grok cache", got: "${grokFormatted}"`);
+
+  // Llama adapter label
+  const llamaFormatted = formatCacheStats(
+    { id: "openai", label: "Llama cache", showCacheWrite: false } as Parameters<typeof formatCacheStats>[0],
+    emptyCacheStats("2026-05-23"),
+  );
+  expect("newAdapter.llama-label", llamaFormatted.startsWith("Llama cache"), `expected label "Llama cache", got: "${llamaFormatted}"`);
+
+  // Nemotron adapter label
+  const nemotronFormatted = formatCacheStats(
+    { id: "openai", label: "Nemotron cache", showCacheWrite: false } as Parameters<typeof formatCacheStats>[0],
+    emptyCacheStats("2026-05-23"),
+  );
+  expect("newAdapter.nemotron-label", nemotronFormatted.startsWith("Nemotron cache"), `expected label "Nemotron cache", got: "${nemotronFormatted}"`);
+
+  // Cohere adapter label
+  const cohereFormatted = formatCacheStats(
+    { id: "openai", label: "Cohere cache", showCacheWrite: false } as Parameters<typeof formatCacheStats>[0],
+    emptyCacheStats("2026-05-23"),
+  );
+  expect("newAdapter.cohere-label", cohereFormatted.startsWith("Cohere cache"), `expected label "Cohere cache", got: "${cohereFormatted}"`);
+
+  // Yi adapter label
+  const yiFormatted = formatCacheStats(
+    { id: "openai", label: "Yi cache", showCacheWrite: false } as Parameters<typeof formatCacheStats>[0],
+    emptyCacheStats("2026-05-23"),
+  );
+  expect("newAdapter.yi-label", yiFormatted.startsWith("Yi cache"), `expected label "Yi cache", got: "${yiFormatted}"`);
+
+  // Model key separation
+  const mistralKey = modelKey(makeModel({ provider: "aiapi", id: "mistral-large" }));
+  const mistralKey2 = modelKey(makeModel({ provider: "mistral", id: "mistral-large" }));
+  expect("newAdapter.modelKey-distinct-mistral", mistralKey !== mistralKey2, "expected different keys for different providers with same mistral-large id");
+}
+
+// ==========================================================================
+// Test 32: Relaxed gate verification for new models
+// ==========================================================================
+{
+  // Grok model with openai-completions — gate should PASS
+  const grokModel = makeModel({
+    id: "grok-3",
+    provider: "xai",
+    api: "openai-completions",
+    baseUrl: "https://xai.example.com/v1",
+  });
+  expect(
+    "relaxedGate.grok-api-match",
+    isOpenAICompatibleApi(grokModel.api) === true,
+    "expected isOpenAICompatibleApi to accept openai-completions for Grok",
+  );
+
+  // Mistral model with kiro-api — gate should BLOCK
+  const mistralKiro = makeModel({
+    id: "mistral-large",
+    provider: "custom",
+    api: "kiro-api",
+    baseUrl: "https://kiro.example.com/v1",
+  });
+  expect(
+    "relaxedGate.mistral-kiro-block",
+    isOpenAICompatibleApi(mistralKiro.api) === false,
+    "expected kiro-api to block injection even for Mistral model",
+  );
+
+  // Grok model with openai-responses — gate should PASS
+  const grokResponses = makeModel({
+    id: "grok-3",
+    provider: "xai",
+    api: "openai-responses",
+    baseUrl: "https://xai.example.com/v1",
+  });
+  expect(
+    "relaxedGate.grok-responses-match",
+    isOpenAICompatibleApi(grokResponses.api) === true,
+    "expected isOpenAICompatibleApi to accept openai-responses for Grok",
   );
 }
 

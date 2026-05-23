@@ -80,6 +80,7 @@ const MIN_STABLE_CANDIDATE_LENGTH = 8;
 
 const ASSISTANT_MESSAGE_MODEL_TOKEN_KEYS = ["model", "name"];
 const OPENAI_REASONING_MODEL_PATTERN = /(^|[/\s:_-])o[1345]($|[-_.:/\s])/;
+const XAI_MODEL_PATTERN = /(^|[/\s:_-])xai($|[-_.:/\s])/;
 
 type CacheCompat = {
   sendSessionAffinityHeaders?: boolean;
@@ -672,6 +673,62 @@ function isHunyuanLikeAssistantMessage(message: unknown, model: PiModel | undefi
   return modelOrAssistantMessageHas(message, model, ["hunyuan"]);
 }
 
+// ── Additional OpenAI-compatible model detection ──────────────────
+
+function isMistralLikeModel(model: PiModel | undefined): boolean {
+  return hasAnyTokenContaining(getModelIdNameTokenValues(model), ["mistral", "mixtral", "codestral"]);
+}
+function isMistralLikeAssistantMessage(message: unknown, model: PiModel | undefined): boolean {
+  return modelOrAssistantMessageHas(message, model, ["mistral", "mixtral", "codestral"]);
+}
+
+function isGrokLikeModel(model: PiModel | undefined): boolean {
+  const tokens = getModelIdNameTokenValues(model);
+  return hasAnyTokenContaining(tokens, ["grok"]) || tokens.some((t) => XAI_MODEL_PATTERN.test(t));
+}
+function isGrokLikeAssistantMessage(message: unknown, model: PiModel | undefined): boolean {
+  const allTokens = [
+    ...getModelIdNameTokenValues(model),
+    ...getAssistantMessageModelTokenValues(message),
+  ];
+  return hasAnyTokenContaining(allTokens, ["grok"]) || allTokens.some((t) => XAI_MODEL_PATTERN.test(t));
+}
+
+function isLlamaLikeModel(model: PiModel | undefined): boolean {
+  return hasAnyTokenContaining(getModelIdNameTokenValues(model), ["llama"]);
+}
+function isLlamaLikeAssistantMessage(message: unknown, model: PiModel | undefined): boolean {
+  return modelOrAssistantMessageHas(message, model, ["llama"]);
+}
+
+function isNemotronLikeModel(model: PiModel | undefined): boolean {
+  return hasAnyTokenContaining(getModelIdNameTokenValues(model), ["nemotron"]);
+}
+function isNemotronLikeAssistantMessage(message: unknown, model: PiModel | undefined): boolean {
+  return modelOrAssistantMessageHas(message, model, ["nemotron"]);
+}
+
+function isCohereLikeModel(model: PiModel | undefined): boolean {
+  return hasAnyTokenContaining(getModelIdNameTokenValues(model), ["cohere", "command-r"]);
+}
+function isCohereLikeAssistantMessage(message: unknown, model: PiModel | undefined): boolean {
+  return modelOrAssistantMessageHas(message, model, ["cohere", "command-r"]);
+}
+
+const YI_MODEL_PATTERN = /(^|[\/\s:_-])yi($|[\-_.:\/\s])/;
+
+function isYiLikeModel(model: PiModel | undefined): boolean {
+  const tokens = getModelIdNameTokenValues(model);
+  return hasAnyTokenContaining(tokens, ["yi-", "01-ai", "zero-one"]) || tokens.some((t) => YI_MODEL_PATTERN.test(t));
+}
+function isYiLikeAssistantMessage(message: unknown, model: PiModel | undefined): boolean {
+  const allTokens = [
+    ...getModelIdNameTokenValues(model),
+    ...getAssistantMessageModelTokenValues(message),
+  ];
+  return hasAnyTokenContaining(allTokens, ["yi-", "01-ai", "zero-one"]) || allTokens.some((t) => YI_MODEL_PATTERN.test(t));
+}
+
 // ── Model key ──────────────────────────────────────────────────────
 
 function modelKey(model: PiModel): string {
@@ -1136,6 +1193,109 @@ const CACHE_PROVIDER_ADAPTERS: CacheProviderAdapter[] = [
       return buildOpenAIProxyCompatWarningText(modelKey(model), missing);
     },
   },
+  // ── More OpenAI-compatible adapters ──────────────────────────
+  {
+    id: "openai" as CacheProviderId,
+    label: "Mistral cache",
+    matchesModel: isMistralLikeModel,
+    matchesAssistantMessage(message, model) {
+      if (!isAssistantMessage(message)) return false;
+      return isMistralLikeAssistantMessage(message, model);
+    },
+    normalizeUsage(message) {
+      return normalizeWithFallback(message, getOpenAIRawUsage);
+    },
+    warningText(model) {
+      const missing = describeMissingOpenAICompatibleProxyCompat(model);
+      if (missing.length === 0) return undefined;
+      return buildOpenAIProxyCompatWarningText(modelKey(model), missing);
+    },
+  },
+  {
+    id: "openai" as CacheProviderId,
+    label: "Grok cache",
+    matchesModel: isGrokLikeModel,
+    matchesAssistantMessage(message, model) {
+      if (!isAssistantMessage(message)) return false;
+      return isGrokLikeAssistantMessage(message, model);
+    },
+    normalizeUsage(message) {
+      return normalizeWithFallback(message, getOpenAIRawUsage);
+    },
+    warningText(model) {
+      const missing = describeMissingOpenAICompatibleProxyCompat(model);
+      if (missing.length === 0) return undefined;
+      return buildOpenAIProxyCompatWarningText(modelKey(model), missing);
+    },
+  },
+  {
+    id: "openai" as CacheProviderId,
+    label: "Llama cache",
+    matchesModel: isLlamaLikeModel,
+    matchesAssistantMessage(message, model) {
+      if (!isAssistantMessage(message)) return false;
+      return isLlamaLikeAssistantMessage(message, model);
+    },
+    normalizeUsage(message) {
+      return normalizeWithFallback(message, getOpenAIRawUsage);
+    },
+    warningText(model) {
+      const missing = describeMissingOpenAICompatibleProxyCompat(model);
+      if (missing.length === 0) return undefined;
+      return buildOpenAIProxyCompatWarningText(modelKey(model), missing);
+    },
+  },
+  {
+    id: "openai" as CacheProviderId,
+    label: "Nemotron cache",
+    matchesModel: isNemotronLikeModel,
+    matchesAssistantMessage(message, model) {
+      if (!isAssistantMessage(message)) return false;
+      return isNemotronLikeAssistantMessage(message, model);
+    },
+    normalizeUsage(message) {
+      return normalizeWithFallback(message, getOpenAIRawUsage);
+    },
+    warningText(model) {
+      const missing = describeMissingOpenAICompatibleProxyCompat(model);
+      if (missing.length === 0) return undefined;
+      return buildOpenAIProxyCompatWarningText(modelKey(model), missing);
+    },
+  },
+  {
+    id: "openai" as CacheProviderId,
+    label: "Cohere cache",
+    matchesModel: isCohereLikeModel,
+    matchesAssistantMessage(message, model) {
+      if (!isAssistantMessage(message)) return false;
+      return isCohereLikeAssistantMessage(message, model);
+    },
+    normalizeUsage(message) {
+      return normalizeWithFallback(message, getOpenAIRawUsage);
+    },
+    warningText(model) {
+      const missing = describeMissingOpenAICompatibleProxyCompat(model);
+      if (missing.length === 0) return undefined;
+      return buildOpenAIProxyCompatWarningText(modelKey(model), missing);
+    },
+  },
+  {
+    id: "openai" as CacheProviderId,
+    label: "Yi cache",
+    matchesModel: isYiLikeModel,
+    matchesAssistantMessage(message, model) {
+      if (!isAssistantMessage(message)) return false;
+      return isYiLikeAssistantMessage(message, model);
+    },
+    normalizeUsage(message) {
+      return normalizeWithFallback(message, getOpenAIRawUsage);
+    },
+    warningText(model) {
+      const missing = describeMissingOpenAICompatibleProxyCompat(model);
+      if (missing.length === 0) return undefined;
+      return buildOpenAIProxyCompatWarningText(modelKey(model), missing);
+    },
+  },
 ];
 
 function selectAdapterForModel(model: PiModel | undefined): CacheProviderAdapter | undefined {
@@ -1398,6 +1558,19 @@ export const __internals_for_tests = {
   isMiniMaxLikeAssistantMessage,
   isHunyuanLikeModel,
   isHunyuanLikeAssistantMessage,
+  // Additional OpenAI-compatible model detection
+  isMistralLikeModel,
+  isMistralLikeAssistantMessage,
+  isGrokLikeModel,
+  isGrokLikeAssistantMessage,
+  isLlamaLikeModel,
+  isLlamaLikeAssistantMessage,
+  isNemotronLikeModel,
+  isNemotronLikeAssistantMessage,
+  isCohereLikeModel,
+  isCohereLikeAssistantMessage,
+  isYiLikeModel,
+  isYiLikeAssistantMessage,
   buildOpenAIProxyCompatWarningText,
   getModelIdNameTokenValues,
   getAssistantMessageModelTokenValues,

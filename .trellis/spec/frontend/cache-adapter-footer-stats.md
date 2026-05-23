@@ -36,6 +36,12 @@ OpenAI-family just because they use an OpenAI-shaped API.
 | GLM / Zhipu | `glm` | `GLM cache` |
 | MiniMax | `minimax` | `MiniMax cache` |
 | Hunyuan / Tencent | `hunyuan` | `Hunyuan cache` |
+| Mistral | `mistral`, `mixtral`, `codestral` | `Mistral cache` |
+| xAI / Grok | `grok`, pattern `xai` with safe boundaries | `Grok cache` |
+| Meta / Llama | `llama` | `Llama cache` |
+| NVIDIA Nemotron | `nemotron` | `Nemotron cache` |
+| Cohere / Command | `cohere`, `command-r` | `Cohere cache` |
+| Yi / 零一万物 | `yi-`, `01-ai`, `zero-one`, or pattern `yi` with safe boundaries | `Yi cache` |
 | Anthropic / Claude | `anthropic`, `claude` | `Claude cache` |
 | Gemini / Vertex | `gemini`, `vertex` | `Gemini cache` |
 
@@ -242,7 +248,7 @@ type PersistedCacheStatsV3 = {
 | New v3 stats file has entries for `otokapi/gpt-5.5` and `cafecode/gpt-5.5` | Selecting either model displays only that key's counters, even though both use the OpenAI-family footer label. |
 | Selected matching model has no `statsByModel` entry yet | Display empty same-day stats (`0/0`, `0M/0M`) instead of legacy family aggregate counters. |
 | `/reload` session_start reason | Clear model-scoped and legacy counters, persist empty v3 state immediately, then publish empty current-model footer. |
-| Non-GPT OpenAI-compatible model (Kimi, Qwen, GLM, MiniMax, Hunyuan) with `openai-completions` API | Selected adapter shows the corresponding footer label (e.g. `Kimi cache`, `Qwen cache`); compat warning fires for non-official base URLs missing cache/session-affinity flags. |
+| Non-GPT OpenAI-compatible model (Kimi, Qwen, GLM, MiniMax, Hunyuan, Mistral, Grok, Llama, Nemotron, Cohere, Yi) with `openai-completions` API | Selected adapter shows the corresponding footer label; compat warning fires for non-official base URLs missing cache/session-affinity flags. |
 | Model id/name contains both GPT-family and non-GPT tokens (e.g. `kimi-gpt-4`) | GPT adapter takes precedence (earlier in `CACHE_PROVIDER_ADAPTERS`). Footer shows `OpenAI cache`, stats still scoped by provider/model key. |
 | Local day changes | Reset every stale `statsByModel` and `legacyFamily` entry to empty current-day stats before publishing/updating, and persist immediately. |
 | New stats path corrupt | Log warning, fall back to empty in-memory counters; do not delete. Next valid write may replace it atomically. |
@@ -270,7 +276,7 @@ task-level verification script that asserts:
 * Existing validation still passes: unsupported models clear the footer, corrupt
   stats fall back safely, and atomic write / `npm pack --dry-run` / `git diff
   --check` remain green.
-* New adapters for Kimi, Qwen, GLM, MiniMax, Hunyuan: each detection function
+* New adapters for Kimi, Qwen, GLM, MiniMax, Hunyuan, Mistral, Grok/xAI, Llama, Nemotron, Cohere, Yi: each detection function
   returns correct results for id/name matches and non-matches, assistant message
   matching is role-gated, and compat warnings use the broadened
   `describeMissingOpenAICompatibleProxyCompat`.

@@ -38,6 +38,17 @@
 |---|---|---|---|
 | DeepSeek | model id/name 包含 `deepseek` | `DS cache` | Pi `usage.cacheRead`/`usage.input`，或可见 raw 字段 `prompt_cache_hit_tokens`、`prompt_cache_miss_tokens`、`prompt_tokens` |
 | OpenAI-family | model id/name 包含保守 OpenAI-family token，例如 `gpt-`、`chatgpt`、`o1`、`o3`、`o4` 或 `o5` | `OpenAI cache` | Pi 归一化 usage，或可见 raw 字段 `prompt_tokens_details.cached_tokens` / `input_tokens_details.cached_tokens` 及 prompt/input total |
+| Kimi / Moonshot | model id/name 包含 `kimi` | `Kimi cache` | Pi 归一化 usage，或可见 OpenAI 形状字段 |
+| Qwen / Alibaba | model id/name 包含 `qwen` | `Qwen cache` | Pi 归一化 usage，或可见 OpenAI 形状字段 |
+| GLM / Zhipu | model id/name 包含 `glm` | `GLM cache` | Pi 归一化 usage，或可见 OpenAI 形状字段 |
+| MiniMax | model id/name 包含 `minimax` | `MiniMax cache` | Pi 归一化 usage，或可见 OpenAI 形状字段 |
+| Hunyuan / Tencent | model id/name 包含 `hunyuan` | `Hunyuan cache` | Pi 归一化 usage，或可见 OpenAI 形状字段 |
+| Mistral | model id/name 包含 `mistral`、`mixtral` 或 `codestral` | `Mistral cache` | Pi 归一化 usage，或可见 OpenAI 形状字段 |
+| xAI / Grok | model id/name 包含 `grok`，或安全边界内 `xai` 模式 | `Grok cache` | Pi 归一化 usage，或可见 OpenAI 形状字段 |
+| Meta / Llama | model id/name 包含 `llama` | `Llama cache` | Pi 归一化 usage，或可见 OpenAI 形状字段 |
+| NVIDIA Nemotron | model id/name 包含 `nemotron` | `Nemotron cache` | Pi 归一化 usage，或可见 OpenAI 形状字段 |
+| Cohere / Command | model id/name 包含 `cohere` 或 `command-r` | `Cohere cache` | Pi 归一化 usage，或可见 OpenAI 形状字段 |
+| Yi / 零一万物 | model id/name 包含 `yi-`、`01-ai`、`zero-one`，或安全边界内 `yi` 模式 | `Yi cache` | Pi 归一化 usage，或可见 OpenAI 形状字段 |
 | Anthropic / Claude | model id/name 包含 `anthropic` 或 `claude` | `Claude cache` | Pi 归一化 usage，或可见 raw 字段 `cache_read_input_tokens`、`cache_creation_input_tokens`、`input_tokens` |
 | Gemini / Vertex | model id/name 包含 `gemini` 或 `vertex` | `Gemini cache` | Pi 归一化 usage，或可见 Gemini/Vertex cached-content token metadata |
 

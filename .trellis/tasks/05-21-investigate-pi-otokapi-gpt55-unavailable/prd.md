@@ -78,6 +78,8 @@
   * Non-empty `prompt_cache_key` / `promptCacheKey` is preserved; `undefined`, `null`, empty and whitespace-only values are treated as missing.
   * Third-party GPT `openai-completions` proxy warnings now recommend `supportsLongCacheRetention` and `sendSessionAffinityHeaders`.
   * DeepSeek auto-seeding / `models.json` mutation was removed to keep the package scoped to cache optimization, compat advice, and footer stats only.
+  * Added footer stats adapters for Mistral, Grok/xAI, Llama, Nemotron, Cohere, and Yi model families. Each uses id/name-only detection with OpenAI-compatible usage normalization (`getOpenAIRawUsage` fallback). Detection tokens: `mistral/mixtral/codestral`, `grok` + `xai` pattern, `llama`, `nemotron`, `cohere/command-r`, `yi-` + `01-ai/zero-one` + `yi` pattern. Compat warnings (when applicable) reuse the existing broad `describeMissingOpenAICompatibleProxyCompat` function.
+  * The relaxed `before_provider_request` gate (only `isOpenAICompatibleApi` check, no `isOpenAIFamilyModel` requirement) already covers all new model families for session-id prompt_cache_key injection.
 * Validation:
   * `node --experimental-strip-types --no-warnings .trellis/tasks/05-21-investigate-pi-otokapi-gpt55-unavailable/verify.ts`
   * `node --experimental-strip-types --no-warnings .trellis/tasks/05-17-fix-prompt-pollution-bugs-degrading-deepseek-cache-hit-rate/verify.ts`

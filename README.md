@@ -35,6 +35,17 @@ This release keeps the original DeepSeek behavior and adds read-only stats adapt
 |---|---|---|---|
 | DeepSeek | Model id/name contains `deepseek` | `DS cache` | Pi `usage.cacheRead`/`usage.input`, or raw `prompt_cache_hit_tokens`, `prompt_cache_miss_tokens`, `prompt_tokens` when visible |
 | OpenAI-family | Model id/name contains conservative OpenAI-family tokens such as `gpt-`, `chatgpt`, `o1`, `o3`, `o4`, or `o5` | `OpenAI cache` | Pi-normalized usage, or raw `prompt_tokens_details.cached_tokens` / `input_tokens_details.cached_tokens` with prompt/input totals |
+| Kimi / Moonshot | Model id/name contains `kimi` | `Kimi cache` | Pi-normalized usage, or raw OpenAI-shaped fields when visible |
+| Qwen / Alibaba | Model id/name contains `qwen` | `Qwen cache` | Pi-normalized usage, or raw OpenAI-shaped fields when visible |
+| GLM / Zhipu | Model id/name contains `glm` | `GLM cache` | Pi-normalized usage, or raw OpenAI-shaped fields when visible |
+| MiniMax | Model id/name contains `minimax` | `MiniMax cache` | Pi-normalized usage, or raw OpenAI-shaped fields when visible |
+| Hunyuan / Tencent | Model id/name contains `hunyuan` | `Hunyuan cache` | Pi-normalized usage, or raw OpenAI-shaped fields when visible |
+| Mistral | Model id/name contains `mistral`, `mixtral`, or `codestral` | `Mistral cache` | Pi-normalized usage, or raw OpenAI-shaped fields when visible |
+| xAI / Grok | Model id/name contains `grok`, or pattern `xai` with safe boundaries | `Grok cache` | Pi-normalized usage, or raw OpenAI-shaped fields when visible |
+| Meta / Llama | Model id/name contains `llama` | `Llama cache` | Pi-normalized usage, or raw OpenAI-shaped fields when visible |
+| NVIDIA Nemotron | Model id/name contains `nemotron` | `Nemotron cache` | Pi-normalized usage, or raw OpenAI-shaped fields when visible |
+| Cohere / Command | Model id/name contains `cohere` or `command-r` | `Cohere cache` | Pi-normalized usage, or raw OpenAI-shaped fields when visible |
+| Yi / 零一万物 | Model id/name contains `yi-`, `01-ai`, `zero-one`, or pattern `yi` with safe boundaries | `Yi cache` | Pi-normalized usage, or raw OpenAI-shaped fields when visible |
 | Anthropic / Claude | Model id/name contains `anthropic` or `claude` | `Claude cache` | Pi-normalized usage, or raw `cache_read_input_tokens`, `cache_creation_input_tokens`, `input_tokens` |
 | Gemini / Vertex | Model id/name contains `gemini` or `vertex` | `Gemini cache` | Pi-normalized usage, or raw Gemini/Vertex cached-content token metadata when visible |
 
