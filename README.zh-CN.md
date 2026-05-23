@@ -59,6 +59,18 @@
 | Microsoft Phi | model id/name 包含 `phi-` 前缀，或安全边界内 `phi` 模式 | `Phi cache` | Pi 归一化 usage，或可见 OpenAI 形状字段 |
 | AI21 Jamba | model id/name 包含 `jamba` 或 `ai21` | `Jamba cache` | Pi 归一化 usage，或可见 OpenAI 形状字段 |
 | Upstage Solar | model id/name 包含 `solar` 或 `upstage` | `Solar cache` | Pi 归一化 usage，或可见 OpenAI 形状字段 |
+| Perplexity / Sonar | model id/name 包含 `sonar`、`perplexity`，或安全边界内 `pplx` 模式 | `Sonar cache` | Pi 归一化 usage，或可见 OpenAI 形状字段 |
+| Amazon Nova | model id/name 包含 `amazon-nova`，或安全边界内 `nova` 模式 | `Nova cache` | Pi 归一化 usage，或可见 OpenAI 形状字段 |
+| Reka | model id/name 包含 `reka` | `Reka cache` | Pi 归一化 usage，或可见 OpenAI 形状字段 |
+| Falcon / TII | model id/name 包含 `falcon` 或 `tiiuae`（不含裸 `tii`） | `Falcon cache` | Pi 归一化 usage，或可见 OpenAI 形状字段 |
+| Databricks DBRX | model id/name 包含 `dbrx` 或 `databricks` | `DBRX cache` | Pi 归一化 usage，或可见 OpenAI 形状字段 |
+| MosaicML MPT | model id/name 包含 `mosaicml`、`mpt-` 前缀，或安全边界内 `mpt` 模式 | `MPT cache` | Pi 归一化 usage，或可见 OpenAI 形状字段 |
+| StableLM / Stability AI | model id/name 包含 `stablelm`、`stable-lm` 或 `stability-ai` | `StableLM cache` | Pi 归一化 usage，或可见 OpenAI 形状字段 |
+| BAAI / Aquila | model id/name 包含 `aquila` 或 `baai` | `Aquila cache` | Pi 归一化 usage，或可见 OpenAI 形状字段 |
+| LG EXAONE | model id/name 包含 `exaone` | `EXAONE cache` | Pi 归一化 usage，或可见 OpenAI 形状字段 |
+| Naver HyperCLOVA X | model id/name 包含 `hyperclova` 或 `clova-x`（保守检测，不含裸 `clova`/`naver`） | `HyperCLOVA cache` | Pi 归一化 usage，或可见 OpenAI 形状字段 |
+| Aleph Alpha Luminous | model id/name 包含 `luminous`、`aleph-alpha`，或安全边界内 `aleph` 模式 | `Luminous cache` | Pi 归一化 usage，或可见 OpenAI 形状字段 |
+| Nous / Hermes / OpenHermes | model id/name 包含 `nous`、`hermes` 或 `openhermes` | `Hermes cache` | Pi 归一化 usage，或可见 OpenAI 形状字段 |
 | Anthropic / Claude | model id/name 包含 `anthropic` 或 `claude` | `Claude cache` | Pi 归一化 usage，或可见 raw 字段 `cache_read_input_tokens`、`cache_creation_input_tokens`、`input_tokens` |
 | Gemini / Vertex | model id/name 包含 `gemini` 或 `vertex` | `Gemini cache` | Pi 归一化 usage，或可见 Gemini/Vertex cached-content token metadata |
 

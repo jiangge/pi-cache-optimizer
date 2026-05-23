@@ -52,6 +52,18 @@ OpenAI-family just because they use an OpenAI-shaped API.
 | Microsoft Phi | `phi-` prefix, or pattern `phi` with safe boundaries | `Phi cache` |
 | AI21 Jamba | `jamba`, `ai21` | `Jamba cache` |
 | Upstage Solar | `solar`, `upstage` | `Solar cache` |
+| Perplexity / Sonar | `sonar`, `perplexity`, or pattern `pplx` with safe boundaries | `Sonar cache` |
+| Amazon Nova | `amazon-nova`, or pattern `nova` with safe boundaries | `Nova cache` |
+| Reka | `reka` | `Reka cache` |
+| Falcon / TII | `falcon`, `tiiuae` (not bare `tii`) | `Falcon cache` |
+| Databricks DBRX | `dbrx`, `databricks` | `DBRX cache` |
+| MosaicML MPT | `mosaicml`, `mpt-` prefix, or pattern `mpt` with safe boundaries | `MPT cache` |
+| StableLM / Stability AI | `stablelm`, `stable-lm`, `stability-ai` | `StableLM cache` |
+| BAAI / Aquila | `aquila`, `baai` | `Aquila cache` |
+| LG EXAONE | `exaone` | `EXAONE cache` |
+| Naver HyperCLOVA X | `hyperclova`, `clova-x` (conservative, not bare `clova`/`naver`) | `HyperCLOVA cache` |
+| Aleph Alpha Luminous | `luminous`, `aleph-alpha`, or pattern `aleph` with safe boundaries | `Luminous cache` |
+| Nous / Hermes / OpenHermes | `nous`, `hermes`, `openhermes` | `Hermes cache` |
 | Anthropic / Claude | `anthropic`, `claude` | `Claude cache` |
 | Gemini / Vertex | `gemini`, `vertex` | `Gemini cache` |
 

@@ -56,6 +56,18 @@ This release keeps the original DeepSeek behavior and adds read-only stats adapt
 | Microsoft Phi | Model id/name contains `phi-` prefix, or pattern `phi` with safe boundaries | `Phi cache` | Pi-normalized usage, or raw OpenAI-shaped fields when visible |
 | AI21 Jamba | Model id/name contains `jamba` or `ai21` | `Jamba cache` | Pi-normalized usage, or raw OpenAI-shaped fields when visible |
 | Upstage Solar | Model id/name contains `solar` or `upstage` | `Solar cache` | Pi-normalized usage, or raw OpenAI-shaped fields when visible |
+| Perplexity / Sonar | Model id/name contains `sonar`, `perplexity`, or pattern `pplx` with safe boundaries | `Sonar cache` | Pi-normalized usage, or raw OpenAI-shaped fields when visible |
+| Amazon Nova | Model id/name contains `amazon-nova`, or pattern `nova` with safe boundaries | `Nova cache` | Pi-normalized usage, or raw OpenAI-shaped fields when visible |
+| Reka | Model id/name contains `reka` | `Reka cache` | Pi-normalized usage, or raw OpenAI-shaped fields when visible |
+| Falcon / TII | Model id/name contains `falcon` or `tiiuae` (not bare `tii`) | `Falcon cache` | Pi-normalized usage, or raw OpenAI-shaped fields when visible |
+| Databricks DBRX | Model id/name contains `dbrx` or `databricks` | `DBRX cache` | Pi-normalized usage, or raw OpenAI-shaped fields when visible |
+| MosaicML MPT | Model id/name contains `mosaicml`, `mpt-` prefix, or pattern `mpt` with safe boundaries | `MPT cache` | Pi-normalized usage, or raw OpenAI-shaped fields when visible |
+| StableLM / Stability AI | Model id/name contains `stablelm`, `stable-lm`, or `stability-ai` | `StableLM cache` | Pi-normalized usage, or raw OpenAI-shaped fields when visible |
+| BAAI / Aquila | Model id/name contains `aquila` or `baai` | `Aquila cache` | Pi-normalized usage, or raw OpenAI-shaped fields when visible |
+| LG EXAONE | Model id/name contains `exaone` | `EXAONE cache` | Pi-normalized usage, or raw OpenAI-shaped fields when visible |
+| Naver HyperCLOVA X | Model id/name contains `hyperclova` or `clova-x` (conservative, not bare `clova`/`naver`) | `HyperCLOVA cache` | Pi-normalized usage, or raw OpenAI-shaped fields when visible |
+| Aleph Alpha Luminous | Model id/name contains `luminous`, `aleph-alpha`, or pattern `aleph` with safe boundaries | `Luminous cache` | Pi-normalized usage, or raw OpenAI-shaped fields when visible |
+| Nous / Hermes / OpenHermes | Model id/name contains `nous`, `hermes`, or `openhermes` | `Hermes cache` | Pi-normalized usage, or raw OpenAI-shaped fields when visible |
 | Anthropic / Claude | Model id/name contains `anthropic` or `claude` | `Claude cache` | Pi-normalized usage, or raw `cache_read_input_tokens`, `cache_creation_input_tokens`, `input_tokens` |
 | Gemini / Vertex | Model id/name contains `gemini` or `vertex` | `Gemini cache` | Pi-normalized usage, or raw Gemini/Vertex cached-content token metadata when visible |
 

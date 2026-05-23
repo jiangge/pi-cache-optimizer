@@ -90,6 +90,31 @@ const {
   isJambaLikeAssistantMessage,
   isSolarLikeModel,
   isSolarLikeAssistantMessage,
+  // New OpenAI-compatible model detection (batch 3, 12 families)
+  isPerplexityLikeModel,
+  isPerplexityLikeAssistantMessage,
+  isNovaLikeModel,
+  isNovaLikeAssistantMessage,
+  isRekaLikeModel,
+  isRekaLikeAssistantMessage,
+  isFalconLikeModel,
+  isFalconLikeAssistantMessage,
+  isDbrxLikeModel,
+  isDbrxLikeAssistantMessage,
+  isMptLikeModel,
+  isMptLikeAssistantMessage,
+  isStableLMLikeModel,
+  isStableLMLikeAssistantMessage,
+  isAquilaLikeModel,
+  isAquilaLikeAssistantMessage,
+  isExaoneLikeModel,
+  isExaoneLikeAssistantMessage,
+  isHyperCLOVALikeModel,
+  isHyperCLOVALikeAssistantMessage,
+  isLuminousLikeModel,
+  isLuminousLikeAssistantMessage,
+  isHermesLikeModel,
+  isHermesLikeAssistantMessage,
   getCompat,
   modelKey,
   buildOpenAIProxyCompatWarningText,
@@ -2607,6 +2632,422 @@ Line count: 10 / 1000
     isOpenAICompatibleApi("openai-completions") === true,
     "expected isOpenAICompatibleApi to accept openai-completions for Solar",
   );
+}
+
+// ==========================================================================
+// Test 51: New model-family detection (batch 3) — Perplexity/Sonar, Amazon Nova, Reka, Falcon, DBRX, MPT, StableLM, Aquila, EXAONE, HyperCLOVA, Luminous, Hermes
+// ==========================================================================
+{
+  // Perplexity / Sonar detection
+  expect("detect.perplexity-sonar-id", isPerplexityLikeModel(makeModel({ id: "sonar-pro" })) === true, "expected sonar-pro ID to match");
+  expect("detect.perplexity-perplexity-id", isPerplexityLikeModel(makeModel({ id: "perplexity-online" })) === true, "expected perplexity-online ID to match");
+  expect("detect.perplexity-pplx-boundary", isPerplexityLikeModel(makeModel({ id: "pplx-7b-online" })) === true, "expected pplx-7b-online to match via pplx safe boundary");
+  expect("detect.perplexity-not-gpt", isPerplexityLikeModel(makeModel({ id: "gpt-4" })) === false, "expected gpt-4 to NOT match Perplexity");
+
+  // Amazon Nova detection
+  expect("detect.nova-amazon-nova-id", isNovaLikeModel(makeModel({ id: "amazon-nova-pro" })) === true, "expected amazon-nova-pro ID to match");
+  expect("detect.nova-boundary", isNovaLikeModel(makeModel({ id: "nova-micro-v1" })) === true, "expected nova-micro-v1 to match via nova safe boundary");
+  expect("detect.nova-name", isNovaLikeModel(makeModel({ id: "custom", name: "Amazon Nova Lite" })) === true, "expected Amazon Nova Lite name to match");
+  expect("detect.nova-not-gpt", isNovaLikeModel(makeModel({ id: "gpt-4" })) === false, "expected gpt-4 to NOT match Nova");
+
+  // Reka detection
+  expect("detect.reka-id", isRekaLikeModel(makeModel({ id: "reka-core" })) === true, "expected reka-core ID to match");
+  expect("detect.reka-name", isRekaLikeModel(makeModel({ id: "custom", name: "Reka Flash" })) === true, "expected Reka Flash name to match");
+  expect("detect.reka-not-gpt", isRekaLikeModel(makeModel({ id: "gpt-4" })) === false, "expected gpt-4 to NOT match Reka");
+  expect("detect.reka-not-recommend", isRekaLikeModel(makeModel({ id: "recommend-v2" })) === false, "expected recommend-v2 to NOT match Reka (reka inside prose)");
+
+  // Falcon / TII detection
+  expect("detect.falcon-id", isFalconLikeModel(makeModel({ id: "falcon-2-7b" })) === true, "expected falcon-2-7b ID to match");
+  expect("detect.falcon-tiiuae", isFalconLikeModel(makeModel({ id: "tiiuae/falcon-180b" })) === true, "expected tiiuae/falcon-180b ID to match");
+  expect("detect.falcon-name", isFalconLikeModel(makeModel({ id: "custom", name: "Falcon 180B" })) === true, "expected Falcon 180B name to match");
+  expect("detect.falcon-not-gpt", isFalconLikeModel(makeModel({ id: "gpt-4" })) === false, "expected gpt-4 to NOT match Falcon");
+  expect("detect.falcon-not-bare-tii", isFalconLikeModel(makeModel({ id: "tii-helper" })) === false, "expected tii-helper to NOT match Falcon (bare tii rejected)");
+
+  // DBRX / Databricks detection
+  expect("detect.dbrx-id", isDbrxLikeModel(makeModel({ id: "dbrx-instruct" })) === true, "expected dbrx-instruct ID to match");
+  expect("detect.dbrx-databricks", isDbrxLikeModel(makeModel({ id: "databricks-dbrx" })) === true, "expected databricks-dbrx ID to match");
+  expect("detect.dbrx-name", isDbrxLikeModel(makeModel({ id: "custom", name: "Databricks DBRX" })) === true, "expected Databricks DBRX name to match");
+  expect("detect.dbrx-not-gpt", isDbrxLikeModel(makeModel({ id: "gpt-4" })) === false, "expected gpt-4 to NOT match DBRX");
+
+  // MPT / MosaicML detection
+  expect("detect.mpt-mosaicml-id", isMptLikeModel(makeModel({ id: "mosaicml/mpt-7b" })) === true, "expected mosaicml/mpt-7b ID to match");
+  expect("detect.mpt-prefix", isMptLikeModel(makeModel({ id: "mpt-30b-instruct" })) === true, "expected mpt-30b-instruct ID to match via mpt- prefix");
+  expect("detect.mpt-boundary", isMptLikeModel(makeModel({ id: "custom/mpt" })) === true, "expected custom/mpt to match via mpt safe boundary");
+  expect("detect.mpt-name", isMptLikeModel(makeModel({ id: "custom", name: "MosaicML MPT" })) === true, "expected MosaicML MPT name to match");
+  expect("detect.mpt-not-gpt", isMptLikeModel(makeModel({ id: "gpt-4" })) === false, "expected gpt-4 to NOT match MPT");
+  expect("detect.mpt-not-emptypath", isMptLikeModel(makeModel({ id: "empty-path-v1" })) === false, "expected empty-path-v1 to NOT match MPT (mpt inside prose)");
+
+  // StableLM / Stability AI detection
+  expect("detect.stablelm-id", isStableLMLikeModel(makeModel({ id: "stablelm-2-12b" })) === true, "expected stablelm-2-12b ID to match");
+  expect("detect.stablelm-stable-lm", isStableLMLikeModel(makeModel({ id: "stable-lm-3b" })) === true, "expected stable-lm-3b ID to match");
+  expect("detect.stablelm-stability-ai", isStableLMLikeModel(makeModel({ id: "stabilityai/stablelm" })) === true, "expected stabilityai/stablelm ID to match");
+  expect("detect.stablelm-name", isStableLMLikeModel(makeModel({ id: "custom", name: "Stability AI StableLM" })) === true, "expected Stability AI StableLM name to match");
+  expect("detect.stablelm-not-gpt", isStableLMLikeModel(makeModel({ id: "gpt-4" })) === false, "expected gpt-4 to NOT match StableLM");
+  expect("detect.stablelm-not-bare-stable", isStableLMLikeModel(makeModel({ id: "stable-diffusion" })) === false, "expected stable-diffusion to NOT match StableLM (bare stable rejected)");
+
+  // Aquila / BAAI detection
+  expect("detect.aquila-id", isAquilaLikeModel(makeModel({ id: "aquila-7b" })) === true, "expected aquila-7b ID to match");
+  expect("detect.aquila-baai", isAquilaLikeModel(makeModel({ id: "baai/aquila-34b" })) === true, "expected baai/aquila-34b ID to match");
+  expect("detect.aquila-name", isAquilaLikeModel(makeModel({ id: "custom", name: "BAAI Aquila" })) === true, "expected BAAI Aquila name to match");
+  expect("detect.aquila-not-gpt", isAquilaLikeModel(makeModel({ id: "gpt-4" })) === false, "expected gpt-4 to NOT match Aquila");
+
+  // EXAONE detection
+  expect("detect.exaone-id", isExaoneLikeModel(makeModel({ id: "exaone-3.5" })) === true, "expected exaone-3.5 ID to match");
+  expect("detect.exaone-name", isExaoneLikeModel(makeModel({ id: "custom", name: "EXAONE 3.5" })) === true, "expected EXAONE 3.5 name to match");
+  expect("detect.exaone-not-gpt", isExaoneLikeModel(makeModel({ id: "gpt-4" })) === false, "expected gpt-4 to NOT match EXAONE");
+
+  // HyperCLOVA X / Naver detection (conservative)
+  expect("detect.hyperclova-id", isHyperCLOVALikeModel(makeModel({ id: "hyperclova-x" })) === true, "expected hyperclova-x ID to match");
+  expect("detect.hyperclova-clova-x", isHyperCLOVALikeModel(makeModel({ id: "clova-x-optimized" })) === true, "expected clova-x-optimized ID to match");
+  expect("detect.hyperclova-name", isHyperCLOVALikeModel(makeModel({ id: "custom", name: "HyperCLOVA X" })) === true, "expected HyperCLOVA X name to match");
+  expect("detect.hyperclova-not-gpt", isHyperCLOVALikeModel(makeModel({ id: "gpt-4" })) === false, "expected gpt-4 to NOT match HyperCLOVA");
+  expect("detect.hyperclova-not-bare-clova", isHyperCLOVALikeModel(makeModel({ id: "clova-speech" })) === false, "expected clova-speech to NOT match HyperCLOVA (bare clova rejected; clova-x only)");
+  expect("detect.hyperclova-not-bare-naver", isHyperCLOVALikeModel(makeModel({ id: "naver-search" })) === false, "expected naver-search to NOT match HyperCLOVA (bare naver rejected)");
+
+  // Luminous / Aleph Alpha detection
+  expect("detect.luminous-id", isLuminousLikeModel(makeModel({ id: "luminous-extended" })) === true, "expected luminous-extended ID to match");
+  expect("detect.luminous-aleph-alpha", isLuminousLikeModel(makeModel({ id: "aleph-alpha/luminous" })) === true, "expected aleph-alpha/luminous ID to match");
+  expect("detect.luminous-aleph-boundary", isLuminousLikeModel(makeModel({ id: "aleph/luminous" })) === true, "expected aleph/luminous to match via aleph safe boundary");
+  expect("detect.luminous-name", isLuminousLikeModel(makeModel({ id: "custom", name: "Aleph Alpha Luminous" })) === true, "expected Aleph Alpha Luminous name to match");
+  expect("detect.luminous-not-gpt", isLuminousLikeModel(makeModel({ id: "gpt-4" })) === false, "expected gpt-4 to NOT match Luminous");
+  expect("detect.luminous-not-bare-aleph-prose", isLuminousLikeModel(makeModel({ id: "alephprose-v1" })) === false, "expected alephprose-v1 to NOT match Luminous (aleph inside prose without boundaries)");
+
+  // Hermes / Nous detection
+  expect("detect.hermes-nous-id", isHermesLikeModel(makeModel({ id: "nous-hermes-2-mixtral" })) === true, "expected nous-hermes-2-mixtral ID to match");
+  expect("detect.hermes-openhermes", isHermesLikeModel(makeModel({ id: "openhermes-2.5" })) === true, "expected openhermes-2.5 ID to match");
+  expect("detect.hermes-name", isHermesLikeModel(makeModel({ id: "custom", name: "Nous Hermes" })) === true, "expected Nous Hermes name to match");
+  expect("detect.hermes-not-gpt", isHermesLikeModel(makeModel({ id: "gpt-4" })) === false, "expected gpt-4 to NOT match Hermes");
+}
+
+// ==========================================================================
+// Test 52: New model-family assistant message detection (batch 3)
+// ==========================================================================
+{
+  // Perplexity assistant
+  expect("detect.perplexity-assistant", isPerplexityLikeAssistantMessage({ role: "assistant", model: "sonar-pro" }, undefined) === true, "expected sonar-pro assistant message to match");
+  expect("detect.perplexity-pplx-assistant", isPerplexityLikeAssistantMessage({ role: "assistant", name: "pplx-7b" }, undefined) === true, "expected pplx-7b assistant message with name to match");
+
+  // Nova assistant
+  expect("detect.nova-assistant", isNovaLikeAssistantMessage({ role: "assistant", model: "amazon-nova-pro" }, undefined) === true, "expected amazon-nova-pro assistant message to match");
+  expect("detect.nova-name-assistant", isNovaLikeAssistantMessage({ role: "assistant", name: "Nova Micro" }, undefined) === true, "expected Nova Micro assistant message with name to match via nova boundary");
+
+  // Reka assistant
+  expect("detect.reka-assistant", isRekaLikeAssistantMessage({ role: "assistant", model: "reka-core" }, undefined) === true, "expected reka-core assistant message to match");
+
+  // Falcon assistant
+  expect("detect.falcon-assistant", isFalconLikeAssistantMessage({ role: "assistant", model: "falcon-2-7b" }, undefined) === true, "expected falcon-2-7b assistant message to match");
+  expect("detect.falcon-tiiuae-assistant", isFalconLikeAssistantMessage({ role: "assistant", model: "tiiuae/falcon-180b" }, undefined) === true, "expected tiiuae/falcon-180b assistant message to match");
+
+  // DBRX assistant
+  expect("detect.dbrx-assistant", isDbrxLikeAssistantMessage({ role: "assistant", model: "dbrx-instruct" }, undefined) === true, "expected dbrx-instruct assistant message to match");
+  expect("detect.dbrx-databricks-assistant", isDbrxLikeAssistantMessage({ role: "assistant", model: "databricks-dbrx" }, undefined) === true, "expected databricks-dbrx assistant message to match");
+
+  // MPT assistant
+  expect("detect.mpt-assistant", isMptLikeAssistantMessage({ role: "assistant", model: "mpt-30b-instruct" }, undefined) === true, "expected mpt-30b-instruct assistant message to match");
+  expect("detect.mpt-mosaicml-assistant", isMptLikeAssistantMessage({ role: "assistant", model: "mosaicml/mpt-7b" }, undefined) === true, "expected mosaicml/mpt-7b assistant message to match");
+
+  // StableLM assistant
+  expect("detect.stablelm-assistant", isStableLMLikeAssistantMessage({ role: "assistant", model: "stablelm-2-12b" }, undefined) === true, "expected stablelm-2-12b assistant message to match");
+  expect("detect.stablelm-stability-ai-assistant", isStableLMLikeAssistantMessage({ role: "assistant", name: "Stability-AI StableLM" }, undefined) === true, "expected Stability-AI StableLM assistant message with name to match");
+
+  // Aquila assistant
+  expect("detect.aquila-assistant", isAquilaLikeAssistantMessage({ role: "assistant", model: "aquila-7b" }, undefined) === true, "expected aquila-7b assistant message to match");
+  expect("detect.aquila-baai-assistant", isAquilaLikeAssistantMessage({ role: "assistant", model: "baai/aquila-34b" }, undefined) === true, "expected baai/aquila-34b assistant message to match");
+
+  // EXAONE assistant
+  expect("detect.exaone-assistant", isExaoneLikeAssistantMessage({ role: "assistant", model: "exaone-3.5" }, undefined) === true, "expected exaone-3.5 assistant message to match");
+
+  // HyperCLOVA assistant
+  expect("detect.hyperclova-assistant", isHyperCLOVALikeAssistantMessage({ role: "assistant", model: "hyperclova-x" }, undefined) === true, "expected hyperclova-x assistant message to match");
+  expect("detect.hyperclova-clova-x-assistant", isHyperCLOVALikeAssistantMessage({ role: "assistant", name: "clova-x" }, undefined) === true, "expected clova-x assistant message with name to match");
+
+  // Luminous assistant
+  expect("detect.luminous-assistant", isLuminousLikeAssistantMessage({ role: "assistant", model: "luminous-extended" }, undefined) === true, "expected luminous-extended assistant message to match");
+  expect("detect.luminous-aleph-assistant", isLuminousLikeAssistantMessage({ role: "assistant", name: "aleph-alpha" }, undefined) === true, "expected aleph-alpha assistant message with name to match");
+
+  // Hermes assistant
+  expect("detect.hermes-assistant", isHermesLikeAssistantMessage({ role: "assistant", model: "nous-hermes-2-mixtral" }, undefined) === true, "expected nous-hermes-2-mixtral assistant message to match");
+  expect("detect.hermes-openhermes-assistant", isHermesLikeAssistantMessage({ role: "assistant", model: "openhermes-2.5" }, undefined) === true, "expected openhermes-2.5 assistant message to match");
+}
+
+// ==========================================================================
+// Test 53: New model-family adapter labels (batch 3)
+// ==========================================================================
+{
+  // Sonar / Perplexity label
+  const sonarFormatted = formatCacheStats(
+    { id: "openai", label: "Sonar cache", showCacheWrite: false } as Parameters<typeof formatCacheStats>[0],
+    emptyCacheStats("2026-05-24"),
+  );
+  expect("newAdapter.sonar-label", sonarFormatted.startsWith("Sonar cache"), `expected label "Sonar cache", got: "${sonarFormatted}"`);
+
+  // Nova label
+  const novaFormatted = formatCacheStats(
+    { id: "openai", label: "Nova cache", showCacheWrite: false } as Parameters<typeof formatCacheStats>[0],
+    emptyCacheStats("2026-05-24"),
+  );
+  expect("newAdapter.nova-label", novaFormatted.startsWith("Nova cache"), `expected label "Nova cache", got: "${novaFormatted}"`);
+
+  // Reka label
+  const rekaFormatted = formatCacheStats(
+    { id: "openai", label: "Reka cache", showCacheWrite: false } as Parameters<typeof formatCacheStats>[0],
+    emptyCacheStats("2026-05-24"),
+  );
+  expect("newAdapter.reka-label", rekaFormatted.startsWith("Reka cache"), `expected label "Reka cache", got: "${rekaFormatted}"`);
+
+  // Falcon label
+  const falconFormatted = formatCacheStats(
+    { id: "openai", label: "Falcon cache", showCacheWrite: false } as Parameters<typeof formatCacheStats>[0],
+    emptyCacheStats("2026-05-24"),
+  );
+  expect("newAdapter.falcon-label", falconFormatted.startsWith("Falcon cache"), `expected label "Falcon cache", got: "${falconFormatted}"`);
+
+  // DBRX label
+  const dbrxFormatted = formatCacheStats(
+    { id: "openai", label: "DBRX cache", showCacheWrite: false } as Parameters<typeof formatCacheStats>[0],
+    emptyCacheStats("2026-05-24"),
+  );
+  expect("newAdapter.dbrx-label", dbrxFormatted.startsWith("DBRX cache"), `expected label "DBRX cache", got: "${dbrxFormatted}"`);
+
+  // MPT label
+  const mptFormatted = formatCacheStats(
+    { id: "openai", label: "MPT cache", showCacheWrite: false } as Parameters<typeof formatCacheStats>[0],
+    emptyCacheStats("2026-05-24"),
+  );
+  expect("newAdapter.mpt-label", mptFormatted.startsWith("MPT cache"), `expected label "MPT cache", got: "${mptFormatted}"`);
+
+  // StableLM label
+  const stablelmFormatted = formatCacheStats(
+    { id: "openai", label: "StableLM cache", showCacheWrite: false } as Parameters<typeof formatCacheStats>[0],
+    emptyCacheStats("2026-05-24"),
+  );
+  expect("newAdapter.stablelm-label", stablelmFormatted.startsWith("StableLM cache"), `expected label "StableLM cache", got: "${stablelmFormatted}"`);
+
+  // Aquila label
+  const aquilaFormatted = formatCacheStats(
+    { id: "openai", label: "Aquila cache", showCacheWrite: false } as Parameters<typeof formatCacheStats>[0],
+    emptyCacheStats("2026-05-24"),
+  );
+  expect("newAdapter.aquila-label", aquilaFormatted.startsWith("Aquila cache"), `expected label "Aquila cache", got: "${aquilaFormatted}"`);
+
+  // EXAONE label
+  const exaoneFormatted = formatCacheStats(
+    { id: "openai", label: "EXAONE cache", showCacheWrite: false } as Parameters<typeof formatCacheStats>[0],
+    emptyCacheStats("2026-05-24"),
+  );
+  expect("newAdapter.exaone-label", exaoneFormatted.startsWith("EXAONE cache"), `expected label "EXAONE cache", got: "${exaoneFormatted}"`);
+
+  // HyperCLOVA label
+  const hyperclovaFormatted = formatCacheStats(
+    { id: "openai", label: "HyperCLOVA cache", showCacheWrite: false } as Parameters<typeof formatCacheStats>[0],
+    emptyCacheStats("2026-05-24"),
+  );
+  expect("newAdapter.hyperclova-label", hyperclovaFormatted.startsWith("HyperCLOVA cache"), `expected label "HyperCLOVA cache", got: "${hyperclovaFormatted}"`);
+
+  // Luminous label
+  const luminousFormatted = formatCacheStats(
+    { id: "openai", label: "Luminous cache", showCacheWrite: false } as Parameters<typeof formatCacheStats>[0],
+    emptyCacheStats("2026-05-24"),
+  );
+  expect("newAdapter.luminous-label", luminousFormatted.startsWith("Luminous cache"), `expected label "Luminous cache", got: "${luminousFormatted}"`);
+
+  // Hermes label
+  const hermesFormatted = formatCacheStats(
+    { id: "openai", label: "Hermes cache", showCacheWrite: false } as Parameters<typeof formatCacheStats>[0],
+    emptyCacheStats("2026-05-24"),
+  );
+  expect("newAdapter.hermes-label", hermesFormatted.startsWith("Hermes cache"), `expected label "Hermes cache", got: "${hermesFormatted}"`);
+
+  // Model key separation: same id under different providers
+  const sonarKey1 = modelKey(makeModel({ provider: "perplexity", id: "sonar-pro" }));
+  const sonarKey2 = modelKey(makeModel({ provider: "custom", id: "sonar-pro" }));
+  expect("newAdapter.modelKey-distinct-sonar", sonarKey1 !== sonarKey2, "expected different keys for different providers with same sonar-pro id");
+
+  const novaKey1 = modelKey(makeModel({ provider: "aws", id: "amazon-nova-pro" }));
+  const novaKey2 = modelKey(makeModel({ provider: "custom", id: "amazon-nova-pro" }));
+  expect("newAdapter.modelKey-distinct-nova", novaKey1 !== novaKey2, "expected different keys for different providers with same amazon-nova-pro id");
+
+  const rekaKey1 = modelKey(makeModel({ provider: "reka", id: "reka-core" }));
+  const rekaKey2 = modelKey(makeModel({ provider: "custom", id: "reka-core" }));
+  expect("newAdapter.modelKey-distinct-reka", rekaKey1 !== rekaKey2, "expected different keys for different providers with same reka-core id");
+}
+
+// ==========================================================================
+// Test 54: New model families (batch 3) — compat warnings through describeMissingOpenAICompatibleProxyCompat
+// ==========================================================================
+{
+  // Perplexity proxy (non-official) — should fire compat warning
+  const perplexityProxy = makeModel({
+    id: "sonar-pro",
+    provider: "perplexity",
+    api: "openai-completions",
+    baseUrl: "https://perplexity.example.com/v1",
+    compat: {},
+  });
+  const perplexityMissing = describeMissingOpenAICompatibleProxyCompat(perplexityProxy);
+  expect("broadCompat.perplexity-both-missing", perplexityMissing.length === 2, `expected both flags missing for Perplexity proxy, got: ${JSON.stringify(perplexityMissing)}`);
+
+  // Nova proxy — should fire compat warning
+  const novaProxy = makeModel({
+    id: "amazon-nova-pro",
+    provider: "aws",
+    api: "openai-completions",
+    baseUrl: "https://nova.example.com/v1",
+    compat: {},
+  });
+  const novaMissing = describeMissingOpenAICompatibleProxyCompat(novaProxy);
+  expect("broadCompat.nova-both-missing", novaMissing.length === 2, `expected both flags missing for Nova proxy, got: ${JSON.stringify(novaMissing)}`);
+
+  // Reka with official OpenAI baseUrl — should NOT fire
+  const rekaOfficial = makeModel({
+    id: "reka-core",
+    provider: "reka",
+    api: "openai-completions",
+    baseUrl: "https://api.openai.com/v1",
+    compat: {},
+  });
+  const rekaOfficialMissing = describeMissingOpenAICompatibleProxyCompat(rekaOfficial);
+  expect("broadCompat.reka-official-skip", rekaOfficialMissing.length === 0, `expected no compat warnings for Reka with official baseUrl, got: ${JSON.stringify(rekaOfficialMissing)}`);
+
+  // Falcon with kiro-api — should NOT fire
+  const falconKiro = makeModel({
+    id: "falcon-2-7b",
+    provider: "tii",
+    api: "kiro-api",
+    baseUrl: "https://kiro.example.com/v1",
+    compat: {},
+  });
+  const falconKiroMissing = describeMissingOpenAICompatibleProxyCompat(falconKiro);
+  expect("broadCompat.falcon-kiro-skip", falconKiroMissing.length === 0, `expected no compat warnings for Falcon with kiro-api, got: ${JSON.stringify(falconKiroMissing)}`);
+
+  // DBRX with both compat flags — fully configured
+  const dbrxConfigured = makeModel({
+    id: "dbrx-instruct",
+    provider: "databricks",
+    api: "openai-completions",
+    baseUrl: "https://dbrx.example.com/v1",
+    compat: { supportsLongCacheRetention: true, sendSessionAffinityHeaders: true },
+  });
+  const dbrxMissing = describeMissingOpenAICompatibleProxyCompat(dbrxConfigured);
+  expect("broadCompat.dbrx-configured", dbrxMissing.length === 0, `expected no compat warnings for fully-configured DBRX proxy, got: ${JSON.stringify(dbrxMissing)}`);
+
+  // MPT proxy — should fire compat warning
+  const mptProxy = makeModel({
+    id: "mpt-30b-instruct",
+    provider: "mosaicml",
+    api: "openai-completions",
+    baseUrl: "https://mpt.example.com/v1",
+    compat: {},
+  });
+  const mptMissing = describeMissingOpenAICompatibleProxyCompat(mptProxy);
+  expect("broadCompat.mpt-both-missing", mptMissing.length === 2, `expected both flags missing for MPT proxy, got: ${JSON.stringify(mptMissing)}`);
+
+  // StableLM proxy — should fire compat warning
+  const stablelmProxy = makeModel({
+    id: "stablelm-2-12b",
+    provider: "stability-ai",
+    api: "openai-completions",
+    baseUrl: "https://stablelm.example.com/v1",
+    compat: {},
+  });
+  const stablelmMissing = describeMissingOpenAICompatibleProxyCompat(stablelmProxy);
+  expect("broadCompat.stablelm-both-missing", stablelmMissing.length === 2, `expected both flags missing for StableLM proxy, got: ${JSON.stringify(stablelmMissing)}`);
+
+  // Aquila with openai-responses — should NOT fire
+  const aquilaResponses = makeModel({
+    id: "aquila-7b",
+    provider: "baai",
+    api: "openai-responses",
+    baseUrl: "https://aquila.example.com/v1",
+    compat: {},
+  });
+  const aquilaResponsesMissing = describeMissingOpenAICompatibleProxyCompat(aquilaResponses);
+  expect("broadCompat.aquila-responses-skip", aquilaResponsesMissing.length === 0, `expected no compat warnings for Aquila with openai-responses, got: ${JSON.stringify(aquilaResponsesMissing)}`);
+
+  // EXAONE with kiro-api — should NOT fire
+  const exaoneKiro = makeModel({
+    id: "exaone-3.5",
+    provider: "lg",
+    api: "kiro-api",
+    baseUrl: "https://kiro.example.com/v1",
+    compat: {},
+  });
+  const exaoneKiroMissing = describeMissingOpenAICompatibleProxyCompat(exaoneKiro);
+  expect("broadCompat.exaone-kiro-skip", exaoneKiroMissing.length === 0, `expected no compat warnings for EXAONE with kiro-api, got: ${JSON.stringify(exaoneKiroMissing)}`);
+
+  // HyperCLOVA proxy — should fire compat warning
+  const hyperclovaProxy = makeModel({
+    id: "hyperclova-x",
+    provider: "naver",
+    api: "openai-completions",
+    baseUrl: "https://hyperclova.example.com/v1",
+    compat: {},
+  });
+  const hyperclovaMissing = describeMissingOpenAICompatibleProxyCompat(hyperclovaProxy);
+  expect("broadCompat.hyperclova-both-missing", hyperclovaMissing.length === 2, `expected both flags missing for HyperCLOVA proxy, got: ${JSON.stringify(hyperclovaMissing)}`);
+
+  // Luminous with both compat flags — fully configured
+  const luminousConfigured = makeModel({
+    id: "luminous-extended",
+    provider: "aleph-alpha",
+    api: "openai-completions",
+    baseUrl: "https://luminous.example.com/v1",
+    compat: { supportsLongCacheRetention: true, sendSessionAffinityHeaders: true },
+  });
+  const luminousMissing = describeMissingOpenAICompatibleProxyCompat(luminousConfigured);
+  expect("broadCompat.luminous-configured", luminousMissing.length === 0, `expected no compat warnings for fully-configured Luminous proxy, got: ${JSON.stringify(luminousMissing)}`);
+
+  // Hermes proxy — should fire compat warning
+  const hermesProxy = makeModel({
+    id: "nous-hermes-2-mixtral",
+    provider: "nous",
+    api: "openai-completions",
+    baseUrl: "https://hermes.example.com/v1",
+    compat: {},
+  });
+  const hermesMissing = describeMissingOpenAICompatibleProxyCompat(hermesProxy);
+  expect("broadCompat.hermes-both-missing", hermesMissing.length === 2, `expected both flags missing for Hermes proxy, got: ${JSON.stringify(hermesMissing)}`);
+}
+
+// ==========================================================================
+// Test 55: New model families (batch 3) — relaxed gate verification
+// ==========================================================================
+{
+  // Perplexity with openai-completions — gate should PASS
+  expect("relaxedGate.perplexity-api-match", isOpenAICompatibleApi("openai-completions") === true, "expected isOpenAICompatibleApi to accept openai-completions for Perplexity");
+
+  // Nova with kiro-api — gate should BLOCK
+  expect("relaxedGate.nova-kiro-block", isOpenAICompatibleApi("kiro-api") === false, "expected kiro-api to block injection for Nova");
+
+  // Reka with openai-completions — gate should PASS
+  expect("relaxedGate.reka-api-match", isOpenAICompatibleApi("openai-completions") === true, "expected isOpenAICompatibleApi to accept openai-completions for Reka");
+
+  // Falcon with openai-responses — gate should PASS
+  expect("relaxedGate.falcon-responses-match", isOpenAICompatibleApi("openai-responses") === true, "expected isOpenAICompatibleApi to accept openai-responses for Falcon");
+
+  // DBRX with undefined api — gate should BLOCK
+  expect("relaxedGate.dbrx-undefined-block", isOpenAICompatibleApi(undefined) === false, "expected undefined api to block injection for DBRX");
+
+  // MPT with openai-completions — gate should PASS
+  expect("relaxedGate.mpt-api-match", isOpenAICompatibleApi("openai-completions") === true, "expected isOpenAICompatibleApi to accept openai-completions for MPT");
+
+  // StableLM with openai-completions — gate should PASS
+  expect("relaxedGate.stablelm-api-match", isOpenAICompatibleApi("openai-completions") === true, "expected isOpenAICompatibleApi to accept openai-completions for StableLM");
+
+  // Aquila with kiro-api — gate should BLOCK
+  expect("relaxedGate.aquila-kiro-block", isOpenAICompatibleApi("kiro-api") === false, "expected kiro-api to block injection for Aquila");
+
+  // EXAONE with openai-completions — gate should PASS
+  expect("relaxedGate.exaone-api-match", isOpenAICompatibleApi("openai-completions") === true, "expected isOpenAICompatibleApi to accept openai-completions for EXAONE");
+
+  // HyperCLOVA with openai-responses — gate should PASS
+  expect("relaxedGate.hyperclova-responses-match", isOpenAICompatibleApi("openai-responses") === true, "expected isOpenAICompatibleApi to accept openai-responses for HyperCLOVA");
+
+  // Luminous with openai-completions — gate should PASS
+  expect("relaxedGate.luminous-api-match", isOpenAICompatibleApi("openai-completions") === true, "expected isOpenAICompatibleApi to accept openai-completions for Luminous");
+
+  // Hermes with undefined api — gate should BLOCK
+  expect("relaxedGate.hermes-undefined-block", isOpenAICompatibleApi(undefined) === false, "expected undefined api to block injection for Hermes");
 }
 
 // ==========================================================================
