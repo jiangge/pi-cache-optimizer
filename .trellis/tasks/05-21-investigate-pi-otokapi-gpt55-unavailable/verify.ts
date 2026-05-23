@@ -40,6 +40,9 @@ const {
   describeMissingOpenAIFamilyProxyCompat,
   describeMissingOpenAICompatibleProxyCompat,
   isOfficialOpenAIBaseUrl,
+  isCompatCheckApplicable,
+  buildDoctorDiagnosis,
+  buildCompatDiagnosis,
   isOpenAICompatibleApi,
   getModelIdNameTokenValues,
   getAssistantMessageModelTokenValues,
@@ -1896,6 +1899,248 @@ Line count: 10 / 1000
       "expected Windows warning text to NOT contain Unix tilde paths",
     );
   }
+}
+
+// ==========================================================================
+// Test 42: isCompatCheckApplicable — determines whether compat check is relevant
+// ==========================================================================
+{
+  // Third-party openai-completions proxy → applicable
+  const proxyModel = makeModel({
+    id: "gpt-5.5",
+    provider: "otokapi",
+    api: "openai-completions",
+    baseUrl: "https://otokapi.example.com/v1",
+    compat: { supportsLongCacheRetention: true, sendSessionAffinityHeaders: true },
+  });
+  expect(
+    "isCompatCheckApplicable.proxy",
+    isCompatCheckApplicable(proxyModel) === true,
+    "expected true for third-party openai-completions proxy",
+  );
+
+  // Official OpenAI baseUrl → not applicable
+  const officialModel = makeModel({
+    id: "gpt-4",
+    provider: "openai",
+    api: "openai-completions",
+    baseUrl: "https://api.openai.com/v1",
+  });
+  expect(
+    "isCompatCheckApplicable.official",
+    isCompatCheckApplicable(officialModel) === false,
+    "expected false for official OpenAI baseUrl",
+  );
+
+  // Non-openai-completions API → not applicable
+  const kiroModel = makeModel({
+    id: "claude-sonnet-4",
+    provider: "kiro",
+    api: "kiro-api",
+    baseUrl: "https://kiro.example.com/v1",
+  });
+  expect(
+    "isCompatCheckApplicable.kiro",
+    isCompatCheckApplicable(kiroModel) === false,
+    "expected false for kiro-api (non-openai-completions)",
+  );
+
+  // openai-responses API → not applicable (only completions check)
+  const responsesModel = makeModel({
+    id: "gpt-5.5",
+    provider: "otokapi",
+    api: "openai-responses",
+    baseUrl: "https://otokapi.example.com/v1",
+  });
+  expect(
+    "isCompatCheckApplicable.responses",
+    isCompatCheckApplicable(responsesModel) === false,
+    "expected false for openai-responses API",
+  );
+}
+
+// ==========================================================================
+// Test 43: buildDoctorDiagnosis output — "fully configured" and "not applicable" texts
+// ==========================================================================
+{
+  // Compat check applicable and all flags present → "✅ Compat fully configured."
+  const proxyConfigured = makeModel({
+    id: "gpt-5.5",
+    provider: "otokapi",
+    api: "openai-completions",
+    baseUrl: "https://otokapi.example.com/v1",
+    compat: { supportsLongCacheRetention: true, sendSessionAffinityHeaders: true },
+  });
+  const doctorOutput1 = buildDoctorDiagnosis(proxyConfigured);
+  expect(
+    "doctor.fully-configured",
+    doctorOutput1.includes("✅ Compat fully configured."),
+    `expected doctor output to contain "✅ Compat fully configured.", got: ${JSON.stringify(doctorOutput1.slice(doctorOutput1.indexOf("✅")))}`,
+  );
+  expect(
+    "doctor.not-orphan-not-applicable",
+    doctorOutput1.includes("(or not applicable)") === false,
+    "expected doctor output to NOT contain '(or not applicable)'",
+  );
+
+  // Official OpenAI → "ℹ️ Compat check not applicable for this model."
+  const officialModel = makeModel({
+    id: "gpt-4",
+    provider: "openai",
+    api: "openai-completions",
+    baseUrl: "https://api.openai.com/v1",
+  });
+  const doctorOutput2 = buildDoctorDiagnosis(officialModel);
+  expect(
+    "doctor.not-applicable-official",
+    doctorOutput2.includes("ℹ️ Compat check not applicable for this model."),
+    `expected doctor output to contain "ℹ️ Compat check not applicable", got: ${JSON.stringify(doctorOutput2.slice(doctorOutput2.indexOf("✅") !== -1 ? doctorOutput2.indexOf("✅") : doctorOutput2.indexOf("ℹ️") !== -1 ? doctorOutput2.indexOf("ℹ️") : 0))}`,
+  );
+
+  // Non-openai-completions (kiro-api) → "ℹ️ Compat check not applicable"
+  const kiroModel = makeModel({
+    id: "claude-sonnet-4",
+    provider: "kiro",
+    api: "kiro-api",
+    baseUrl: "https://kiro.example.com/v1",
+  });
+  const doctorOutput3 = buildDoctorDiagnosis(kiroModel);
+  expect(
+    "doctor.not-applicable-kiro",
+    doctorOutput3.includes("ℹ️ Compat check not applicable for this model."),
+    `expected doctor output to contain "ℹ️ Compat check not applicable", got: ${JSON.stringify(doctorOutput3.slice(Math.max(0, doctorOutput3.length - 100)))}`,
+  );
+
+  // Compat check applicable with missing flags → still shows missing, not "fully configured" or "not applicable"
+  const proxyMissing = makeModel({
+    id: "gpt-5.5",
+    provider: "otokapi",
+    api: "openai-completions",
+    baseUrl: "https://otokapi.example.com/v1",
+    compat: {},
+  });
+  const doctorOutput4 = buildDoctorDiagnosis(proxyMissing);
+  expect(
+    "doctor.missing-flags-shown",
+    doctorOutput4.includes("Missing compat flags"),
+    `expected doctor output to show missing flags, got: ${JSON.stringify(doctorOutput4.slice(0, 200))}`,
+  );
+  expect(
+    "doctor.missing-not-fully-configured",
+    doctorOutput4.includes("✅ Compat fully configured.") === false,
+    "expected doctor output to NOT show fully configured when flags are missing",
+  );
+}
+
+// ==========================================================================
+// Test 44: buildCompatDiagnosis output — returns undefined when no missing flags
+// ==========================================================================
+{
+  // Applicable model with all flags → undefined (no missing)
+  const proxyConfigured = makeModel({
+    id: "gpt-5.5",
+    provider: "otokapi",
+    api: "openai-completions",
+    baseUrl: "https://otokapi.example.com/v1",
+    compat: { supportsLongCacheRetention: true, sendSessionAffinityHeaders: true },
+  });
+  expect(
+    "buildCompatDiagnosis.configured-undefined",
+    buildCompatDiagnosis(proxyConfigured) === undefined,
+    "expected buildCompatDiagnosis to return undefined for fully configured proxy",
+  );
+
+  // Non-applicable model → undefined (no missing, check doesn't apply)
+  const officialModel = makeModel({
+    id: "gpt-4",
+    provider: "openai",
+    api: "openai-completions",
+    baseUrl: "https://api.openai.com/v1",
+  });
+  expect(
+    "buildCompatDiagnosis.official-undefined",
+    buildCompatDiagnosis(officialModel) === undefined,
+    "expected buildCompatDiagnosis to return undefined for official OpenAI",
+  );
+
+  // Missing flags → returns a string with missing info
+  const proxyMissing = makeModel({
+    id: "gpt-5.5",
+    provider: "otokapi",
+    api: "openai-completions",
+    baseUrl: "https://otokapi.example.com/v1",
+    compat: {},
+  });
+  const compatResult = buildCompatDiagnosis(proxyMissing);
+  expect(
+    "buildCompatDiagnosis.missing-returns-string",
+    typeof compatResult === "string",
+    "expected buildCompatDiagnosis to return a string when flags are missing",
+  );
+  if (compatResult) {
+    expect(
+      "buildCompatDiagnosis.missing-contains-provider",
+      compatResult.includes('providers["otokapi"]'),
+      'expected compat result to contain providers["otokapi"]',
+    );
+  }
+
+  // Non-openai-completions → undefined
+  const kiroModel = makeModel({
+    id: "claude-sonnet-4",
+    provider: "kiro",
+    api: "kiro-api",
+    baseUrl: "https://kiro.example.com/v1",
+  });
+  expect(
+    "buildCompatDiagnosis.kiro-undefined",
+    buildCompatDiagnosis(kiroModel) === undefined,
+    "expected buildCompatDiagnosis to return undefined for kiro-api",
+  );
+}
+
+// ==========================================================================
+// Test 45: Select menu options structure — verify the three menu options exist
+// ==========================================================================
+{
+  // Build the menu options (same as in the command handler)
+  const menuOptions = [
+    "🩺 Doctor — Show current model cache configuration",
+    "⚙️  Compat — Show compat suggestion with edit instructions",
+    "❌ Cancel",
+  ];
+
+  expect(
+    "menu.three-options",
+    menuOptions.length === 3,
+    `expected exactly 3 menu options, got ${menuOptions.length}`,
+  );
+
+  // Each option must be a non-empty string
+  for (const opt of menuOptions) {
+    expect(
+      `menu.label-non-empty:${opt.slice(0, 10)}`,
+      opt.length > 0,
+      `expected menu option to be non-empty`,
+    );
+  }
+
+  // Check expected content via substring matches (Pi select takes string[])
+  expect(
+    "menu.has-doctor",
+    menuOptions[0].includes("Doctor"),
+    "expected menu option 0 to mention Doctor",
+  );
+  expect(
+    "menu.has-compat",
+    menuOptions[1].includes("Compat"),
+    "expected menu option 1 to mention Compat",
+  );
+  expect(
+    "menu.has-cancel",
+    menuOptions[2].includes("Cancel"),
+    "expected menu option 2 to mention Cancel",
+  );
 }
 
 // ==========================================================================

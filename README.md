@@ -262,16 +262,26 @@ For Claude/Anthropic models behind an OpenAI-compatible endpoint, the extension 
 The extension registers a Pi command `/cache-optimizer` for interactive diagnosis.
 
 ```
-/cache-optimizer              — show help + current model compat status
+/cache-optimizer              — interactive menu (or text help when no UI)
 /cache-optimizer doctor        — show provider, model, API, base URL, compat status
 /cache-optimizer compat        — show compat suggestion with edit instructions
 ```
+
+When run without arguments, `/cache-optimizer` shows an interactive selection menu
+(Doctor / Compat / Cancel) when the Pi UI supports it (`ctx.ui.select`). In
+non-interactive terminals, it falls back to text help with current model compat
+status.
 
 ### `/cache-optimizer doctor`
 
 Displays the active model's provider, model id, name, API type, base URL, current
 `compat` flags, and any missing cache/session-affinity flags. If flags are missing,
-it also shows a copyable JSON snippet and the exact edit location:
+it also shows a copyable JSON snippet and the exact edit location.
+
+When all compat flags are present and applicable (third-party `openai-completions`
+proxy), the output shows `✅ Compat fully configured.` For models where the
+compat check does not apply (official OpenAI, non-`openai-completions` APIs,
+custom transports), it shows `ℹ️ Compat check not applicable for this model.`:
 
 ```text
 Provider: otokapi
@@ -289,7 +299,10 @@ Edit ~/.pi/agent/models.json -> providers["otokapi"] -> compat (same level as ba
 
 ### `/cache-optimizer compat`
 
-Shorts the compat suggestion only, including file path and provider path.
+Shows only the compat suggestion for the active model, including file path,
+provider path, and copyable JSON snippet. When no flags are missing, it shows
+`✅ Compat fully configured.` if the model is an applicable third-party proxy,
+or `ℹ️ Compat check not applicable for this model.` otherwise.
 
 ### Security
 

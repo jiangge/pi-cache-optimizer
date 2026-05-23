@@ -1558,6 +1558,76 @@ async function writePersistedCacheStats(state: CacheStatsState): Promise<void> {
 
 
 
+function isCompatCheckApplicable(model: PiModel): boolean {
+  return lower(model.api) === "openai-completions" && !isOfficialOpenAIBaseUrl(model);
+}
+
+function buildDoctorDiagnosis(model: PiModel): string {
+  const lines: string[] = [];
+  lines.push(`Provider: ${model.provider}`);
+  lines.push(`Model:    ${model.id}`);
+  if (model.name && model.name !== model.id) lines.push(`Name:     ${model.name}`);
+  lines.push(`API:      ${model.api}`);
+  lines.push(`Base URL: ${model.baseUrl || "(default)"}`);
+
+  const compat = getCompat(model);
+  lines.push(`Compat:   ${JSON.stringify(compat)}`);
+
+  const missing = describeMissingOpenAICompatibleProxyCompat(model);
+  if (missing.length > 0) {
+    lines.push(`⚠️  Missing compat flags: ${missing.join(", ")}`);
+    const key = modelKey(model);
+    const slashIdx = key.indexOf("/");
+    const providerLabel = slashIdx > 0 ? key.slice(0, slashIdx) : key;
+    const suggestion = Object.fromEntries(missing.map((f) => [f, true]));
+    const modelsJsonPath = getModelsJsonDisplayPath();
+    lines.push(`Edit ${modelsJsonPath} -> providers["${providerLabel}"] -> compat (same level as baseUrl/api/apiKey/models):`);
+    lines.push(JSON.stringify(suggestion, null, 2));
+  } else if (isCompatCheckApplicable(model)) {
+    lines.push("✅ Compat fully configured.");
+  } else {
+    lines.push("ℹ️ Compat check not applicable for this model.");
+  }
+
+  // ── Integrity diagnostics ──
+  if (lastPromptIntegrityWarningAt > 0) {
+    const ago = Date.now() - lastPromptIntegrityWarningAt;
+    const mins = Math.floor(ago / 60000);
+    if (mins < 5) {
+      lines.push("");
+      lines.push("⚠️  Recent prompt integrity issue detected:");
+      lines.push(`   Last detected ${mins > 0 ? `${mins} min` : `${Math.floor(ago / 1000)}s`} ago. The prompt reorder was`);
+      lines.push(`   skipped on that turn to preserve structural markers.`);
+      lines.push(`   Common causes: extension system prompt format change, substring collision.`);
+      lines.push(`   Steps:`);
+      lines.push(`     1. Run /reload to reset (may clear transient issues).`);
+      lines.push(`     2. Set PI_CACHE_OPTIMIZER_NO_PROMPT_REWRITE=1 & /reload to disable reorder.`);
+      lines.push(`     3. If persistent, file an issue with this doctor output.`);
+    }
+  }
+
+  return lines.join("\n");
+}
+
+function buildCompatDiagnosis(model: PiModel): string | undefined {
+  const missing = describeMissingOpenAICompatibleProxyCompat(model);
+  if (missing.length === 0) return undefined;
+
+  const key = modelKey(model);
+  const slashIdx = key.indexOf("/");
+  const providerLabel = slashIdx > 0 ? key.slice(0, slashIdx) : key;
+  const suggestion = Object.fromEntries(missing.map((f) => [f, true]));
+  const modelsJsonPath = getModelsJsonDisplayPath();
+  return (
+    `Active model: ${key}\n` +
+    `Missing: ${missing.join(", ")}\n\n` +
+    `Edit ${modelsJsonPath} -> providers["${providerLabel}"] -> compat` +
+    ` (at the same level as baseUrl/api/apiKey/models) and add:\n` +
+    `${JSON.stringify(suggestion, null, 2)}\n\n` +
+    `Only enable if your endpoint supports them.`
+  );
+}
+
 // Internal helpers exported only so the task verification script
 // (.trellis/tasks/.../verify.ts) can exercise them. They are not part of the
 // extension's public API; pi only invokes the default export below.
@@ -1619,6 +1689,10 @@ export const __internals_for_tests = {
   getModelsJsonDisplayPath,
   // Integrity diagnostics
   getLastPromptIntegrityWarningAt,
+  // Diagnostic command helpers
+  isCompatCheckApplicable,
+  buildDoctorDiagnosis,
+  buildCompatDiagnosis,
   // Cache stats helpers (module-level, usable from verify script)
   addUsageToCacheStats,
   formatCacheStats,
@@ -1964,74 +2038,60 @@ export default function (pi: ExtensionAPI) {
           cmdCtx.ui.notify("No active model selected. Select a model first with /model or pi --model.", "warning");
           return;
         }
-        const lines: string[] = [];
-        lines.push(`Provider: ${model.provider}`);
-        lines.push(`Model:    ${model.id}`);
-        if (model.name && model.name !== model.id) lines.push(`Name:     ${model.name}`);
-        lines.push(`API:      ${model.api}`);
-        lines.push(`Base URL: ${model.baseUrl || "(default)"}`);
-
-        const compat = getCompat(model);
-        lines.push(`Compat:   ${JSON.stringify(compat)}`);
-
-        const missing = describeMissingOpenAICompatibleProxyCompat(model);
-        if (missing.length > 0) {
-          lines.push(`⚠️  Missing compat flags: ${missing.join(", ")}`);
-          const key = modelKey(model);
-          const slashIdx = key.indexOf("/");
-          const providerLabel = slashIdx > 0 ? key.slice(0, slashIdx) : key;
-          const suggestion = Object.fromEntries(missing.map((f) => [f, true]));
-          const modelsJsonPath = getModelsJsonDisplayPath();
-          lines.push(`Edit ${modelsJsonPath} -> providers["${providerLabel}"] -> compat (same level as baseUrl/api/apiKey/models):`);
-          lines.push(JSON.stringify(suggestion, null, 2));
-        } else {
-          lines.push("✅ Compat fully configured (or not applicable).");
-        }
-
-        // ── Integrity diagnostics ──
-        if (lastPromptIntegrityWarningAt > 0) {
-          const ago = Date.now() - lastPromptIntegrityWarningAt;
-          const mins = Math.floor(ago / 60000);
-          if (mins < 5) {
-            lines.push("");
-            lines.push("⚠️  Recent prompt integrity issue detected:");
-            lines.push(`   Last detected ${mins > 0 ? `${mins} min` : `${Math.floor(ago / 1000)}s`} ago. The prompt reorder was`);
-            lines.push(`   skipped on that turn to preserve structural markers.`);
-            lines.push(`   Common causes: extension system prompt format change, substring collision.`);
-            lines.push(`   Steps:`);
-            lines.push(`     1. Run /reload to reset (may clear transient issues).`);
-            lines.push(`     2. Set PI_CACHE_OPTIMIZER_NO_PROMPT_REWRITE=1 & /reload to disable reorder.`);
-            lines.push(`     3. If persistent, file an issue with this doctor output.`);
-          }
-        }
-
-        cmdCtx.ui.notify(lines.join("\n"), "info");
+        cmdCtx.ui.notify(buildDoctorDiagnosis(model), "info");
       } else if (subcommand === "compat") {
         if (!model) {
           cmdCtx.ui.notify("No active model selected. Select a model first with /model or pi --model.", "warning");
           return;
         }
-        const missing = describeMissingOpenAICompatibleProxyCompat(model);
-        if (missing.length === 0) {
-          cmdCtx.ui.notify("✅ No missing OpenAPI-compatible compat flags for the active model.", "info");
+        const compatResult = buildCompatDiagnosis(model);
+        if (compatResult) {
+          cmdCtx.ui.notify(compatResult, "warning");
+        } else {
+          cmdCtx.ui.notify(
+            isCompatCheckApplicable(model)
+              ? "✅ Compat fully configured."
+              : "ℹ️ Compat check not applicable for this model.",
+            "info",
+          );
+        }
+      } else {
+        // Try interactive selection menu when UI supports it
+        if (cmdCtx.hasUI) {
+          const menuOptions = [
+            "🩺 Doctor — Show current model cache configuration",
+            "⚙️  Compat — Show compat suggestion with edit instructions",
+            "❌ Cancel",
+          ];
+          const choice = await cmdCtx.ui.select("Cache Optimizer", menuOptions);
+          if (choice === menuOptions[0]) {
+            if (!model) {
+              cmdCtx.ui.notify("No active model selected. Select a model first with /model or pi --model.", "warning");
+            } else {
+              cmdCtx.ui.notify(buildDoctorDiagnosis(model), "info");
+            }
+          } else if (choice === menuOptions[1]) {
+            if (!model) {
+              cmdCtx.ui.notify("No active model selected. Select a model first with /model or pi --model.", "warning");
+            } else {
+              const compatResult = buildCompatDiagnosis(model);
+              if (compatResult) {
+                cmdCtx.ui.notify(compatResult, "warning");
+              } else {
+                cmdCtx.ui.notify(
+                  isCompatCheckApplicable(model)
+                    ? "✅ Compat fully configured."
+                    : "ℹ️ Compat check not applicable for this model.",
+                  "info",
+                );
+              }
+            }
+          }
+          // choice === "cancel" or undefined → no action
           return;
         }
-        const key = modelKey(model);
-        const slashIdx = key.indexOf("/");
-        const providerLabel = slashIdx > 0 ? key.slice(0, slashIdx) : key;
-        const suggestion = Object.fromEntries(missing.map((f) => [f, true]));
-        const modelsJsonPath = getModelsJsonDisplayPath();
-        const text = (
-          `Active model: ${key}\n` +
-          `Missing: ${missing.join(", ")}\n\n` +
-          `Edit ${modelsJsonPath} -> providers["${providerLabel}"] -> compat` +
-          ` (at the same level as baseUrl/api/apiKey/models) and add:\n` +
-          `${JSON.stringify(suggestion, null, 2)}\n\n` +
-          `Only enable if your endpoint supports them.`
-        );
-        cmdCtx.ui.notify(text, "warning");
-      } else {
-        // Help text
+
+        // Fallback: text help when no interactive UI
         const diagnosis: string[] = [];
         diagnosis.push("📋 /cache-optimizer commands:");
         diagnosis.push("  doctor  — Show current model/provider/api/baseUrl/compat status");
@@ -2042,8 +2102,10 @@ export default function (pi: ExtensionAPI) {
           if (missing.length > 0) {
             diagnosis.push(`⚠️  Active model "${modelKey(model)}" missing compat: ${missing.join(", ")}`);
             diagnosis.push('Run "/cache-optimizer compat" for edit instructions.');
+          } else if (isCompatCheckApplicable(model)) {
+            diagnosis.push(`✅ Active model "${modelKey(model)}": compat fully configured.`);
           } else {
-            diagnosis.push(`✅ Active model "${modelKey(model)}": compat OK or not applicable.`);
+            diagnosis.push(`ℹ️ Active model "${modelKey(model)}": compat check not applicable.`);
           }
         } else {
           diagnosis.push("No active model selected.");

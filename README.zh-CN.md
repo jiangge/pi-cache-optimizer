@@ -256,14 +256,18 @@ Gemini cache 1/2 · 0.18M/0.50M tok (36%)
 扩展注册了 Pi 命令 `/cache-optimizer` 用于交互式诊断。
 
 ```
-/cache-optimizer              — 显示帮助 + 当前模型 compat 状态
+/cache-optimizer              — 交互菜单（无 UI 时显示文字帮助）
 /cache-optimizer doctor        — 显示 provider、model、API、base URL、compat 状态
 /cache-optimizer compat        — 显示 compat 建议和编辑说明
 ```
 
+不带参数时，当 Pi UI 支持时（`ctx.ui.select` 可用），`/cache-optimizer` 会显示交互选择菜单（Doctor / Compat / Cancel）。在非交互终端中，会回退到文字帮助和当前模型 compat 状态。
+
 ### `/cache-optimizer doctor`
 
-显示当前模型的 provider、model id、名称、API 类型、base URL、当前 `compat` 标志以及缺少的缓存/session-affinity 标志。如果缺少标志，还会显示可复制的 JSON 片段和精确编辑位置：
+显示当前模型的 provider、model id、名称、API 类型、base URL、当前 `compat` 标志以及缺少的缓存/session-affinity 标志。如果缺少标志，还会显示可复制的 JSON 片段和精确编辑位置。
+
+如果所有 compat 标志都已配置且适用（第三方 `openai-completions` 代理），输出显示 `✅ Compat fully configured.`。对于不适用 compat 检查的模型（官方 OpenAI、非 `openai-completions` API、custom transport），显示 `ℹ️ Compat check not applicable for this model.`：
 
 ```text
 Provider: otokapi
@@ -281,7 +285,7 @@ Edit ~/.pi/agent/models.json -> providers["otokapi"] -> compat (same level as ba
 
 ### `/cache-optimizer compat`
 
-仅显示 compat 建议，包括文件路径和 provider 路径。
+仅显示当前模型的 compat 建议，包括文件路径、provider 路径和可复制 JSON 片段。当没有缺失标志时，如果模型是适用的第三方代理则显示 `✅ Compat fully configured.`，否则显示 `ℹ️ Compat check not applicable for this model.`。
 
 ### 安全说明
 

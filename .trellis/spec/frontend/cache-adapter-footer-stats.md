@@ -597,6 +597,12 @@ merged compat flags, and whether any cache/session-affinity compat flags are mis
 If compat flags are missing, includes a copyable JSON suggestion and the edit location
 (`~/.pi/agent/models.json -> providers.<id> -> compat`).
 
+When the compat check applies (third-party `openai-completions` proxy) and no flags
+are missing, shows `✅ Compat fully configured.`
+(`ℹ️ Compat check not applicable for this model.` for non-applicable scenarios such
+as official OpenAI, non-`openai-completions` APIs, or custom transports like
+`kiro-api`).
+
 The output MUST NOT include API keys, secrets, prompts, payloads, headers, or model
 output.
 
@@ -604,11 +610,19 @@ output.
 
 Shows only the compat suggestion for the active model, including the file path,
 provider selector, exact edit location, and the copyable JSON snippet.
+On success (no missing flags), shows the same applicability-respecting text as
+the doctor command: `✅ Compat fully configured.` or `ℹ️ Compat check not applicable
+for this model.`
 
 ### No arguments
 
-Displays a short help listing available subcommands and a one-line summary of the
-active model's compat status.
+When the Pi UI supports it (`ctx.ui.select` available), shows an interactive
+selection menu with options: Doctor, Compat, Cancel. Selecting Doctor or Compat
+executes the corresponding subcommand logic. Cancel closes the menu.
+
+In non-interactive terminals (no `ui.select`), falls back to a short text help
+listing available subcommands and a one-line summary of the active model's compat
+status (using the same applicability-respecting text as doctor/compat).
 
 ### Security
 
@@ -627,7 +641,11 @@ compat). It does NOT read or expose:
 |---|---|
 | `/cache-optimizer doctor` with model that has missing compat flags | Output includes `Missing compat flags: supportsLongCacheRetention, sendSessionAffinityHeaders` and a copyable JSON suggestion with `~/.pi/agent/models.json -> providers["<id>"]` path |
 | `/cache-optimizer doctor` without an active model | Notification: "No active model selected" |
-| `/cache-optimizer compat` with a fully configured model | Notification: "No missing compat flags" |
-| `/cache-optimizer` (no args) | Shows help text and current model compat status summary |
+| `/cache-optimizer doctor` with applicable fully-configured model | Shows `✅ Compat fully configured.` (without "(or not applicable)") |
+| `/cache-optimizer doctor` with non-applicable model (official OpenAI, non-openai-completions, custom transport) | Shows `ℹ️ Compat check not applicable for this model.` |
+| `/cache-optimizer compat` with a fully configured applicable model | Shows `✅ Compat fully configured.` |
+| `/cache-optimizer compat` with a non-applicable model | Shows `ℹ️ Compat check not applicable for this model.` |
+| `/cache-optimizer` (no args) with UI supports select | Shows interactive selection menu (Doctor / Compat / Cancel) |
+| `/cache-optimizer` (no args) without UI | Shows text help and current model compat status summary |
 | Footer status for missing-compat model | Shows `⚠️ compat` appended to the cache stats line |
 | Footer status when compat is fixed or model changes | `⚠️ compat` marker clears
