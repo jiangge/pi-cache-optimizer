@@ -192,7 +192,7 @@ After:  [stable tools + rules | dynamic git status | task context]
         ↓ stable prefix → higher chance of cache reuse
 ```
 
-Pi itself decides whether to send cache-related fields such as `prompt_cache_retention`, session-affinity headers, or Anthropic-style `cache_control` based on model compat and `PI_CACHE_RETENTION`. This extension now adds only one conservative request-body fallback by default: for OpenAI-family models using OpenAI-compatible Pi APIs, it fills a missing or blank top-level `prompt_cache_key` with the Pi session id and never overwrites an existing non-empty key. The extension does not fake cache hits; it helps configuration, improves stable-prefix probability, and summarizes exposed usage in the footer.
+Pi itself decides whether to send cache-related fields such as `prompt_cache_retention`, session-affinity headers, or Anthropic-style `cache_control` based on model compat and `PI_CACHE_RETENTION`. This extension now adds only one conservative request-body fallback by default: for all models using OpenAI-compatible Pi APIs (`openai-completions` / `openai-responses`), it fills a missing or blank top-level `prompt_cache_key` with the Pi session id and never overwrites an existing non-empty key. This covers GPT-named models, Kimi/Moonshot, Qwen/Alibaba, GLM/Zhipu, MiniMax, Hunyuan, and any other provider using an OpenAI-shaped API — only custom transports like `kiro-api` are excluded. The extension does not fake cache hits; it helps configuration, improves stable-prefix probability, and summarizes exposed usage in the footer.
 
 ## Improving cache hit rate
 
@@ -207,7 +207,7 @@ What the extension does automatically:
 Provider notes:
 
 - DeepSeek: current behavior remains the reference path. Stable prefix ordering plus long-retention/session-affinity compat gives the best chance of automatic KV prefix reuse.
-- OpenAI-family: prompt caching is automatic only on supported upstreams and sufficiently long prompts. Keep static instructions, tools, examples, and specs before changing user/task context. Pi owns retention transport by default. For OpenAI-compatible Pi APIs, the extension fills a missing or blank top-level `prompt_cache_key` with the Pi session id (matching Pi core's official OpenAI behavior) and never overwrites an existing non-empty `prompt_cache_key` / `promptCacheKey`. Disable this fallback with `PI_CACHE_OPTIMIZER_NO_OPENAI_CACHE_KEY=1` or `PI_CACHE_OPTIMIZER_OPENAI_CACHE_KEY=0`. Unsupported OpenAI-compatible proxies may reject unknown fields; custom APIs are not targeted.
+- OpenAI-family: prompt caching is automatic only on supported upstreams and sufficiently long prompts. Keep static instructions, tools, examples, and specs before changing user/task context. Pi owns retention transport by default. For OpenAI-compatible Pi APIs, the extension fills a missing or blank top-level `prompt_cache_key` with the Pi session id (matching Pi core's official OpenAI behavior) and never overwrites an existing non-empty `prompt_cache_key` / `promptCacheKey`. The fallback now applies to ALL models using `openai-completions` / `openai-responses` (not just GPT-named ones), so Kimi, Qwen, GLM, MiniMax, Hunyuan, and other OpenAI-compatible models also benefit. Disable this fallback with `PI_CACHE_OPTIMIZER_NO_OPENAI_CACHE_KEY=1` or `PI_CACHE_OPTIMIZER_OPENAI_CACHE_KEY=0`. Unsupported OpenAI-compatible proxies may reject unknown fields; custom APIs are not targeted.
 - Claude: prompt caching depends on Anthropic `cache_control` breakpoints. This extension does not inject breakpoints itself; for compatible endpoints, configure Pi compat such as `cacheControlFormat: "anthropic"` only when the endpoint supports it.
 - Gemini/Vertex: implicit caching benefits from repeated large stable prefixes. This extension does not create explicit `cachedContents` resources or store cache resource names.
 - Proxies/aggregators: fix upstream routing/provider order where possible. Cache hit rates are unreliable if the same model id/name can route to different upstreams.
@@ -226,7 +226,7 @@ This package now has provider-family stats adapters, but it still avoids blind g
 
 - Broad/provider-agnostic request-body mutation or cache-control injection. The only default request-body fallback is OpenAI-family `prompt_cache_key` on OpenAI-compatible APIs, sourced from the Pi session id and skipped when an effective key already exists.
 - Injecting Anthropic `cache_control` markers.
-- Sending OpenAI `prompt_cache_key` into custom/non-OpenAI-compatible APIs; the fallback is gated to OpenAI-family id/name plus `openai-completions` / `openai-responses`.
+- Sending OpenAI `prompt_cache_key` into custom/non-OpenAI-compatible APIs; the fallback is gated to `openai-completions` / `openai-responses` only (custom transports like `kiro-api` are excluded, but the model name no longer needs to be GPT-family).
 - Overriding OpenAI `prompt_cache_retention` outside Pi's own compat handling.
 - Creating Gemini explicit `cachedContents` resources or persisting cache resource names.
 - Claiming stats for providers that do not expose reliable cache usage.

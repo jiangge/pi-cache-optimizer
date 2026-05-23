@@ -635,6 +635,45 @@ function isGeminiLikeAssistantMessage(message: unknown, model: PiModel | undefin
   return modelOrAssistantMessageHas(message, model, ["gemini", "vertex"]);
 }
 
+// ── Non-GPT OpenAI-compatible model detection ──────────────────────
+
+function isKimiLikeModel(model: PiModel | undefined): boolean {
+  return hasAnyTokenContaining(getModelIdNameTokenValues(model), ["kimi"]);
+}
+function isKimiLikeAssistantMessage(message: unknown, model: PiModel | undefined): boolean {
+  return modelOrAssistantMessageHas(message, model, ["kimi"]);
+}
+
+function isQwenLikeModel(model: PiModel | undefined): boolean {
+  return hasAnyTokenContaining(getModelIdNameTokenValues(model), ["qwen"]);
+}
+function isQwenLikeAssistantMessage(message: unknown, model: PiModel | undefined): boolean {
+  return modelOrAssistantMessageHas(message, model, ["qwen"]);
+}
+
+function isGLMLikeModel(model: PiModel | undefined): boolean {
+  return hasAnyTokenContaining(getModelIdNameTokenValues(model), ["glm"]);
+}
+function isGLMLikeAssistantMessage(message: unknown, model: PiModel | undefined): boolean {
+  return modelOrAssistantMessageHas(message, model, ["glm"]);
+}
+
+function isMiniMaxLikeModel(model: PiModel | undefined): boolean {
+  return hasAnyTokenContaining(getModelIdNameTokenValues(model), ["minimax"]);
+}
+function isMiniMaxLikeAssistantMessage(message: unknown, model: PiModel | undefined): boolean {
+  return modelOrAssistantMessageHas(message, model, ["minimax"]);
+}
+
+function isHunyuanLikeModel(model: PiModel | undefined): boolean {
+  return hasAnyTokenContaining(getModelIdNameTokenValues(model), ["hunyuan"]);
+}
+function isHunyuanLikeAssistantMessage(message: unknown, model: PiModel | undefined): boolean {
+  return modelOrAssistantMessageHas(message, model, ["hunyuan"]);
+}
+
+// ── Model key ──────────────────────────────────────────────────────
+
 function modelKey(model: PiModel): string {
   return `${model.provider}/${model.id}`;
 }
@@ -858,6 +897,29 @@ function describeMissingOpenAIFamilyProxyCompat(model: PiModel): string[] {
 }
 
 /**
+ * Like describeMissingOpenAIFamilyProxyCompat but without the isOpenAIFamilyModel
+ * gate. Warns for ANY model using openai-completions through a non-official base
+ * URL — covers GPT, Kimi, Qwen, GLM, MiniMax, Hunyuan, and any other
+ * OpenAI-compatible proxy.
+ */
+function describeMissingOpenAICompatibleProxyCompat(model: PiModel): string[] {
+  const compat = getCompat(model);
+  const missing: string[] = [];
+
+  if (lower(model.api) !== "openai-completions") return missing;
+  if (isOfficialOpenAIBaseUrl(model)) return missing;
+
+  if (compat.supportsLongCacheRetention !== true) {
+    missing.push("supportsLongCacheRetention");
+  }
+  if (compat.sendSessionAffinityHeaders !== true) {
+    missing.push("sendSessionAffinityHeaders");
+  }
+
+  return missing;
+}
+
+/**
  * Build the warning text displayed to users when an OpenAI-family third-party
  * proxy is missing one or more cache/session-affinity compat flags.
  *
@@ -971,7 +1033,7 @@ const CACHE_PROVIDER_ADAPTERS: CacheProviderAdapter[] = [
       return normalizeWithFallback(message, getOpenAIRawUsage);
     },
     warningText(model) {
-      const missing = describeMissingOpenAIFamilyProxyCompat(model);
+      const missing = describeMissingOpenAICompatibleProxyCompat(model);
       if (missing.length === 0) return undefined;
       return buildOpenAIProxyCompatWarningText(modelKey(model), missing);
     },
@@ -986,6 +1048,92 @@ const CACHE_PROVIDER_ADAPTERS: CacheProviderAdapter[] = [
     },
     normalizeUsage(message) {
       return normalizeWithFallback(message, getGeminiRawUsage);
+    },
+  },
+  // ── Non-GPT OpenAI-compatible adapters ──────────────────────
+  {
+    id: "openai" as CacheProviderId,
+    label: "Kimi cache",
+    matchesModel: isKimiLikeModel,
+    matchesAssistantMessage(message, model) {
+      if (!isAssistantMessage(message)) return false;
+      return isKimiLikeAssistantMessage(message, model);
+    },
+    normalizeUsage(message) {
+      return normalizeWithFallback(message, getOpenAIRawUsage);
+    },
+    warningText(model) {
+      const missing = describeMissingOpenAICompatibleProxyCompat(model);
+      if (missing.length === 0) return undefined;
+      return buildOpenAIProxyCompatWarningText(modelKey(model), missing);
+    },
+  },
+  {
+    id: "openai" as CacheProviderId,
+    label: "Qwen cache",
+    matchesModel: isQwenLikeModel,
+    matchesAssistantMessage(message, model) {
+      if (!isAssistantMessage(message)) return false;
+      return isQwenLikeAssistantMessage(message, model);
+    },
+    normalizeUsage(message) {
+      return normalizeWithFallback(message, getOpenAIRawUsage);
+    },
+    warningText(model) {
+      const missing = describeMissingOpenAICompatibleProxyCompat(model);
+      if (missing.length === 0) return undefined;
+      return buildOpenAIProxyCompatWarningText(modelKey(model), missing);
+    },
+  },
+  {
+    id: "openai" as CacheProviderId,
+    label: "GLM cache",
+    matchesModel: isGLMLikeModel,
+    matchesAssistantMessage(message, model) {
+      if (!isAssistantMessage(message)) return false;
+      return isGLMLikeAssistantMessage(message, model);
+    },
+    normalizeUsage(message) {
+      return normalizeWithFallback(message, getOpenAIRawUsage);
+    },
+    warningText(model) {
+      const missing = describeMissingOpenAICompatibleProxyCompat(model);
+      if (missing.length === 0) return undefined;
+      return buildOpenAIProxyCompatWarningText(modelKey(model), missing);
+    },
+  },
+  {
+    id: "openai" as CacheProviderId,
+    label: "MiniMax cache",
+    matchesModel: isMiniMaxLikeModel,
+    matchesAssistantMessage(message, model) {
+      if (!isAssistantMessage(message)) return false;
+      return isMiniMaxLikeAssistantMessage(message, model);
+    },
+    normalizeUsage(message) {
+      return normalizeWithFallback(message, getOpenAIRawUsage);
+    },
+    warningText(model) {
+      const missing = describeMissingOpenAICompatibleProxyCompat(model);
+      if (missing.length === 0) return undefined;
+      return buildOpenAIProxyCompatWarningText(modelKey(model), missing);
+    },
+  },
+  {
+    id: "openai" as CacheProviderId,
+    label: "Hunyuan cache",
+    matchesModel: isHunyuanLikeModel,
+    matchesAssistantMessage(message, model) {
+      if (!isAssistantMessage(message)) return false;
+      return isHunyuanLikeAssistantMessage(message, model);
+    },
+    normalizeUsage(message) {
+      return normalizeWithFallback(message, getOpenAIRawUsage);
+    },
+    warningText(model) {
+      const missing = describeMissingOpenAICompatibleProxyCompat(model);
+      if (missing.length === 0) return undefined;
+      return buildOpenAIProxyCompatWarningText(modelKey(model), missing);
     },
   },
 ];
@@ -1237,7 +1385,19 @@ export const __internals_for_tests = {
   isOpenAIFamilyAssistantMessage,
   isOpenAIFamilyToken,
   describeMissingOpenAIFamilyProxyCompat,
+  describeMissingOpenAICompatibleProxyCompat,
   isOfficialOpenAIBaseUrl,
+  // Non-GPT OpenAI-compatible model detection
+  isKimiLikeModel,
+  isKimiLikeAssistantMessage,
+  isQwenLikeModel,
+  isQwenLikeAssistantMessage,
+  isGLMLikeModel,
+  isGLMLikeAssistantMessage,
+  isMiniMaxLikeModel,
+  isMiniMaxLikeAssistantMessage,
+  isHunyuanLikeModel,
+  isHunyuanLikeAssistantMessage,
   buildOpenAIProxyCompatWarningText,
   getModelIdNameTokenValues,
   getAssistantMessageModelTokenValues,
@@ -1509,7 +1669,6 @@ export default function (pi: ExtensionAPI) {
 
   pi.on("before_provider_request", (event, ctx) => {
     if (!shouldInjectOpenAIPromptCacheKey()) return undefined;
-    if (!isOpenAIFamilyModel(ctx.model)) return undefined;
     if (!isOpenAICompatibleApi(ctx.model?.api)) return undefined;
 
     return addOpenAIPromptCacheKey(event.payload, getSessionPromptCacheKey(ctx));
