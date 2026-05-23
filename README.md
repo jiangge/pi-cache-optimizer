@@ -339,10 +339,40 @@ Edit ~/.pi/agent/models.json -> providers["otokapi"] -> compat (same level as ba
 
 ### `/cache-optimizer compat`
 
-Shows only the compat suggestion for the active model, including file path,
-provider path, and copyable JSON snippet. When no flags are missing, it shows
-`✅ Compat fully configured.` if the model is an applicable third-party proxy,
-or `ℹ️ Compat check not applicable for this model.` otherwise.
+Shows the compat suggestion for the active model, including file path,
+provider path, and copyable JSON snippet. When no compat flags are missing,
+it shows `✅ Compat fully configured.` if the model is an applicable
+third-party proxy, or `ℹ️ Compat check not applicable for this model.`
+otherwise.
+
+When the model is routed through a known router/channel proxy (OpenRouter,
+Vercel AI Gateway, LiteLLM, OneAPI/NewAPI/VoAPI, or a generic third-party
+OpenAI-compatible proxy), both `doctor` and `compat` subcommands append
+router/channel diagnostics with targeted recommendations.
+
+### Router/channel diagnostics
+
+For models using OpenAI-compatible APIs (`openai-completions` or
+`openai-responses`) through a non-official base URL, the extension detects
+common router/channel proxy patterns from `provider`, `baseUrl`, and `compat`
+metadata:
+
+| Profile | Detection | Recommendation |
+|---------|-----------|----------------|
+| **OpenRouter** | baseUrl or provider contains `openrouter`/`openrouter.ai` | Fix the upstream provider with `openRouterRouting.only` or `.order` in compat |
+| **Vercel AI Gateway** | baseUrl contains `ai-gateway.vercel.sh` or provider contains `vercel` | Fix the upstream with `vercelGatewayRouting.only` or `.order` in compat |
+| **LiteLLM / OneAPI / NewAPI / VoAPI** | baseUrl or provider contains `litellm`, `oneapi`/`one-api`, `newapi`/`new-api`, `voapi`/`vo-api` | Ensure sticky session routing, forward `prompt_cache_key` + session-affinity headers, return cache usage fields |
+| **Generic third-party proxy** | Any `openai-completions` model with non-official base URL not matching above | General guidance: verify single-upstream routing, forward `prompt_cache_key` + session-affinity headers, return cache usage |
+
+These diagnostics are **advisory only**. They do not participate in adapter
+selection (still id/name-only), prompt_cache_key injection, footer stats, or
+any automated configuration changes. Detection uses only metadata exposed by
+Pi (`provider`, `api`, `baseUrl`, `compat`) — no API keys, prompts, payloads,
+headers, or model outputs are read or exposed.
+
+Official OpenAI (`api.openai.com`) and custom transports (`kiro-api`,
+`anthropic-messages`, `bedrock-converse-stream`) are excluded from router/
+channel diagnostics.
 
 ### Security
 

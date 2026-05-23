@@ -2621,6 +2621,171 @@ function isCompatCheckApplicable(model: PiModel): boolean {
   return lower(model.api) === "openai-completions" && !isOfficialOpenAIBaseUrl(model);
 }
 
+/**
+ * Detect router / channel profiles from a PiModel and return diagnostic notes.
+ *
+ * This function is advisory only — it does NOT participate in adapter selection,
+ * prompt_cache_key injection, or footer stats. It inspects provider, api, baseUrl,
+ * and compat to identify common proxy/router patterns where cache performance may
+ * be degraded due to multi-backend routing.
+ *
+ * Known profiles (checked in order):
+ *   1. OpenRouter — baseUrl or provider id matching openrouter.ai / openrouter
+ *   2. Vercel AI Gateway — baseUrl matching ai-gateway.vercel.sh, or provider
+ *      matching vercel / vercel-ai-gateway
+ *   3. LiteLLM / OneAPI / NewAPI / VoAPI — baseUrl or provider matching litellm,
+ *      oneapi, one-api, newapi, new-api, voapi, vo-api (self-hosted aggregation)
+ *   4. Generic third-party OpenAI-compatible proxy — any openai-completions model
+ *      with a non-official base URL that does not match a higher-profile above.
+ *
+ * Official OpenAI (api.openai.com) and custom transports (kiro-api, anthropic-messages,
+ * bedrock-converse-stream) do NOT produce notes.
+ */
+function describeRouterChannelDiagnostics(model: PiModel): string[] {
+  const notes: string[] = [];
+  const api = lower(model.api);
+  const baseUrl = lower(model.baseUrl || "");
+  const provider = lower(model.provider);
+
+  // Only OpenAI-compatible APIs are applicable for router/channel diagnostics.
+  // Custom transports like kiro-api, anthropic-messages, bedrock-converse-stream
+  // or non-OpenAI APIs are excluded.
+  if (api !== "openai-completions" && api !== "openai-responses") {
+    return notes;
+  }
+
+  // Official OpenAI bypass — no notes needed.
+  if (isOfficialOpenAIBaseUrl(model)) {
+    return notes;
+  }
+
+  // ── 1. OpenRouter ────────────────────────────────────────────────
+  if (
+    baseUrl.includes("openrouter.ai") ||
+    baseUrl.includes("openrouter") ||
+    provider.includes("openrouter")
+  ) {
+    const compat = getCompat(model);
+    const hasOnly = !!(compat as Record<string, unknown>)["openRouterRouting"]?.only;
+    const hasOrder = !!(compat as Record<string, unknown>)["openRouterRouting"]?.order;
+
+    notes.push(
+      "🔀 Router/channel: OpenRouter detected. OpenRouter is a multi-provider router; " +
+      "low cache hit rates are common when each turn lands on a different upstream provider.",
+    );
+
+    if (!hasOnly && !hasOrder) {
+      notes.push(
+        "   Suggestion: Add an openRouterRouting config to fix the upstream provider. " +
+        "Example for models.json -> providers[\"<providerId>\"] -> compat:",
+      );
+      notes.push(
+        `   { "sendSessionAffinityHeaders": true, "supportsLongCacheRetention": true, ` +
+        `"openRouterRouting": { "only": ["<provider-slug>"] } }`,
+      );
+      notes.push(
+        '   Replace <provider-slug> with the actual OpenRouter provider slug (e.g. "openai", "anthropic").',
+      );
+      notes.push(
+        "   Alternatively, use openRouterRouting.order: [\"<provider-slug>\", \"...\"] for fallback order. " +
+        "Only set supportsLongCacheRetention if your upstream supports long cache retention.",
+      );
+    }
+
+    return notes;
+  }
+
+  // ── 2. Vercel AI Gateway ─────────────────────────────────────────
+  if (
+    baseUrl.includes("ai-gateway.vercel.sh") ||
+    provider.includes("vercel") ||
+    provider.includes("vercel-ai-gateway")
+  ) {
+    const compat = getCompat(model);
+    const hasOnly = !!(compat as Record<string, unknown>)["vercelGatewayRouting"]?.only;
+    const hasOrder = !!(compat as Record<string, unknown>)["vercelGatewayRouting"]?.order;
+
+    notes.push(
+      "🔀 Router/channel: Vercel AI Gateway detected. The gateway may route to different " +
+      "provider endpoints per request, reducing cache locality.",
+    );
+
+    if (!hasOnly && !hasOrder) {
+      notes.push(
+        "   Suggestion: Add a vercelGatewayRouting config to fix the upstream. " +
+        "Example for models.json -> providers[\"<providerId>\"] -> compat:",
+      );
+      notes.push(
+        `   { "sendSessionAffinityHeaders": true, "supportsLongCacheRetention": true, ` +
+        `"vercelGatewayRouting": { "only": ["<provider-id>"] } }`,
+      );
+      notes.push(
+        "   Replace <provider-id> with the actual Vercel provider ID (e.g. \"openai\").",
+      );
+      notes.push(
+        "   Only set supportsLongCacheRetention if your upstream supports it.",
+      );
+    }
+
+    return notes;
+  }
+
+  // ── 3. LiteLLM / OneAPI / NewAPI / VoAPI (self-hosted aggregation) ──
+  const aggregationPatterns = ["litellm", "oneapi", "one-api", "newapi", "new-api", "voapi", "vo-api"];
+  if (
+    aggregationPatterns.some((p) => baseUrl.includes(p)) ||
+    aggregationPatterns.some((p) => provider.includes(p))
+  ) {
+    notes.push(
+      "🔀 Router/channel: Self-hosted aggregation proxy detected (LiteLLM / OneAPI / NewAPI / VoAPI). " +
+      "These proxies route to multiple upstream accounts or instances, which can split the cache.",
+    );
+    notes.push(
+      "   Suggestions:",
+    );
+    notes.push(
+      "   • Ensure the proxy can fix to a single upstream per session (session_id affinity).",
+    );
+    notes.push(
+      "   • Forward prompt_cache_key and session-affinity headers to the upstream.",
+    );
+    notes.push(
+      "   • Return cache usage fields (prompt_cache_hit_tokens, etc.) in the response.",
+    );
+    notes.push(
+      `   Example compat: { "sendSessionAffinityHeaders": true, "supportsLongCacheRetention": true }`,
+    );
+
+    return notes;
+  }
+
+  // ── 4. Generic third-party OpenAI-compatible proxy ─────────────────
+  if (api === "openai-completions" && baseUrl) {
+    const missing = describeMissingOpenAICompatibleProxyCompat(model);
+    notes.push(
+      "🔀 Router/channel: Third-party OpenAI-compatible proxy. If cache hit rates are low:",
+    );
+    notes.push(
+      "   • Verify the proxy routes to the same upstream account/instance per session.",
+    );
+    notes.push(
+      "   • Ensure the proxy forwards prompt_cache_key and sends session-affinity headers.",
+    );
+    notes.push(
+      "   • Check that the proxy returns cache usage fields (prompt_cache_hit_tokens etc.).",
+    );
+    if (missing.length > 0) {
+      notes.push(
+        `   • The compat flags above (${missing.join(", ")}) are recommended for cache stability.`,
+      );
+    }
+
+    return notes;
+  }
+
+  return notes;
+}
+
 function buildDoctorDiagnosis(model: PiModel): string {
   const lines: string[] = [];
   lines.push(`Provider: ${model.provider}`);
@@ -2648,6 +2813,15 @@ function buildDoctorDiagnosis(model: PiModel): string {
     lines.push("ℹ️ Compat check not applicable for this model.");
   }
 
+  // ── Router/channel diagnostics ──
+  const routerNotes = describeRouterChannelDiagnostics(model);
+  if (routerNotes.length > 0) {
+    lines.push("");
+    for (const note of routerNotes) {
+      lines.push(note);
+    }
+  }
+
   // ── Integrity diagnostics ──
   if (lastPromptIntegrityWarningAt > 0) {
     const ago = Date.now() - lastPromptIntegrityWarningAt;
@@ -2670,21 +2844,46 @@ function buildDoctorDiagnosis(model: PiModel): string {
 
 function buildCompatDiagnosis(model: PiModel): string | undefined {
   const missing = describeMissingOpenAICompatibleProxyCompat(model);
-  if (missing.length === 0) return undefined;
+  const routerNotes = describeRouterChannelDiagnostics(model);
+
+  if (missing.length === 0 && routerNotes.length === 0) return undefined;
 
   const key = modelKey(model);
-  const slashIdx = key.indexOf("/");
-  const providerLabel = slashIdx > 0 ? key.slice(0, slashIdx) : key;
-  const suggestion = Object.fromEntries(missing.map((f) => [f, true]));
-  const modelsJsonPath = getModelsJsonDisplayPath();
-  return (
-    `Active model: ${key}\n` +
-    `Missing: ${missing.join(", ")}\n\n` +
-    `Edit ${modelsJsonPath} -> providers["${providerLabel}"] -> compat` +
-    ` (at the same level as baseUrl/api/apiKey/models) and add:\n` +
-    `${JSON.stringify(suggestion, null, 2)}\n\n` +
-    `Only enable if your endpoint supports them.`
-  );
+  const lines: string[] = [];
+
+  if (missing.length > 0) {
+    const slashIdx = key.indexOf("/");
+    const providerLabel = slashIdx > 0 ? key.slice(0, slashIdx) : key;
+    const suggestion = Object.fromEntries(missing.map((f) => [f, true]));
+    const modelsJsonPath = getModelsJsonDisplayPath();
+    lines.push(`Active model: ${key}`);
+    lines.push(`Missing: ${missing.join(", ")}`);
+    lines.push("");
+    lines.push(`Edit ${modelsJsonPath} -> providers["${providerLabel}"] -> compat`);
+    lines.push(`(at the same level as baseUrl/api/apiKey/models) and add:`);
+    lines.push(JSON.stringify(suggestion, null, 2));
+    lines.push("");
+    lines.push(`Only enable if your endpoint supports them.`);
+  }
+
+  // When compat is fully configured but router notes exist, prefix the status.
+  if (routerNotes.length > 0 && missing.length === 0) {
+    if (isCompatCheckApplicable(model)) {
+      lines.push("✅ Compat fully configured.");
+    } else {
+      lines.push("ℹ️ Compat check not applicable for this model.");
+    }
+    lines.push("");
+  }
+
+  if (routerNotes.length > 0) {
+    if (missing.length > 0) lines.push("");
+    for (const note of routerNotes) {
+      lines.push(note);
+    }
+  }
+
+  return lines.join("\n");
 }
 
 // Internal helpers exported only so the task verification script
@@ -2835,6 +3034,7 @@ export const __internals_for_tests = {
   isCompatCheckApplicable,
   buildDoctorDiagnosis,
   buildCompatDiagnosis,
+  describeRouterChannelDiagnostics,
   // Cache stats helpers (module-level, usable from verify script)
   addUsageToCacheStats,
   formatCacheStats,

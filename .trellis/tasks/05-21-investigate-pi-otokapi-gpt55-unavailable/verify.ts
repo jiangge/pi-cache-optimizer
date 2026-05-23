@@ -43,6 +43,7 @@ const {
   isCompatCheckApplicable,
   buildDoctorDiagnosis,
   buildCompatDiagnosis,
+  describeRouterChannelDiagnostics,
   isOpenAICompatibleApi,
   getModelIdNameTokenValues,
   getAssistantMessageModelTokenValues,
@@ -2115,10 +2116,14 @@ Line count: 10 / 1000
 }
 
 // ==========================================================================
-// Test 44: buildCompatDiagnosis output — returns undefined when no missing flags
+// Test 44: buildCompatDiagnosis output
 // ==========================================================================
+// Note: describeRouterChannelDiagnostics fires for any openai-completions model
+// with a non-official base URL (generic proxy profile), so even fully-configured
+// proxies return router channel notes. Only official OpenAI and custom transports
+// return undefined.
 {
-  // Applicable model with all flags → undefined (no missing)
+  // Applicable model with all flags → returns string with router notes + "✅ Compat fully configured."
   const proxyConfigured = makeModel({
     id: "gpt-5.5",
     provider: "otokapi",
@@ -2126,11 +2131,24 @@ Line count: 10 / 1000
     baseUrl: "https://otokapi.example.com/v1",
     compat: { supportsLongCacheRetention: true, sendSessionAffinityHeaders: true },
   });
+  const configResult = buildCompatDiagnosis(proxyConfigured);
   expect(
-    "buildCompatDiagnosis.configured-undefined",
-    buildCompatDiagnosis(proxyConfigured) === undefined,
-    "expected buildCompatDiagnosis to return undefined for fully configured proxy",
+    "buildCompatDiagnosis.configured-returns-string",
+    typeof configResult === "string",
+    "expected buildCompatDiagnosis to return a string (router notes) for fully configured proxy",
   );
+  if (configResult) {
+    expect(
+      "buildCompatDiagnosis.configured-contains-fully",
+      configResult.includes("✅ Compat fully configured."),
+      "expected compat result to contain '✅ Compat fully configured.'",
+    );
+    expect(
+      "buildCompatDiagnosis.configured-contains-channel-notes",
+      configResult.includes("🔀 Router/channel"),
+      "expected compat result to contain router/channel notes",
+    );
+  };
 
   // Non-applicable model → undefined (no missing, check doesn't apply)
   const officialModel = makeModel({
@@ -3567,6 +3585,430 @@ Line count: 10 / 1000
 
   // Aya with kiro-api — gate should BLOCK
   expect("relaxedGate.aya-kiro-block", isOpenAICompatibleApi("kiro-api") === false, "expected kiro-api to block injection for Aya");
+}
+
+// ==========================================================================
+// Test 61: describeRouterChannelDiagnostics — OpenRouter detection
+// ==========================================================================
+{
+  // OpenRouter by baseUrl
+  const openRouterModel = makeModel({
+    id: "gpt-5.5",
+    provider: "otokapi",
+    api: "openai-completions",
+    baseUrl: "https://openrouter.ai/api/v1",
+  });
+  const orNotes = describeRouterChannelDiagnostics(openRouterModel);
+  expect(
+    "router.openrouter.baseUrl-nonempty",
+    orNotes.length > 0,
+    "expected OpenRouter notes for baseUrl containing openrouter.ai",
+  );
+  expect(
+    "router.openrouter.baseUrl-label",
+    orNotes.some((n) => n.includes("OpenRouter")),
+    "expected OpenRouter notes to mention OpenRouter",
+  );
+  expect(
+    "router.openrouter.baseUrl-fix-route",
+    orNotes.some((n) => n.includes("openRouterRouting")),
+    "expected OpenRouter notes to mention openRouterRouting",
+  );
+  expect(
+    "router.openrouter.baseUrl-no-apikey",
+    orNotes.every((n) => !n.includes("apiKey") && !n.includes("secret") && !n.includes("sk-") && !n.includes("x-api-key")),
+    "expected OpenRouter notes to NOT contain API keys or secrets",
+  );
+
+  // OpenRouter by provider
+  const openRouterModel2 = makeModel({
+    id: "gpt-5.5",
+    provider: "openrouter",
+    api: "openai-completions",
+    baseUrl: "https://example.com/v1",
+  });
+  const orNotes2 = describeRouterChannelDiagnostics(openRouterModel2);
+  expect(
+    "router.openrouter.provider-nonempty",
+    orNotes2.length > 0,
+    "expected OpenRouter notes for provider containing openrouter",
+  );
+  expect(
+    "router.openrouter.provider-label",
+    orNotes2.some((n) => n.includes("OpenRouter")),
+    "expected OpenRouter notes (by provider) to mention OpenRouter",
+  );
+
+  // OpenRouter with openRouterRouting.only already configured — should still show
+  // OpenRouter profile but without the fix suggestion
+  const openRouterConfigured = makeModel({
+    id: "gpt-5.5",
+    provider: "openrouter",
+    api: "openai-completions",
+    baseUrl: "https://openrouter.ai/api/v1",
+    compat: {
+      openRouterRouting: { only: ["openai"] },
+      sendSessionAffinityHeaders: true,
+      supportsLongCacheRetention: true,
+    },
+  });
+  const orNotes3 = describeRouterChannelDiagnostics(openRouterConfigured);
+  expect(
+    "router.openrouter.configured-nonempty",
+    orNotes3.length > 0,
+    "expected OpenRouter notes even when configured (still a router)",
+  );
+  expect(
+    "router.openrouter.configured-no-suggestion",
+    orNotes3.every((n) => !n.includes("Suggestion")),
+    "expected OpenRouter notes to skip 'Suggestion' when already configured",
+  );
+}
+
+// ==========================================================================
+// Test 62: describeRouterChannelDiagnostics — Vercel AI Gateway
+// ==========================================================================
+{
+  // Vercel by baseUrl
+  const vercelModel = makeModel({
+    id: "gpt-4",
+    provider: "my-provider",
+    api: "openai-completions",
+    baseUrl: "https://my-gateway.ai-gateway.vercel.sh/v1",
+  });
+  const vNotes = describeRouterChannelDiagnostics(vercelModel);
+  expect(
+    "router.vercel.baseUrl-nonempty",
+    vNotes.length > 0,
+    "expected Vercel notes for baseUrl containing ai-gateway.vercel.sh",
+  );
+  expect(
+    "router.vercel.baseUrl-label",
+    vNotes.some((n) => n.includes("Vercel AI Gateway")),
+    "expected Vercel notes to mention Vercel AI Gateway",
+  );
+  expect(
+    "router.vercel.baseUrl-vercelGatewayRouting",
+    vNotes.some((n) => n.includes("vercelGatewayRouting")),
+    "expected Vercel notes to mention vercelGatewayRouting",
+  );
+
+  // Vercel by provider
+  const vercelModel2 = makeModel({
+    id: "gpt-4",
+    provider: "vercel-ai-gateway",
+    api: "openai-completions",
+    baseUrl: "https://example.com/v1",
+  });
+  const vNotes2 = describeRouterChannelDiagnostics(vercelModel2);
+  expect(
+    "router.vercel.provider-nonempty",
+    vNotes2.length > 0,
+    "expected Vercel notes for provider containing vercel",
+  );
+
+  // Vercel with vercelGatewayRouting already configured
+  const vercelConfigured = makeModel({
+    id: "gpt-4",
+    provider: "vercel",
+    api: "openai-completions",
+    baseUrl: "https://ai-gateway.vercel.sh/v1",
+    compat: { vercelGatewayRouting: { only: ["openai"] }, sendSessionAffinityHeaders: true },
+  });
+  const vNotes3 = describeRouterChannelDiagnostics(vercelConfigured);
+  expect(
+    "router.vercel.configured-nonempty",
+    vNotes3.length > 0,
+    "expected Vercel notes even when configured",
+  );
+  expect(
+    "router.vercel.configured-no-suggestion",
+    vNotes3.every((n) => !n.includes("Suggestion")),
+    "expected Vercel notes to skip 'Suggestion' when already configured",
+  );
+}
+
+// ==========================================================================
+// Test 63: describeRouterChannelDiagnostics — LiteLLM / OneAPI / NewAPI / VoAPI
+// ==========================================================================
+{
+  // LiteLLM
+  const litellmModel = makeModel({
+    id: "gpt-4",
+    provider: "my-proxy",
+    api: "openai-completions",
+    baseUrl: "https://litellm.example.com/v1",
+  });
+  const lNotes = describeRouterChannelDiagnostics(litellmModel);
+  expect(
+    "router.litellm-nonempty",
+    lNotes.length > 0,
+    "expected router notes for LiteLLM",
+  );
+  expect(
+    "router.litellm-label",
+    lNotes.some((n) => n.includes("LiteLLM")),
+    "expected LiteLLM notes to mention LiteLLM",
+  );
+  expect(
+    "router.litellm-sticky",
+    lNotes.some((n) => n.includes("upstream per session") || n.includes("session_id_affinity")),
+    "expected LiteLLM notes to mention session affinity",
+  );
+
+  // OneAPI
+  const oneapiModel = makeModel({
+    id: "claude-sonnet",
+    provider: "my-agg",
+    api: "openai-completions",
+    baseUrl: "https://oneapi.example.com/v1",
+  });
+  const oNotes = describeRouterChannelDiagnostics(oneapiModel);
+  expect(
+    "router.oneapi-nonempty",
+    oNotes.length > 0,
+    "expected router notes for OneAPI",
+  );
+  expect(
+    "router.oneapi-label",
+    oNotes.some((n) => n.includes("OneAPI")),
+    "expected OneAPI notes to mention OneAPI",
+  );
+
+  // NewAPI
+  const newapiModel = makeModel({
+    id: "gpt-4",
+    provider: "my-agg",
+    api: "openai-completions",
+    baseUrl: "https://newapi.example.com/v1",
+  });
+  const nwNotes = describeRouterChannelDiagnostics(newapiModel);
+  expect(
+    "router.newapi-nonempty",
+    nwNotes.length > 0,
+    "expected router notes for NewAPI",
+  );
+
+  // VoAPI
+  const voapiModel = makeModel({
+    id: "gpt-4",
+    provider: "my-agg",
+    api: "openai-completions",
+    baseUrl: "https://voapi.example.com/v1",
+  });
+  const voNotes = describeRouterChannelDiagnostics(voapiModel);
+  expect(
+    "router.voapi-nonempty",
+    voNotes.length > 0,
+    "expected router notes for VoAPI",
+  );
+
+  // Proxy by provider (litellm in provider field)
+  const providerLitellm = makeModel({
+    id: "gpt-4",
+    provider: "litellm-proxy",
+    api: "openai-completions",
+    baseUrl: "https://my-proxy.example.com/v1",
+  });
+  const pNotes = describeRouterChannelDiagnostics(providerLitellm);
+  expect(
+    "router.provider-litellm-nonempty",
+    pNotes.length > 0,
+    "expected router notes for provider containing litellm",
+  );
+  expect(
+    "router.provider-litellm-label",
+    pNotes.some((n) => n.includes("LiteLLM")),
+    "expected LiteLLM notes (by provider)",
+  );
+}
+
+// ==========================================================================
+// Test 64: describeRouterChannelDiagnostics — generic third-party proxy
+// ==========================================================================
+{
+  // Generic third-party openai-completions proxy with non-official baseUrl
+  const genericProxy = makeModel({
+    id: "gpt-5.5",
+    provider: "otokapi",
+    api: "openai-completions",
+    baseUrl: "https://otokapi.example.com/v1",
+    compat: {},
+  });
+  const gNotes = describeRouterChannelDiagnostics(genericProxy);
+  expect(
+    "router.generic-nonempty",
+    gNotes.length > 0,
+    "expected generic proxy notes",
+  );
+  expect(
+    "router.generic-label",
+    gNotes.some((n) => n.includes("OpenAI-compatible proxy")),
+    "expected generic proxy notes to mention OpenAI-compatible proxy",
+  );
+  expect(
+    "router.generic-cache-advice",
+    gNotes.some((n) => n.includes("prompt_cache_key") || n.includes("prompt_cache_key")),
+    "expected generic proxy notes to mention prompt_cache_key",
+  );
+
+  // Fully configured generic proxy — notes should still fire (only compat advice differs)
+  const genericConfigured = makeModel({
+    id: "gpt-5.5",
+    provider: "otokapi",
+    api: "openai-completions",
+    baseUrl: "https://otokapi.example.com/v1",
+    compat: { supportsLongCacheRetention: true, sendSessionAffinityHeaders: true },
+  });
+  const gcNotes = describeRouterChannelDiagnostics(genericConfigured);
+  expect(
+    "router.generic-configured-nonempty",
+    gcNotes.length > 0,
+    "expected generic proxy notes even when compat is fully configured",
+  );
+  // When compat is fully configured, the note about compat flags is not shown
+  expect(
+    "router.generic-configured-no-compat-note",
+    gcNotes.every((n) => !n.includes("compat flags above")),
+    "expected no 'compat flags above' note when fully configured",
+  );
+
+  // Generic proxy with missing flags should include compat flag note
+  const compatDone = describeRouterChannelDiagnostics(genericProxy);
+  expect(
+    "router.generic-missing-has-compat-note",
+    compatDone.some((n) => n.includes("compat flags above") || n.includes("supportsLongCacheRetention")),
+    "expected missing-compat generic proxy to mention compat flags",
+  );
+
+  // Security: no secrets in notes
+  expect(
+    "router.generic-secure",
+    gNotes.every((n) => !n.includes("sk-") && !n.includes("apiKey") && !n.includes("secret") && !n.includes("x-api-key")),
+    "expected generic proxy notes to NOT contain API keys or secrets",
+  );
+}
+
+// ==========================================================================
+// Test 65: describeRouterChannelDiagnostics — official OpenAI and custom transports
+// ==========================================================================
+{
+  // Official OpenAI — no notes
+  const officialModel = makeModel({
+    id: "gpt-4o",
+    provider: "openai",
+    api: "openai-completions",
+    baseUrl: "https://api.openai.com/v1",
+  });
+  const oNotes = describeRouterChannelDiagnostics(officialModel);
+  expect(
+    "router.official-empty",
+    oNotes.length === 0,
+    "expected no router notes for official OpenAI",
+  );
+
+  // kiro-api — no notes (custom transport)
+  const kiroModel = makeModel({
+    id: "claude-sonnet-4",
+    provider: "kiro",
+    api: "kiro-api",
+    baseUrl: "https://kiro.example.com/generate",
+  });
+  const kNotes = describeRouterChannelDiagnostics(kiroModel);
+  expect(
+    "router.kiro-empty",
+    kNotes.length === 0,
+    "expected no router notes for kiro-api (custom transport)",
+  );
+
+  // No baseUrl (empty/default) with openai-completions → no generic proxy notes
+  // because describeRouterChannelDiagnostics requires a baseUrl for generic proxy
+  const noBaseUrl = makeModel({
+    id: "gpt-5.5",
+    provider: "otokapi",
+    api: "openai-completions",
+    baseUrl: "",
+  });
+  const nbNotes = describeRouterChannelDiagnostics(noBaseUrl);
+  expect(
+    "router.no-baseurl-empty",
+    nbNotes.length === 0,
+    "expected no router notes when baseUrl is empty",
+  );
+
+  // anthropic-messages — no notes
+  const anthropicMsg = makeModel({
+    id: "claude-opus-4",
+    provider: "anthropic",
+    api: "anthropic-messages",
+    baseUrl: "https://api.anthropic.com/v1",
+  });
+  expect(
+    "router.anthropic-messages-empty",
+    describeRouterChannelDiagnostics(anthropicMsg).length === 0,
+    "expected no router notes for anthropic-messages",
+  );
+}
+
+// ==========================================================================
+// Test 66: Router diagnostics do not affect adapter selection
+// ==========================================================================
+{
+  // An OpenRouter Llama model must select Llama adapter, not an OpenRouter adapter
+  const llamaViaOpenRouter = makeModel({
+    id: "llama-3-70b",
+    name: "Meta Llama 3 70B",
+    provider: "openrouter",
+    api: "openai-completions",
+    baseUrl: "https://openrouter.ai/api/v1",
+  });
+
+  // The adapter selected via isLlamaLikeModel should still match
+  expect(
+    "router.adapter.lama-via-openrouter",
+    isLlamaLikeModel(llamaViaOpenRouter) === true,
+    "expected OpenRouter Llama model to still match Llama adapter",
+  );
+
+  // Vercel GPT-4 should still match OpenAI adapter
+  const gptViaVercel = makeModel({
+    id: "gpt-4o",
+    provider: "vercel",
+    api: "openai-completions",
+    baseUrl: "https://ai-gateway.vercel.sh/v1",
+  });
+  expect(
+    "router.adapter.gpt-via-vercel",
+    isOpenAIFamilyModel(gptViaVercel) === true,
+    "expected Vercel GPT-4o to still match OpenAI adapter",
+  );
+}
+
+// ==========================================================================
+// Test 67: describeRouterChannelDiagnostics — security: no secrets exposed
+// ==========================================================================
+{
+  const models = [
+    makeModel({ id: "gpt-5.5", provider: "otokapi", api: "openai-completions", baseUrl: "https://openrouter.ai/v1" }),
+    makeModel({ id: "gpt-5.5", provider: "otokapi", api: "openai-completions", baseUrl: "https://ai-gateway.vercel.sh/v1" }),
+    makeModel({ id: "gpt-5.5", provider: "otokapi", api: "openai-completions", baseUrl: "https://litellm.example.com/v1" }),
+    makeModel({ id: "gpt-5.5", provider: "otokapi", api: "openai-completions", baseUrl: "https://oneapi.example.com/v1" }),
+    makeModel({ id: "gpt-5.5", provider: "otokapi", api: "openai-completions", baseUrl: "https://newapi.example.com/v1" }),
+    makeModel({ id: "gpt-5.5", provider: "otokapi", api: "openai-completions", baseUrl: "https://voapi.example.com/v1" }),
+    makeModel({ id: "gpt-5.5", provider: "otokapi", api: "openai-completions", baseUrl: "https://otokapi.example.com/v1" }),
+  ];
+
+  for (const m of models) {
+    const notes = describeRouterChannelDiagnostics(m);
+    for (const note of notes) {
+      const key = `router.security.${m.baseUrl}`;
+      expect(
+        key,
+        !note.includes("sk-") && !note.includes("apiKey") && !note.includes("secret") && !note.includes("x-api-key") && !note.includes("Authorization"),
+        `expected router note to NOT contain secrets: ${note.slice(0, 80)}`,
+      );
+    }
+  }
 }
 
 // ==========================================================================

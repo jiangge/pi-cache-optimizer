@@ -628,7 +628,7 @@ Rules:
 
 ## Diagnostic command (`/cache-optimizer`)
 
-The extension registers a Pi command `/cache-optimizer` with two subcommands:
+The extension registers a Pi command `/cache-optimizer` with two subcommands.
 
 ### `/cache-optimizer doctor`
 
@@ -643,16 +643,28 @@ are missing, shows `✅ Compat fully configured.`
 as official OpenAI, non-`openai-completions` APIs, or custom transports like
 `kiro-api`).
 
+Additionally, if the active model is routed through a known router/channel proxy such
+as OpenRouter, Vercel AI Gateway, LiteLLM/OneAPI/NewAPI/VoAPI, or a generic
+third-party OpenAI-compatible proxy, the doctor output appends a
+`🔀 Router/channel:` section with diagnostics and routing recommendations. See
+[Router/channel diagnostics](#routerchannel-diagnostics) below for details.
+
 The output MUST NOT include API keys, secrets, prompts, payloads, headers, or model
 output.
 
 ### `/cache-optimizer compat`
 
-Shows only the compat suggestion for the active model, including the file path,
+Shows the compat suggestion for the active model, including the file path,
 provider selector, exact edit location, and the copyable JSON snippet.
-On success (no missing flags), shows the same applicability-respecting text as
-the doctor command: `✅ Compat fully configured.` or `ℹ️ Compat check not applicable
-for this model.`
+When compat flags are missing, includes the suggestion and appends any applicable
+router/channel diagnostic notes.
+
+When no compat flags are missing but router/channel diagnostics apply, shows the
+same applicability-respecting status line (`✅ Compat fully configured.` or
+`ℹ️ Compat check not applicable for this model.`) followed by router/channel notes.
+
+When neither compat flags are missing nor router/channel diagnostics apply, shows
+only the status line as before.
 
 ### No arguments
 
@@ -663,6 +675,37 @@ executes the corresponding subcommand logic. Cancel closes the menu.
 In non-interactive terminals (no `ui.select`), falls back to a short text help
 listing available subcommands and a one-line summary of the active model's compat
 status (using the same applicability-respecting text as doctor/compat).
+
+### Router/channel diagnostics
+
+The `describeRouterChannelDiagnostics(model)` function inspects `ctx.model`
+metadata (provider, api, baseUrl, compat) to detect common router/channel proxy
+patterns and returns advisory notes. It is called by both `buildDoctorDiagnosis`
+and `buildCompatDiagnosis`.
+
+This function is **advisory only**. It does NOT participate in:
+- Adapter selection (still id/name-only)
+- `prompt_cache_key` injection
+- Footer stats
+- Any automated configuration changes
+
+#### Detected profiles
+
+| Profile | Detection | Guidance |
+|---------|-----------|----------|
+| **OpenRouter** | `baseUrl` or `provider` contains `openrouter.ai` / `openrouter` | Use `openRouterRouting.only` or `.order` to fix the upstream provider; also set `sendSessionAffinityHeaders` and `supportsLongCacheRetention` if the upstream supports them |
+| **Vercel AI Gateway** | `baseUrl` contains `ai-gateway.vercel.sh` or `provider` contains `vercel`/`vercel-ai-gateway` | Use `vercelGatewayRouting.only` or `.order` to fix the upstream; also set `sendSessionAffinityHeaders` and `supportsLongCacheRetention` if supported |
+| **LiteLLM / OneAPI / NewAPI / VoAPI** | `baseUrl` or `provider` contains `litellm`, `oneapi`/`one-api`, `newapi`/`new-api`, `voapi`/`vo-api` | Ensure sticky routing per session (session_id affinity), forward `prompt_cache_key` and session-affinity headers, return cache usage fields |
+| **Generic third-party OpenAI-compatible proxy** | `api: "openai-completions"` with non-official `baseUrl` not matching above profiles | General guidance: verify single-upstream routing, forward `prompt_cache_key` + session-affinity headers, return cache usage fields |
+
+#### Limitations
+
+- Only applies when `api` is `openai-completions` or `openai-responses`.
+- Official `api.openai.com` bypasses all profiles.
+- Custom transports (`kiro-api`, `anthropic-messages`, `bedrock-converse-stream`)
+  are excluded.
+- Detection uses only `provider`, `api`, `baseUrl`, and `compat` — no API keys,
+  prompts, payloads, headers, or model outputs are read or exposed.
 
 ### Security
 
@@ -688,4 +731,13 @@ compat). It does NOT read or expose:
 | `/cache-optimizer` (no args) with UI supports select | Shows interactive selection menu (Doctor / Compat / Cancel) |
 | `/cache-optimizer` (no args) without UI | Shows text help and current model compat status summary |
 | Footer status for missing-compat model | Shows `⚠️ compat` appended to the cache stats line |
-| Footer status when compat is fixed or model changes | `⚠️ compat` marker clears
+| Footer status when compat is fixed or model changes | `⚠️ compat` marker clears |
+| `/cache-optimizer doctor` with OpenRouter model | Output includes `🔀 Router/channel: OpenRouter detected` with routing fix suggestion and JSON example for `openRouterRouting` |
+| `/cache-optimizer doctor` with Vercel AI Gateway model | Output includes `🔀 Router/channel: Vercel AI Gateway detected` with `vercelGatewayRouting` suggestion |
+| `/cache-optimizer doctor` with LiteLLM/OneAPI/NewAPI/VoAPI model | Output includes `🔀 Router/channel: Self-hosted aggregation proxy detected` with sticky routing and prompt_cache_key guidance |
+| `/cache-optimizer doctor` with generic third-party OpenAI-compatible proxy | Output includes `🔀 Router/channel: Third-party OpenAI-compatible proxy` with general guidance |
+| `/cache-optimizer doctor` with official OpenAI or kiro-api model | Output does NOT include router/channel notes (not applicable) |
+| `/cache-optimizer compat` with missing-compat OpenRouter model | Shows missing flags + JSON + OpenRouter channel notes |
+| `/cache-optimizer compat` with fully-configured OpenRouter model | Shows `✅ Compat fully configured.` followed by OpenRouter channel notes |
+| Router/channel diagnostics do not affect adapter selection | An OpenRouter Llama model still selects the Llama adapter, not an "OpenRouter" adapter |
+| Diagnostic text must not expose API keys, prompts, payloads, or model output | All router/channel output uses only provider, api, baseUrl, compat metadata |

@@ -325,7 +325,24 @@ Edit ~/.pi/agent/models.json -> providers["otokapi"] -> compat (same level as ba
 
 ### `/cache-optimizer compat`
 
-仅显示当前模型的 compat 建议，包括文件路径、provider 路径和可复制 JSON 片段。当没有缺失标志时，如果模型是适用的第三方代理则显示 `✅ Compat fully configured.`，否则显示 `ℹ️ Compat check not applicable for this model.`。
+显示当前模型的 compat 建议，包括文件路径、provider 路径和可复制 JSON 片段。当没有缺失的 compat 标志时，如果模型是适用的第三方代理则显示 `✅ Compat fully configured.`，否则显示 `ℹ️ Compat check not applicable for this model.`。
+
+当模型通过已知的路由器/通道代理（OpenRouter、Vercel AI Gateway、LiteLLM、OneAPI/NewAPI/VoAPI 或通用第三方 OpenAI-compatible 代理）时，`doctor` 和 `compat` 子命令都会附加路由/通道诊断信息和建议。
+
+### 路由/通道诊断
+
+对于通过非官方 base URL 使用 OpenAI-compatible API（`openai-completions` 或 `openai-responses`）的模型，扩展会从 `provider`、`baseUrl` 和 `compat` 元数据中检测常见的路由/通道代理模式：
+
+| 类型 | 检测方式 | 建议 |
+|------|----------|------|
+| **OpenRouter** | baseUrl 或 provider 包含 `openrouter`/`openrouter.ai` | 在 compat 中用 `openRouterRouting.only` 或 `.order` 固定上游 provider |
+| **Vercel AI Gateway** | baseUrl 包含 `ai-gateway.vercel.sh` 或 provider 包含 `vercel` | 在 compat 中用 `vercelGatewayRouting.only` 或 `.order` 固定上游 |
+| **LiteLLM / OneAPI / NewAPI / VoAPI** | baseUrl 或 provider 包含 `litellm`、`oneapi`/`one-api`、`newapi`/`new-api`、`voapi`/`vo-api` | 确保每 session 固定路由，转发 `prompt_cache_key` + session-affinity headers，返回缓存用量字段 |
+| **通用第三方代理** | 任何非官方 base URL 的 `openai-completions` 模型，且不匹配以上类型 | 通用建议：验证单上游路由、转发 `prompt_cache_key` + session-affinity headers、返回缓存用量 |
+
+这些诊断**仅用于建议**。它们不参与 adapter selection（仍基于 id/name）、不参与 `prompt_cache_key` 注入、不参与 footer 统计、也不做任何自动化配置修改。检测仅使用 Pi 暴露的元数据（`provider`、`api`、`baseUrl`、`compat`），不会读取或暴露 API key、prompt、payload、headers 或模型输出。
+
+官方 OpenAI（`api.openai.com`）和 custom transport（`kiro-api`、`anthropic-messages`、`bedrock-converse-stream`）不会触发路由/通道诊断。
 
 ### 安全说明
 
