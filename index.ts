@@ -37,6 +37,7 @@ const OPENAI_CACHE_KEY_ENV = "PI_CACHE_OPTIMIZER_OPENAI_CACHE_KEY";
 const NO_OPENAI_CACHE_KEY_ENV = "PI_CACHE_OPTIMIZER_NO_OPENAI_CACHE_KEY";
 const OPENAI_PROMPT_CACHE_KEY_MAX_LENGTH = 64;
 const NO_SKILL_COMPRESSION_ENV = "PI_CACHE_OPTIMIZER_NO_SKILL_COMPRESSION";
+const NO_PROMPT_REWRITE_ENV = "PI_CACHE_OPTIMIZER_NO_PROMPT_REWRITE";
 
 // WORM-flag: if optimizeSystemPrompt ever detects that its blind-replace
 // logic has accidentally truncated a structural marker (any XML tag or
@@ -856,6 +857,43 @@ function describeMissingOpenAIFamilyProxyCompat(model: PiModel): string[] {
   return missing;
 }
 
+/**
+ * Build the warning text displayed to users when an OpenAI-family third-party
+ * proxy is missing one or more cache/session-affinity compat flags.
+ *
+ * The returned string contains a parseable JSON object (via JSON.stringify)
+ * listing only the missing flags with recommended value `true`. Inline
+ * explanations for each flag follow the JSON snippet as separate prose lines,
+ * so the JSON remains valid and copyable.
+ *
+ * Expected use: the openai adapter's warningText calls this function; tests
+ * exercise it via __internals_for_tests.
+ */
+function buildOpenAIProxyCompatWarningText(key: string, missing: string[]): string {
+  const suggestion: Record<string, boolean> = {};
+  for (const flag of missing) {
+    suggestion[flag] = true;
+  }
+
+  const lines: string[] = [
+    `💡 pi-cache-optimizer: ${key} is a third-party GPT/OpenAI-compatible proxy but merged compat lacks ${missing.join(" and ")}.`,
+    `Add under the model's compat in ~/.pi/agent/models.json (only if the endpoint supports them):`,
+    ``,
+    JSON.stringify(suggestion, null, 2),
+    ``,
+  ];
+
+  for (const flag of missing) {
+    if (flag === "supportsLongCacheRetention") {
+      lines.push("- supportsLongCacheRetention: confirm your endpoint or proxy supports long prompt cache retention.");
+    } else if (flag === "sendSessionAffinityHeaders") {
+      lines.push("- sendSessionAffinityHeaders: keeps requests on the same backend for proxy cache locality (session affinity).");
+    }
+  }
+
+  return lines.join("\n");
+}
+
 function describeMissingDeepSeekCompat(model: PiModel): string[] {
   const compat = getCompat(model);
   const missing: string[] = [];
@@ -935,11 +973,7 @@ const CACHE_PROVIDER_ADAPTERS: CacheProviderAdapter[] = [
     warningText(model) {
       const missing = describeMissingOpenAIFamilyProxyCompat(model);
       if (missing.length === 0) return undefined;
-
-      return (
-        `💡 pi-cache-optimizer: ${modelKey(model)} looks like a third-party GPT/OpenAI-compatible proxy but merged compat lacks ${missing.join(" and ")}. ` +
-        `For better cache locality, add compat: { "supportsLongCacheRetention": true, "sendSessionAffinityHeaders": true } in ~/.pi/agent/models.json when the endpoint supports these fields.`
-      );
+      return buildOpenAIProxyCompatWarningText(modelKey(model), missing);
     },
   },
   {
@@ -1190,6 +1224,8 @@ export const __internals_for_tests = {
   compressSkillsInSystemPrompt,
   MIN_STABLE_CANDIDATE_LENGTH,
   SKILL_COMPRESSION_MIN_COUNT,
+  NO_PROMPT_REWRITE_ENV,
+  isEnabledEnv,
   // OpenAI-family cache-key helpers
   addOpenAIPromptCacheKey,
   clampPromptCacheKey,
@@ -1202,6 +1238,7 @@ export const __internals_for_tests = {
   isOpenAIFamilyToken,
   describeMissingOpenAIFamilyProxyCompat,
   isOfficialOpenAIBaseUrl,
+  buildOpenAIProxyCompatWarningText,
   getModelIdNameTokenValues,
   getAssistantMessageModelTokenValues,
   getCompat,
@@ -1419,6 +1456,14 @@ export default function (pi: ExtensionAPI) {
       if (api === "openai-codex-responses" || api === "openai-responses") {
         return {};
       }
+    }
+
+    // Global opt-out: PI_CACHE_OPTIMIZER_NO_PROMPT_REWRITE=1 bypasses all
+    // prompt mutations below (session-overview churn strip, skill compression,
+    // and stable-prefix reordering). Footer stats and the OpenAI
+    // prompt_cache_key fallback remain active.
+    if (isEnabledEnv(process.env[NO_PROMPT_REWRITE_ENV])) {
+      return {};
     }
 
     // Step 1: strip per-turn churn from <session-overview>.

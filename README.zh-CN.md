@@ -85,6 +85,7 @@ pi install npm:pi-cache-optimizer
 
 | 环境变量 | 作用 |
 |---------|------|
+| `PI_CACHE_OPTIMIZER_NO_PROMPT_REWRITE=1` | 跳过所有 `before_agent_start` prompt 修改（session-overview 字段剥离、skills 压缩、稳定前缀重排）；底部统计和 `prompt_cache_key` 兜底仍然生效 |
 | `PI_CACHE_OPTIMIZER_NO_SKILL_COMPRESSION=1` | 保留 pi 的 verbose `<available_skills>` XML（退出一行索引模式） |
 | `PI_CACHE_OPTIMIZER_OPENAI_CACHE_KEY=0` | 禁用 OpenAI-family `prompt_cache_key` 兜底（默认启用） |
 | `PI_CACHE_OPTIMIZER_NO_OPENAI_CACHE_KEY=1` | 禁用 OpenAI-family `prompt_cache_key` 兜底 |

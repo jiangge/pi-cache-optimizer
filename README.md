@@ -82,6 +82,7 @@ After installation, `PI_CACHE_RETENTION=long` is applied automatically, the syst
 
 | Env var | Effect |
 |---------|--------|
+| `PI_CACHE_OPTIMIZER_NO_PROMPT_REWRITE=1` | Skip all `before_agent_start` prompt mutations (churn strip, skill compression, stable-prefix reorder); footer stats and `prompt_cache_key` fallback remain active |
 | `PI_CACHE_OPTIMIZER_NO_SKILL_COMPRESSION=1` | Keep pi's verbose `<available_skills>` XML (opt out of one-line index) |
 | `PI_CACHE_OPTIMIZER_OPENAI_CACHE_KEY=0` | Disable the OpenAI-family `prompt_cache_key` fallback (default is enabled) |
 | `PI_CACHE_OPTIMIZER_NO_OPENAI_CACHE_KEY=1` | Disable the OpenAI-family `prompt_cache_key` fallback |

@@ -44,6 +44,7 @@ const {
   getAssistantMessageModelTokenValues,
   getCompat,
   modelKey,
+  buildOpenAIProxyCompatWarningText,
   // Cache stats helpers
   addUsageToCacheStats,
   formatCacheStats,
@@ -51,6 +52,11 @@ const {
   emptyAllCacheStats,
   parseCacheStats,
   parsePersistedCacheStats,
+  // Env opt-out helpers
+  NO_PROMPT_REWRITE_ENV,
+  isEnabledEnv,
+  // Prompt mutation helpers
+  stripSessionOverviewChurn,
 } = __internals_for_tests;
 
 type Failure = { name: string; detail: string };
@@ -258,6 +264,98 @@ function makeUsageSnapshot(overrides: Partial<ReturnType<typeof emptyCacheStats>
     else delete process.env.PI_CACHE_OPTIMIZER_NO_OPENAI_CACHE_KEY;
     if (savedKey !== undefined) process.env.PI_CACHE_OPTIMIZER_OPENAI_CACHE_KEY = savedKey;
     else delete process.env.PI_CACHE_OPTIMIZER_OPENAI_CACHE_KEY;
+  }
+}
+
+// ==========================================================================
+// Test 5b: PI_CACHE_OPTIMIZER_NO_PROMPT_REWRITE env var opt-out
+// ==========================================================================
+{
+  const saved = process.env[NO_PROMPT_REWRITE_ENV];
+
+  try {
+    // === Constant name correctness ===
+    expect(
+      "noPromptRewrite.const-name",
+      NO_PROMPT_REWRITE_ENV === "PI_CACHE_OPTIMIZER_NO_PROMPT_REWRITE",
+      `expected constant name "PI_CACHE_OPTIMIZER_NO_PROMPT_REWRITE", got "${NO_PROMPT_REWRITE_ENV}"`,
+    );
+
+    // === Gate logic: the before_agent_start hook uses ===
+    // isEnabledEnv(process.env[NO_PROMPT_REWRITE_ENV]) to decide whether to
+    // skip all prompt mutations (churn strip → skill compression → reorder).
+    // When isEnabledEnv returns true, the hook returns {} early (no mutations).
+    process.env[NO_PROMPT_REWRITE_ENV] = "1";
+    expect(
+      "noPromptRewrite.gate-active",
+      isEnabledEnv(process.env[NO_PROMPT_REWRITE_ENV]) === true,
+      "expected gate to be active (isEnabledEnv=true) when NO_PROMPT_REWRITE=1",
+    );
+
+    delete process.env[NO_PROMPT_REWRITE_ENV];
+    expect(
+      "noPromptRewrite.gate-inactive",
+      isEnabledEnv(process.env[NO_PROMPT_REWRITE_ENV]) === false,
+      "expected gate to be inactive (isEnabledEnv=false) when env var is unset",
+    );
+
+    // === Verify mutation functions produce changes when called directly ===
+    // (Mutation functions don't check the NO_PROMPT_REWRITE env var; only the
+    // hook-level gate does. This proves that when the gate is NOT active, the
+    // mutations transform the prompt — and conversely, when the gate IS active
+    // the hook skips calling them, leaving the prompt unchanged.)
+    const promptWithChurn = `<session-overview>
+## DEVELOPER
+Name: test
+## RECENT COMMITS
+abc123
+Working directory: Clean
+Line count: 10 / 1000
+</session-overview>`;
+
+    const stripped = stripSessionOverviewChurn(promptWithChurn);
+    expect(
+      "noPromptRewrite.churn-stripped",
+      stripped !== promptWithChurn,
+      "expected stripSessionOverviewChurn to modify churn-containing prompt",
+    );
+    expect(
+      "noPromptRewrite.churn-commit-removed",
+      stripped.includes("RECENT COMMITS") === false,
+      "expected RECENT COMMITS heading to be stripped",
+    );
+    expect(
+      "noPromptRewrite.churn-workdir-removed",
+      stripped.includes("Working directory:") === false,
+      "expected Working directory line to be stripped",
+    );
+    expect(
+      "noPromptRewrite.churn-linecount-removed",
+      stripped.includes("Line count:") === false,
+      "expected Line count line to be stripped",
+    );
+    // Stable fields must survive stripping
+    expect(
+      "noPromptRewrite.churn-developer-kept",
+      stripped.includes("DEVELOPER") === true,
+      "expected DEVELOPER section to survive stripping",
+    );
+    expect(
+      "noPromptRewrite.churn-envelope-kept",
+      stripped.includes("<session-overview>") === true,
+      "expected <session-overview> tag to survive stripping",
+    );
+
+    // === Independence from cache key opt-out ===
+    process.env[NO_PROMPT_REWRITE_ENV] = "1";
+    expect(
+      "noPromptRewrite.independent",
+      shouldInjectOpenAIPromptCacheKey() === true,
+      "expected NO_PROMPT_REWRITE=1 to NOT affect OpenAI cache key injection (independent opt-outs)",
+    );
+  } finally {
+    if (saved !== undefined) process.env[NO_PROMPT_REWRITE_ENV] = saved;
+    else delete process.env[NO_PROMPT_REWRITE_ENV];
   }
 }
 
@@ -778,6 +876,84 @@ function makeUsageSnapshot(overrides: Partial<ReturnType<typeof emptyCacheStats>
   // Corrupt individual entries are skipped; the parser returns a valid state.
   const corruptV2Result = parsePersistedCacheStats({ version: 2, statsByProvider: { deepseek: "not-stats" } });
   expect("parseInvalid.corrupt-v2", corruptV2Result !== undefined && Object.keys(corruptV2Result!.statsByModel).length === 0 && Object.keys(corruptV2Result!.legacyFamily).length === 0, "expected valid state with empty legacyFamily for corrupt v2");
+}
+
+// ==========================================================================
+// Test 23: buildOpenAIProxyCompatWarningText — produces valid, parseable JSON suggestion
+// ==========================================================================
+{
+  // --- Both flags missing ---
+  const bothMissing = ["supportsLongCacheRetention", "sendSessionAffinityHeaders"];
+  const bothText = buildOpenAIProxyCompatWarningText("otokapi/gpt-5.5", bothMissing);
+
+  // Extract JSON object from text — first `{` through its matching `}` on its own line.
+  const jsonBothMatch = bothText.match(/{[\s\S]*?\n}/);
+  expect(
+    "warning-both.json-exists",
+    jsonBothMatch !== null,
+    "expected JSON object in warning text for both-missing",
+  );
+
+  if (jsonBothMatch) {
+    let parsed: Record<string, unknown> | null = null;
+    try {
+      parsed = JSON.parse(jsonBothMatch[0]);
+    } catch (e) {
+      expect("warning-both.json-parseable", false, `JSON.parse threw: ${e}`);
+    }
+    if (parsed) {
+      expect("warning-both.supportsLongCacheRetention", parsed.supportsLongCacheRetention === true, "expected supportsLongCacheRetention: true");
+      expect("warning-both.sendSessionAffinityHeaders", parsed.sendSessionAffinityHeaders === true, "expected sendSessionAffinityHeaders: true");
+      expect("warning-both.exactly-two-keys", Object.keys(parsed).length === 2, "expected exactly 2 keys in JSON");
+    }
+  }
+
+  // Verify the warning text also includes prose explanations
+  expect(
+    "warning-both.prose-retention",
+    bothText.includes("long prompt cache retention"),
+    "expected prose explanation for supportsLongCacheRetention",
+  );
+  expect(
+    "warning-both.prose-affinity",
+    bothText.includes("session affinity"),
+    "expected prose explanation for sendSessionAffinityHeaders",
+  );
+
+  // Make sure there are NO inline comments (//) in the text
+  expect("warning-both.no-comments", !bothText.includes("//"), "expected no inline comments (//) in warning text");
+
+  // --- Only supportsLongCacheRetention missing ---
+  const onlyRetention = ["supportsLongCacheRetention"];
+  const retentionText = buildOpenAIProxyCompatWarningText("otokapi/gpt-5.5", onlyRetention);
+  const jsonRetMatch = retentionText.match(/{[\s\S]*?\n}/);
+  expect(
+    "warning-retention.json-exists",
+    jsonRetMatch !== null,
+    "expected JSON object for retention-only warning",
+  );
+  if (jsonRetMatch) {
+    const parsed = JSON.parse(jsonRetMatch[0]);
+    expect("warning-retention.only-one-key", Object.keys(parsed).length === 1, "expected exactly 1 key in JSON");
+    expect("warning-retention.supportsLongCacheRetention", parsed.supportsLongCacheRetention === true, "expected supportsLongCacheRetention: true");
+    expect("warning-retention.no-affinity", parsed.sendSessionAffinityHeaders === undefined, "expected no sendSessionAffinityHeaders");
+  }
+
+  // --- Only sendSessionAffinityHeaders missing ---
+  const onlyAffinity = ["sendSessionAffinityHeaders"];
+  const affinityText = buildOpenAIProxyCompatWarningText("otokapi/gpt-5.5", onlyAffinity);
+  const jsonAffMatch = affinityText.match(/{[\s\S]*?\n}/);
+  expect(
+    "warning-affinity.json-exists",
+    jsonAffMatch !== null,
+    "expected JSON object for affinity-only warning",
+  );
+  if (jsonAffMatch) {
+    const parsed = JSON.parse(jsonAffMatch[0]);
+    expect("warning-affinity.only-one-key", Object.keys(parsed).length === 1, "expected exactly 1 key in JSON");
+    expect("warning-affinity.sendSessionAffinityHeaders", parsed.sendSessionAffinityHeaders === true, "expected sendSessionAffinityHeaders: true");
+    expect("warning-affinity.no-retention", parsed.supportsLongCacheRetention === undefined, "expected no supportsLongCacheRetention");
+  }
 }
 
 // ==========================================================================

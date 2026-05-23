@@ -106,6 +106,10 @@ core's own cache transport.
   with `PI_CACHE_OPTIMIZER_NO_OPENAI_CACHE_KEY=1` (truthy: `1`, `true`, `yes`,
   `on`) or legacy-style `PI_CACHE_OPTIMIZER_OPENAI_CACHE_KEY=0` (disabled:
   `0`, `false`, `no`, `off`).
+* All `before_agent_start` prompt mutations (session-overview churn strip,
+  skill compression, stable-prefix reorder) can be disabled with:
+  `PI_CACHE_OPTIMIZER_NO_PROMPT_REWRITE=1` (truthy: `1`, `true`, `yes`, `on`).
+  Footer stats and the OpenAI `prompt_cache_key` fallback remain active.
 * Official OpenAI Responses / Codex prompt bypass remains unchanged: the
   `before_agent_start` hook still avoids prompt rewriting for
   `openai-codex-responses` and `openai-responses`.
@@ -220,6 +224,7 @@ type PersistedCacheStatsV3 = {
 | Scenario | Expected behavior |
 |---|---|
 | `prompt_cache_key` fallback disabled (`PI_CACHE_OPTIMIZER_NO_OPENAI_CACHE_KEY=1` or `PI_CACHE_OPTIMIZER_OPENAI_CACHE_KEY=0`) | No extension-added `prompt_cache_key`; Pi core behavior remains authoritative. |
+| All `before_agent_start` prompt mutations disabled (`PI_CACHE_OPTIMIZER_NO_PROMPT_REWRITE=1`) | No churn strip, skill compression, or stable-prefix reorder; footer stats and `prompt_cache_key` injection unchanged. |
 | OpenAI-family `openai-completions` payload has no effective key | Extension adds `prompt_cache_key` from `ctx.sessionManager.getSessionId()` if a non-empty session id is available. |
 | Payload has non-empty `prompt_cache_key` or `promptCacheKey` | Extension does not replace it. |
 | Payload has `prompt_cache_key: undefined`, `null`, `""`, or whitespace | Treat as missing; extension may add the session-id fallback. |
