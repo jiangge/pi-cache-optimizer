@@ -9,13 +9,5 @@
   "prompts": [
     "./prompts"
   ],
-  "packages": [
-    {
-      "source": "npm:pi-subagents",
-      "extensions": [],
-      "skills": [],
-      "prompts": [],
-      "themes": []
-    }
-  ]
+  "packages": []
 }
