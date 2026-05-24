@@ -104,24 +104,9 @@ This extension is pure Node.js — no shell exec, no native bindings, no platfor
 
 State files under `~/.pi/agent/` are resolved via Node's `os.homedir()`, so on Windows the path automatically expands to `C:\Users\<you>\.pi\agent\...`. The extension's compat warnings, `/cache-optimizer doctor`, and `/cache-optimizer compat` show the platform-appropriate path automatically (`~/.pi/agent/models.json` on Linux/macOS, `%USERPROFILE%\.pi\agent\models.json` on Windows). All shell snippets in this README are bash, matching the shell Pi runs in on every supported platform; no PowerShell or `cmd.exe` translation is needed when commands are executed inside (or for) Pi.
 
-## Quickstart
-
-1. (Optional but recommended) Read the official Pi + DeepSeek onboarding guide: [`pi_mono.zh-CN.md`](https://github.com/deepseek-ai/awesome-deepseek-agent/blob/main/docs/pi_mono.zh-CN.md). It covers Pi installation and core configuration.
-2. Install this extension:
-
-   ```bash
-   pi install npm:pi-cache-optimizer
-   ```
-
-3. Export your DeepSeek API key in the same shell where you run `pi` (if you use a DeepSeek model):
-
-   ```bash
-   export DEEPSEEK_API_KEY='...'
-   ```
-
-   This extension never reads, stores, or prints the key value.
-
 ## Install
+
+Install and configure Pi first, then install this extension:
 
 ```bash
 pi install npm:pi-cache-optimizer

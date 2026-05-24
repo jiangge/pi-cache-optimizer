@@ -107,24 +107,9 @@ Generic OpenAI-compatible 代理**不会**仅因为使用 OpenAI 形状 API 或 
 
 状态文件 `~/.pi/agent/` 通过 Node 的 `os.homedir()` 解析，所以在 Windows 上会自动展开为 `C:\Users\<你>\.pi\agent\...`。扩展的 compat 提醒、`/cache-optimizer doctor` 和 `/cache-optimizer compat` 会自动显示适合当前平台的路径（Linux/macOS 上显示 `~/.pi/agent/models.json`，Windows 上显示 `%USERPROFILE%\.pi\agent\models.json`）。本文档中所有 shell 命令均使用 bash 语法，与 Pi 在每个受支持平台下运行的 shell 一致；只要在 Pi 内（或为 Pi 而执行）运行，就**不需要**改写为 PowerShell 或 `cmd.exe` 形式。
 
-## 快速开始
-
-1. （可选但推荐）先读一遍官方 Pi + DeepSeek 接入指南：[`pi_mono.zh-CN.md`](https://github.com/deepseek-ai/awesome-deepseek-agent/blob/main/docs/pi_mono.zh-CN.md)。它讲了 Pi 安装与基础配置。
-2. 安装本扩展：
-
-   ```bash
-   pi install npm:pi-cache-optimizer
-   ```
-
-3. 如果使用 DeepSeek 模型，请在运行 `pi` 的同一个 shell 中导出 DeepSeek API key：
-
-   ```bash
-   export DEEPSEEK_API_KEY='...'
-   ```
-
-   本扩展**不会**读取、存储或打印 key 的值。
-
 ## 安装
+
+请先安装并配置好 Pi，然后安装本扩展：
 
 ```bash
 pi install npm:pi-cache-optimizer
