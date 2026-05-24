@@ -304,11 +304,13 @@ The extension registers a Pi command `/cache-optimizer` for interactive diagnosi
 ```
 /cache-optimizer              — interactive menu (or text help when no UI)
 /cache-optimizer doctor        — show provider, model, API, base URL, compat status
+                                    and low-hit cause diagnosis
+/cache-optimizer stats         — show active model stats bucket and recent trend
 /cache-optimizer compat        — show compat suggestion with edit instructions
 ```
 
 When run without arguments, `/cache-optimizer` shows an interactive selection menu
-(Doctor / Compat / Cancel) when the Pi UI supports it (`ctx.ui.select`). In
+(Doctor / Stats / Compat / Cancel) when the Pi UI supports it (`ctx.ui.select`). In
 non-interactive terminals, it falls back to text help with current model compat
 status.
 
@@ -345,7 +347,52 @@ it shows `✅ Compat fully configured.` if the model is an applicable
 third-party proxy, or `ℹ️ Compat check not applicable for this model.`
 otherwise.
 
-When the model is routed through a known router/channel proxy (OpenRouter,
+### `/cache-optimizer stats`
+
+Displays the active model's stats bucket (`provider/modelId`), today's request
+count (hit/total), cached input tokens vs total input tokens, and the hit rate
+percentage. Also shows recent trend summaries (last 10 and last 30 samples):
+
+```text
+Model key: otokapi/gpt-5.5
+Adapter:   OpenAI cache
+
+── Today ──
+Requests:      3 hit / 10 total · 30%
+Cached tokens: 0.0015M / 0.005M input · 30%
+
+── Recent trend ──
+Recent 10/10: 3/10 hits · 30% tok cached
+Recent 10/10: 3/10 hits · 30% tok cached
+```
+
+If the active model has no adapter match, a friendly message is shown. If
+no samples have been recorded yet in this session, trend shows "no samples".
+
+### Low-hit cause diagnosis
+
+The `/cache-optimizer doctor` output includes a "Cache diagnosis" section
+with prioritized low-hit cause analysis:
+
+1. **Missing compat flags** — flags that enable prompt caching and session-affinity
+   routing are absent.
+2. **Router/channel risk** — multi-backend routing may split the cache across
+   different upstream instances.
+3. **Missing usage fields** — the proxy may not return prompt-level usage
+   fields, causing the footer to under-report hits.
+4. **Recent low trend** — when today's cache hit rate is below 30%,
+   the diagnosis suggests proxy route instability or prompt prefix churn.
+
+For fully configured models that still have low cache hit rates, the diagnosis
+emphasizes sticky routing and upstream cache usage verification rather than
+pointing to compat flags.
+
+### Router/channel diagnostics
+
+For models using OpenAI-compatible APIs (`openai-completions` or
+`openai-responses`) through a non-official base URL, the extension detects
+common router/channel proxy patterns from `provider`, `baseUrl`, and `compat`
+metadata:
 Vercel AI Gateway, LiteLLM, OneAPI/NewAPI/VoAPI, or a generic third-party
 OpenAI-compatible proxy), both `doctor` and `compat` subcommands append
 router/channel diagnostics with targeted recommendations.

@@ -628,7 +628,7 @@ Rules:
 
 ## Diagnostic command (`/cache-optimizer`)
 
-The extension registers a Pi command `/cache-optimizer` with two subcommands.
+The extension registers a Pi command `/cache-optimizer` with three subcommands.
 
 ### `/cache-optimizer doctor`
 
@@ -649,8 +649,38 @@ third-party OpenAI-compatible proxy, the doctor output appends a
 `🔀 Router/channel:` section with diagnostics and routing recommendations. See
 [Router/channel diagnostics](#routerchannel-diagnostics) below for details.
 
-The output MUST NOT include API keys, secrets, prompts, payloads, headers, or model
-output.
+Output also includes a **"Cache diagnosis"** section with prioritized low-hit cause analysis:
+1. **Missing compat flags** — flags that enable prompt caching and session-affinity routing are absent.
+2. **Router/channel risk** — multi-backend routing may split the cache across different upstream instances.
+3. **Missing usage fields** — recent responses lack prompt-level usage fields; footer may under-report hits.
+4. **Recent low trend** — if today's cache hit rate is below 30%, suggests proxy route instability or prompt prefix churn.
+
+For fully configured models that still have low cache hit rates, the diagnosis emphasizes sticky routing
+and upstream cache usage verification rather than compat flags.
+
+The output MUST NOT include API keys, secrets, prompts, payloads, headers, or model output.
+
+### `/cache-optimizer stats`
+
+Shows the active model's stats bucket (`provider/modelId`), today's request counters
+(hit/total), cached input tokens vs total input tokens, hit rate percentage, and
+recent trend summaries (last 10 and last 30 samples):
+
+```text
+Model key: otokapi/gpt-5.5
+Adapter:   OpenAI cache
+
+── Today ──
+Requests:      3 hit / 10 total · 30%
+Cached tokens: 0.0015M / 0.005M input · 30%
+
+── Recent trend ──
+Recent 10/10: 3/10 hits · 30% tok cached
+Recent 10/10: 3/10 hits · 30% tok cached
+```
+
+If the active model has no adapter match, a friendly message is shown. If no
+samples have been recorded yet in this session, trend shows "no samples yet".
 
 ### `/cache-optimizer compat`
 
@@ -669,12 +699,39 @@ only the status line as before.
 ### No arguments
 
 When the Pi UI supports it (`ctx.ui.select` available), shows an interactive
-selection menu with options: Doctor, Compat, Cancel. Selecting Doctor or Compat
-executes the corresponding subcommand logic. Cancel closes the menu.
+selection menu with options: Doctor, Stats, Compat, Cancel. Selecting a subcommand
+executes the corresponding logic. Cancel closes the menu.
 
 In non-interactive terminals (no `ui.select`), falls back to a short text help
 listing available subcommands and a one-line summary of the active model's compat
 status (using the same applicability-respecting text as doctor/compat).
+
+### Recent samples (in-memory, no persistence)
+
+The extension tracks per-model-key `CacheUsageSample` entries in memory for trend analysis.
+
+```ts
+type CacheUsageSample = {
+  timestamp: number;
+  hit: boolean;
+  cachedInputTokens: number;
+  cacheWriteInputTokens: number;
+  totalInputTokens: number;
+  missingUsageFields: boolean;
+};
+```
+
+**Contracts:**
+
+* Maximum `MAX_RECENT_SAMPLES` (50) per model key — older entries are dropped.
+* Samples are **never persisted** to disk — cleared on `/reload` or process restart.
+* Each sample contains only numeric counters and booleans — never message content,
+  prompts, payloads, headers, API keys, or model outputs.
+* The `missingUsageFields` flag is set when the assistant message's usage fields
+  appear to be empty or absent (Pi-normalized `input`/`cacheRead`/`cacheWrite` all
+  absent/zero and adapter `normalizeUsage` returns `undefined` or all-zeros).
+* Trend summaries (10/30) are computed by `formatRecentTrendSummary()` and used
+  in both `/cache-optimizer stats` and `/cache-optimizer doctor` diagnosis.
 
 ### Router/channel diagnostics
 
@@ -741,3 +798,12 @@ compat). It does NOT read or expose:
 | `/cache-optimizer compat` with fully-configured OpenRouter model | Shows `✅ Compat fully configured.` followed by OpenRouter channel notes |
 | Router/channel diagnostics do not affect adapter selection | An OpenRouter Llama model still selects the Llama adapter, not an "OpenRouter" adapter |
 | Diagnostic text must not expose API keys, prompts, payloads, or model output | All router/channel output uses only provider, api, baseUrl, compat metadata |
+| `/cache-optimizer stats` with model matching an adapter | Output includes model key, request counts, token counts, hit rate, recent trend |
+| `/cache-optimizer stats` with unseen model bucket | Shows 0/0, not legacy family aggregates |
+| `/cache-optimizer stats` with unsupported model (no adapter) | Shows friendly message "No cache-adapter-matched model active" |
+| `/cache-optimizer stats` without active model | Shows friendly message |
+| `/cache-optimizer stats` with recent missing usage fields | Output includes warning about missing usage fields |
+| Doctor diagnosis with fully-configured but low-hit model | Shows low-hit causes emphasizing sticky routing, not compat |
+| Doctor diagnosis with missing compat + recent samples | Includes missing compat flags, usage missing, and low trend sections |
+| `/cache-optimizer` (no args) with UI supports select | Shows interactive selection menu (Doctor / Stats / Compat / Cancel) |
+| `/cache-optimizer` (no args) without UI | Text help lists `doctor`, `stats`, `compat` subcommands |

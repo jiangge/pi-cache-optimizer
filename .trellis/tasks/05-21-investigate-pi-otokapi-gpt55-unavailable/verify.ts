@@ -170,6 +170,15 @@ const {
   isEnabledEnv,
   // Prompt mutation helpers
   stripSessionOverviewChurn,
+  // New exports for Goal 1-3
+  MAX_RECENT_SAMPLES,
+  buildStatsOutput,
+  buildLowHitDiagnosis,
+  formatRecentTrendSummary,
+  formatHitRatio,
+  formatTokenM,
+  hasMissingUsageFields,
+  keyForModelExt,
 } = __internals_for_tests;
 
 type Failure = { name: string; detail: string };
@@ -4009,6 +4018,175 @@ Line count: 10 / 1000
       );
     }
   }
+}
+
+// ==========================================================================
+// New Tests: Goal 1 — buildStatsOutput
+// ==========================================================================
+
+{
+  // Active bucket with stats
+  const model = makeModel({ id: "gpt-5.5", provider: "otokapi" });
+  const adapter = { id: "openai", label: "OpenAI cache", matchesModel: () => true } as any;
+  const stats = { day: "2026-05-24", totalRequests: 10, hitRequests: 3, cachedInputTokens: 1500, cacheWriteInputTokens: 200, totalInputTokens: 5000 };
+  const samples: any[] = [];
+  const output = buildStatsOutput(model, adapter, stats, samples);
+  expect("stats.active-bucket-key", output.includes("otokapi/gpt-5.5"), "expected model key in stats output");
+  expect("stats.active-bucket-requests", output.includes("3 hit / 10 total"), "expected hit/total in stats output");
+  expect("stats.active-bucket-tokens", output.includes("30%"), "expected cached ratio in stats output");
+  expect("stats.active-bucket-trend", output.includes("Recent"), "expected trend section in stats output");
+}
+
+{
+  // Unseen bucket (no stats) — show 0/0
+  const model = makeModel({ id: "gpt-5.5", provider: "otokapi" });
+  const adapter = { id: "openai", label: "OpenAI cache", matchesModel: () => true } as any;
+  const output = buildStatsOutput(model, adapter, undefined, []);
+  expect("stats.unseen-bucket", output.includes("0 hit / 0 total"), "expected 0/0 for unseen bucket");
+}
+
+{
+  // Unsupported model — no adapter
+  const model = makeModel({ id: "some-unknown-model", provider: "unknown" });
+  const output = buildStatsOutput(model, undefined, undefined, []);
+  expect("stats.unsupported-model", output.includes("No cache-adapter-matched model"), "expected friendly msg for unsupported model");
+}
+
+{
+  // No active model
+  const output = buildStatsOutput(undefined, undefined, undefined, []);
+  expect("stats.no-model", output.includes("No cache-adapter-matched model"), "expected friendly msg when no model");
+}
+
+// ==========================================================================
+// New Tests: Goal 1 — formatHitRatio and formatTokenM
+// ==========================================================================
+
+{
+  expect("hitRatio.zero-total", formatHitRatio(0, 0) === "N/A", "expected N/A for zero total");
+  expect("hitRatio.no-hits", formatHitRatio(0, 10) === "0%", "expected 0% for no hits");
+  expect("hitRatio.partial", formatHitRatio(3, 10) === "30%", "expected 30% for 3/10");
+  expect("hitRatio.all", formatHitRatio(10, 10) === "100%", "expected 100% for 10/10");
+  expect("formatTokenM.zero", formatTokenM(0) === "0", "expected 0 for zero");
+  expect("formatTokenM.million", formatTokenM(1500000) === "1.50", "expected 1.50 for 1.5M");
+  expect("formatTokenM.big", formatTokenM(34000000) === "34.0", "expected 34.0 for 34M");
+}
+
+// ==========================================================================
+// New Tests: Goal 1 — formatRecentTrendSummary
+// ==========================================================================
+
+{
+  const now = Date.now();
+  // Empty samples
+  expect("trend.empty", formatRecentTrendSummary([], 10) === "Recent 10: no samples yet", "expected no samples for empty");
+
+  // Mixed samples
+  const samples: any[] = [
+    { timestamp: now, hit: true, cachedInputTokens: 100, cacheWriteInputTokens: 0, totalInputTokens: 200, missingUsageFields: false },
+    { timestamp: now + 1, hit: false, cachedInputTokens: 0, cacheWriteInputTokens: 0, totalInputTokens: 200, missingUsageFields: false },
+    { timestamp: now + 2, hit: true, cachedInputTokens: 50, cacheWriteInputTokens: 10, totalInputTokens: 150, missingUsageFields: false },
+  ];
+  const summary = formatRecentTrendSummary(samples, 10);
+  expect("trend.mixed-hits", summary.includes("2/3 hits"), "expected 2/3 hits in summary");
+  expect("trend.mixed-tokens", summary.includes("tok cached"), "expected token cached ratio in summary");
+  expect("trend.mixed-no-missing", !summary.includes("missing usage"), "expected no missing usage indicator");
+
+  // With missing usage fields
+  const samplesWithMissing = [
+    { timestamp: now, hit: false, cachedInputTokens: 0, cacheWriteInputTokens: 0, totalInputTokens: 0, missingUsageFields: true },
+    { timestamp: now + 1, hit: false, cachedInputTokens: 0, cacheWriteInputTokens: 0, totalInputTokens: 0, missingUsageFields: true },
+  ];
+  const summary2 = formatRecentTrendSummary(samplesWithMissing, 10);
+  expect("trend.missing-usage", summary2.includes("2 missing usage"), "expected missing usage count");
+}
+
+// ==========================================================================
+// New Tests: Goal 3 — hasMissingUsageFields
+// ==========================================================================
+
+{
+  // Missing usage fields — Pi-normalized fields absent
+  const msgWithMissing = { role: "assistant", usage: { cost: {} } };
+  const adapter = {
+    id: "openai", label: "OpenAI cache",
+    matchesModel: () => true,
+    matchesAssistantMessage: () => true,
+    normalizeUsage: () => undefined,
+    warningText: () => undefined,
+  } as any;
+  expect("missing.missing-fields", hasMissingUsageFields(msgWithMissing, adapter) === true, "expected true for missing usage");
+
+  // Valid usage fields
+  const msgWithUsage = { role: "assistant", usage: { input: 100, cacheRead: 50, cacheWrite: 10 } };
+  expect("missing.valid-fields", hasMissingUsageFields(msgWithUsage, adapter) === false, "expected false for valid usage");
+}
+
+// ==========================================================================
+// New Tests: Goal 2 — buildLowHitDiagnosis
+// ==========================================================================
+
+{
+  const model = makeModel({ id: "gpt-5.5", provider: "otokapi", api: "openai-completions", baseUrl: "https://otokapi.example.com/v1" });
+  const adapter = { id: "openai", label: "OpenAI cache", matchesModel: () => true } as any;
+  const stats = { day: "2026-05-24", totalRequests: 5, hitRequests: 0, cachedInputTokens: 0, cacheWriteInputTokens: 0, totalInputTokens: 2000 };
+  const now = Date.now();
+  const samples: any[] = [
+    { timestamp: now, hit: false, cachedInputTokens: 0, cacheWriteInputTokens: 0, totalInputTokens: 200, missingUsageFields: false },
+    { timestamp: now + 1, hit: false, cachedInputTokens: 0, cacheWriteInputTokens: 0, totalInputTokens: 200, missingUsageFields: false },
+    { timestamp: now + 2, hit: false, cachedInputTokens: 0, cacheWriteInputTokens: 0, totalInputTokens: 200, missingUsageFields: false },
+    { timestamp: now + 3, hit: false, cachedInputTokens: 0, cacheWriteInputTokens: 0, totalInputTokens: 200, missingUsageFields: true },
+  ];
+  const diagnosis = buildLowHitDiagnosis(model, adapter, stats, samples);
+
+  // Should contain diagnosis header
+  expect("doctor.diagnosis-header", diagnosis.some(l => l.includes("Cache diagnosis")), "expected Cache diagnosis header");
+
+  // Should flag missing compat (since baseUrl is non-official and no compat set)
+  expect("doctor.diagnosis-missing-compat", diagnosis.some(l => l.includes("Missing compat")), "expected missing compat flag");
+
+  // Should flag missing usage fields
+  expect("doctor.diagnosis-usage-missing", diagnosis.some(l => l.includes("missing/empty usage fields")), "expected usage fields missing warning");
+
+  // Should flag low hit rate
+  expect("doctor.diagnosis-low-hit", diagnosis.some(l => l.includes("low")), "expected low hit rate diagnosis");
+}
+
+{
+  // Fully configured model — no compat flags missing, no issues
+  const model = makeModel({
+    id: "gpt-5.5", provider: "otokapi", api: "openai-completions",
+    baseUrl: "https://otokapi.example.com/v1",
+    compat: { sendSessionAffinityHeaders: true, supportsLongCacheRetention: true },
+  });
+  const adapter = { id: "openai", label: "OpenAI cache", matchesModel: () => true } as any;
+  const stats = { day: "2026-05-24", totalRequests: 0, hitRequests: 0, cachedInputTokens: 0, cacheWriteInputTokens: 0, totalInputTokens: 0 };
+  const diagnosis = buildLowHitDiagnosis(model, adapter, stats, []);
+  expect("doctor.diagnosis-no-issues", diagnosis.length === 0, "expected empty diagnosis for fully configured model with no samples");
+}
+
+{
+  // Unsupported model (no adapter) — diagnosis should still report compat issues
+  const model = makeModel({ id: "claude-sonnet-4", provider: "anthropic", api: "anthropic-messages", baseUrl: "https://api.anthropic.com/v1" });
+  const diagnosis = buildLowHitDiagnosis(model, undefined, undefined, []);
+  expect("doctor.diagnosis-anthropic-no-issues", diagnosis.length === 0, "expected empty diagnosis for non-openai-completions");
+}
+
+// ==========================================================================
+// New Tests: MAX_RECENT_SAMPLES constant value
+// ==========================================================================
+
+{
+  expect("MAX_RECENT_SAMPLES", MAX_RECENT_SAMPLES === 50, "expected MAX_RECENT_SAMPLES to be 50");
+}
+
+// ==========================================================================
+// New Tests: keyForModelExt
+// ==========================================================================
+
+{
+  const result = keyForModelExt({ provider: "otokapi", id: "gpt-5.5" });
+  expect("keyForModelExt", result === "otokapi/gpt-5.5", "expected provider/id key");
 }
 
 // ==========================================================================

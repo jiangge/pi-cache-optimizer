@@ -147,6 +147,23 @@ type OptimizedSystemPrompt = {
   changed: boolean;
 };
 
+/**
+ * Per-request sample stored for trend analysis and usage-field-missing detection.
+ * Contains only numeric counters and booleans — never message content, prompts,
+ * payloads, headers, API keys, or model outputs.
+ */
+type CacheUsageSample = {
+  timestamp: number;
+  hit: boolean;
+  cachedInputTokens: number;
+  cacheWriteInputTokens: number;
+  totalInputTokens: number;
+  missingUsageFields: boolean;
+};
+
+/** Maximum number of recent samples kept per model key (in-memory only, not persisted). */
+const MAX_RECENT_SAMPLES = 50;
+
 type CacheProviderAdapter = {
   id: CacheProviderId;
   label: string;
@@ -1138,6 +1155,10 @@ function isAyaLikeAssistantMessage(message: unknown, model: PiModel | undefined)
 // ── Model key ──────────────────────────────────────────────────────
 
 function modelKey(model: PiModel): string {
+  return `${model.provider}/${model.id}`;
+}
+
+function keyForModelExt(model: { provider: string; id: string }): string {
   return `${model.provider}/${model.id}`;
 }
 
@@ -2473,6 +2494,119 @@ function formatCacheStats(adapter: CacheProviderAdapter, stats: CacheStats): str
   return `${adapter.label} ${stats.hitRequests}/${stats.totalRequests} · ${formatTokenCount(stats.cachedInputTokens)}/${formatTokenCount(stats.totalInputTokens)} tok${percent}${writeText}`;
 }
 
+/**
+ * Compute a hit-ratio percentage string for a value between 0 and 1.
+ * Returns e.g. "75%", "0%", "100%", or "N/A" for zero total.
+ */
+function formatHitRatio(hits: number, total: number): string {
+  if (total <= 0) return "N/A";
+  return `${Math.round((hits / total) * 100)}%`;
+}
+
+/**
+ * Format a token-to-M abbreviation for stats output.
+ * Example: 1500000 → "1.50M"
+ */
+function formatTokenM(value: number): string {
+  const millions = Math.max(0, Math.round(value)) / 1_000_000;
+  if (millions === 0) return "0";
+  if (millions < 0.01) return millions.toFixed(4);
+  if (millions >= 10) return millions.toFixed(1);
+  return millions.toFixed(2);
+}
+
+/**
+ * Check if an assistant message's usage fields appear to be missing or empty.
+ * Returns true when Pi-normalized fields (input, cacheRead, cacheWrite) are all
+ * absent/zero AND raw usage fields (prompt_tokens, etc.) are also absent/zero
+ * for the given adapter.
+ */
+function hasMissingUsageFields(message: unknown, adapter: CacheProviderAdapter): boolean {
+  const usage = usageRecordFromAssistant(message);
+  if (!usage) return true;
+
+  // Check Pi-normalized fields
+  const input = getNonNegativeNumber(usage, "input");
+  const cacheRead = getNonNegativeNumber(usage, "cacheRead");
+  const cacheWrite = getNonNegativeNumber(usage, "cacheWrite");
+
+  // If Pi-normalized fields exist with non-zero values, usage is present
+  if (cacheRead !== undefined || cacheWrite !== undefined || (input !== undefined && input > 0)) {
+    return false;
+  }
+
+  // Check raw usage for the adapter's provider family
+  const rawUsage = adapter.normalizeUsage(message);
+  if (!rawUsage || (rawUsage.cacheRead === 0 && rawUsage.cacheWrite === 0 && rawUsage.totalInput === 0)) {
+    return true;
+  }
+
+  return false;
+}
+
+/**
+ * Build a summary string for the recent trend (last N samples).
+ * Example: "Recent 10: 7/10 hits · 65% tok cached · no missing usage"
+ */
+function formatRecentTrendSummary(samples: CacheUsageSample[], maxCount: number): string {
+  const recent = samples.slice(-maxCount);
+  if (recent.length === 0) return `Recent ${maxCount}: no samples yet`;
+
+  const hits = recent.filter((s) => s.hit).length;
+  const totalCached = recent.reduce((sum, s) => sum + s.cachedInputTokens, 0);
+  const totalInput = recent.reduce((sum, s) => sum + s.totalInputTokens, 0);
+  const missingCount = recent.filter((s) => s.missingUsageFields).length;
+
+  const hitRatio = formatHitRatio(hits, recent.length);
+  const tokenRatio = totalInput > 0 ? formatHitRatio(totalCached, totalInput) : "N/A";
+
+  let result = `Recent ${recent.length}/${maxCount}: ${hits}/${recent.length} hits · ${tokenRatio} tok cached`;
+  if (missingCount > 0) {
+    result += ` · ${missingCount} missing usage`;
+  }
+  return result;
+}
+
+/**
+ * Build the output for `/cache-optimizer stats`.
+ */
+function buildStatsOutput(model: PiModel | undefined, adapter: CacheProviderAdapter | undefined, stats: CacheStats | undefined, recentSamples: CacheUsageSample[]): string {
+  const lines: string[] = [];
+
+  if (!model || !adapter) {
+    lines.push("ℹ️ No cache-adapter-matched model active. Select a model with a recognized provider family.");
+    return lines.join("\n");
+  }
+
+  const key = modelKey(model);
+  const currentStats = stats ?? emptyCacheStats();
+
+  lines.push(`Model key: ${key}`);
+  lines.push(`Adapter:   ${adapter.label}`);
+  lines.push("");
+  lines.push("── Today ──");
+  lines.push(`Requests:      ${currentStats.hitRequests} hit / ${currentStats.totalRequests} total · ${formatHitRatio(currentStats.hitRequests, currentStats.totalRequests)}`);
+  lines.push(`Cached tokens: ${formatTokenM(currentStats.cachedInputTokens)}M / ${formatTokenM(currentStats.totalInputTokens)}M input · ${currentStats.totalInputTokens > 0 ? `${Math.round((currentStats.cachedInputTokens / currentStats.totalInputTokens) * 100)}%` : "N/A"}`);
+  if (currentStats.cacheWriteInputTokens > 0) {
+    lines.push(`Cache write:   ${formatTokenM(currentStats.cacheWriteInputTokens)}M tok`);
+  }
+
+  lines.push("");
+  lines.push("── Recent trend ──");
+  lines.push(formatRecentTrendSummary(recentSamples, 10));
+  lines.push(formatRecentTrendSummary(recentSamples, 30));
+
+  // Check if any sample has missingUsageFields flagged
+  const missingAny = recentSamples.some((s) => s.missingUsageFields);
+  if (missingAny) {
+    lines.push("");
+    lines.push("⚠️ Some recent responses had missing or empty cache usage fields. Footer may under-report hits.");
+    lines.push("   The proxy may not return prompt_cache_hit_tokens or usage.input/cacheRead in responses.");
+  }
+
+  return lines.join("\n");
+}
+
 function getErrorCode(error: unknown): string | undefined {
   return typeof error === "object" && error !== null && "code" in error
     ? String((error as { code?: unknown }).code)
@@ -2842,6 +2976,115 @@ function buildDoctorDiagnosis(model: PiModel): string {
   return lines.join("\n");
 }
 
+/**
+ * Build a "Cache diagnosis" section for low-hit causes, appended to doctor output.
+ * This is a separate function because it depends on per-session state (recent samples,
+ * per-model stats) that is not available at the module level.
+ */
+function buildLowHitDiagnosis(
+  model: PiModel,
+  adapter: CacheProviderAdapter | undefined,
+  stats: CacheStats | undefined,
+  samples: CacheUsageSample[],
+): string[] {
+  const lines: string[] = [];
+
+  // 1. Missing compat flags (reuse existing check)
+  const missingCompat = describeMissingOpenAICompatibleProxyCompat(model);
+
+  // 2. Router/channel risk (reuse existing check)
+  const routerNotes = describeRouterChannelDiagnostics(model);
+
+  // 3. Recent samples missing usage fields
+  const missingUsageSamples = samples.filter((s) => s.missingUsageFields).length;
+
+  // 4. Recent trend analysis
+  const recent10 = samples.slice(-10);
+  const recent10Hits = recent10.filter((s) => s.hit).length;
+  const recent10Total = recent10.length;
+  const recent10Cached = recent10.reduce((sum, s) => sum + s.cachedInputTokens, 0);
+  const recent10Input = recent10.reduce((sum, s) => sum + s.totalInputTokens, 0);
+
+  // 5. Today's overall trend from persisted stats
+  const todayStats = stats ?? emptyCacheStats();
+
+  const hasMissingCompat = missingCompat.length > 0;
+  const hasRouterRisk = routerNotes.length > 0;
+  const hasUsageMissing = missingUsageSamples > 0;
+
+  // Determine if there are actual issues worth flagging
+  const hasActualIssues = hasMissingCompat || hasUsageMissing ||
+    // Low hit trend (today total > 3 and hit ratio < 30%)
+    (todayStats.totalRequests > 3 && todayStats.totalInputTokens > 0 &&
+     (todayStats.cachedInputTokens / todayStats.totalInputTokens) < 0.3) ||
+    // Low hit rate in recent samples (recent10Total >= 3 and all misses)
+    (recent10Total >= 3 && recent10Hits === 0);
+
+  // Skip section if no issues
+  if (!hasActualIssues && !(hasRouterRisk && (hasMissingCompat || hasUsageMissing))) {
+    return lines;
+  }
+
+  lines.push("");
+  lines.push("── Cache diagnosis ──");
+
+  // Priority 1: missing compat flags
+  if (hasMissingCompat) {
+    lines.push(`⚠️  Missing compat flags: ${missingCompat.join(", ")}`);
+    lines.push("   These flags enable prompt caching and session-affinity routing.");
+    lines.push("   Run /cache-optimizer compat for edit instructions.");
+  }
+
+  // Priority 2: router/channel risk (only flag when there are other issues)
+  // Router notes are already shown in the main doctor output, so we only
+  // mention them in the diagnosis section when they compound a problem.
+  if (hasRouterRisk && (hasMissingCompat || hasUsageMissing || hasActualIssues)) {
+    lines.push("🔀 Router/channel proxy detected — see routing notes above.");
+  }
+
+  // Priority 3: usage fields missing
+  if (hasUsageMissing) {
+    lines.push(`⚠️  ${missingUsageSamples}/${samples.length} recent responses had missing/empty usage fields.`);
+    lines.push("   Footer may under-report cache hit rate.");
+    lines.push("   Verify the proxy returns prompt-level usage (prompt_tokens, input_tokens_details).");
+  }
+
+  // Priority 4: recent trend low
+  if (recent10Total > 0) {
+    const hitRatio = recent10Input > 0 ? Math.round((recent10Cached / recent10Input) * 100) : 0;
+    const todayHitRatio = todayStats.totalInputTokens > 0
+      ? Math.round((todayStats.cachedInputTokens / todayStats.totalInputTokens) * 100)
+      : 0;
+
+    if (recent10Hits === 0 && todayStats.totalRequests > 3 && todayHitRatio < 30) {
+      lines.push(`📉 Cache hit rate is low: ${todayHitRatio}% today (${recent10Total} recent samples).`);
+      lines.push("   Likely causes: proxy routing to different backends per request,");
+      lines.push("   or prompt prefix changes across turns.");
+      lines.push("   Verify session affinity (sendSessionAffinityHeaders) and long cache retention.");
+    } else if (todayHitRatio < 30 && todayStats.totalRequests > 3) {
+      lines.push(`📉 Cache hit rate is low: ${todayHitRatio}% today (${todayStats.totalRequests} total requests).`);
+      lines.push("   Check compat flags and proxy upstream routing.");
+    }
+
+    // Show brief trend summary if there are enough samples
+    if (recent10Total >= 3) {
+      const trend = formatRecentTrendSummary(samples, 10);
+      lines.push(`📊 ${trend}`);
+    }
+  }
+
+  // For fully configured but low hit models, emphasize sticky routing
+  if (!hasMissingCompat && !hasRouterRisk && todayStats.totalRequests > 3 && todayHitRatio < 30) {
+    lines.push("💡 Compat is configured but cache hit rate remains low.");
+    lines.push("   Possible causes:");
+    lines.push("   • Proxy still routes to multiple backends — check session affinity on the proxy side.");
+    lines.push("   • Prompt prefix varies per turn — check dynamic context in system prompt.");
+    lines.push("   • Provider does not return cache usage fields — footer can't measure hits.");
+  }
+
+  return lines;
+}
+
 function buildCompatDiagnosis(model: PiModel): string | undefined {
   const missing = describeMissingOpenAICompatibleProxyCompat(model);
   const routerNotes = describeRouterChannelDiagnostics(model);
@@ -3042,6 +3285,15 @@ export const __internals_for_tests = {
   emptyAllCacheStats,
   parseCacheStats,
   parsePersistedCacheStats,
+  // Recent sample / stats output / diagnosis helpers
+  MAX_RECENT_SAMPLES,
+  buildStatsOutput,
+  buildLowHitDiagnosis,
+  formatRecentTrendSummary,
+  formatHitRatio,
+  formatTokenM,
+  hasMissingUsageFields,
+  keyForModelExt,
 };
 
 export default function (pi: ExtensionAPI) {
@@ -3053,7 +3305,35 @@ export default function (pi: ExtensionAPI) {
   let persistTimer: ReturnType<typeof setTimeout> | null = null;
   let integrityNotificationShown = false;
   const PERSIST_DEBOUNCE_MS = 2000;
+  /** In-memory recent usage samples per model key (not persisted, cleared on reload). */
+  const recentSamplesByModelKey = new Map<string, CacheUsageSample[]>();
 
+  function recordRecentSample(modelKeyStr: string, usage: UsageSnapshot, missingUsageFields: boolean): void {
+    let samples = recentSamplesByModelKey.get(modelKeyStr);
+    if (!samples) {
+      samples = [];
+      recentSamplesByModelKey.set(modelKeyStr, samples);
+    }
+    samples.push({
+      timestamp: Date.now(),
+      hit: usage.cacheRead > 0,
+      cachedInputTokens: usage.cacheRead,
+      cacheWriteInputTokens: usage.cacheWrite,
+      totalInputTokens: usage.totalInput,
+      missingUsageFields,
+    });
+    if (samples.length > MAX_RECENT_SAMPLES) {
+      samples.splice(0, samples.length - MAX_RECENT_SAMPLES);
+    }
+  }
+
+  function getRecentSamples(modelKeyStr: string): CacheUsageSample[] {
+    return recentSamplesByModelKey.get(modelKeyStr) ?? [];
+  }
+
+  function clearRecentSamples(): void {
+    recentSamplesByModelKey.clear();
+  }
 
   function getCacheStatsState(): CacheStatsState {
     return { statsByModel: cacheStatsByModel, legacyFamily: cacheStatsLegacyFamily };
@@ -3162,6 +3442,7 @@ export default function (pi: ExtensionAPI) {
       // Reset integrity diagnostics on reload
       lastPromptIntegrityWarningAt = 0;
       integrityNotificationShown = false;
+      clearRecentSamples();
       await flushPersistCacheStats(ctx);
       return;
     }
@@ -3345,6 +3626,16 @@ export default function (pi: ExtensionAPI) {
     if (!adapter) return;
 
     const usage = adapter.normalizeUsage(event.message);
+
+    // Record recent sample (even when usage is missing, for trend diagnosis)
+    if (ctx.model) {
+      const key = modelKey(ctx.model);
+      const missingFields = usage === undefined || (usage.cacheRead === 0 && usage.cacheWrite === 0 && usage.totalInput === 0)
+        ? true
+        : hasMissingUsageFields(event.message, adapter);
+      recordRecentSample(key, usage ?? { cacheRead: 0, cacheWrite: 0, totalInput: 0 }, missingFields);
+    }
+
     if (!usage) return;
 
     await rollOverStatsIfNeeded(ctx);
@@ -3366,8 +3657,10 @@ export default function (pi: ExtensionAPI) {
   // Register /cache-optimizer command
   // Subcommands:
   //   doctor  — show current model/provider/api/baseUrl/compat status
+  //             with low-hit diagnosis
+  //   stats   — show active model stats bucket, recent trend, usage
   //   compat  — show compat suggestion with file path
-  //   (no args) — show help summary + current diagnosis
+  //   (no args) — interactive menu (with UI) or help summary
   // ────────────────────────────────────────────────────────────────
   pi.registerCommand("cache-optimizer", {
     description: "Diagnose Pi cache configuration",
@@ -3380,7 +3673,26 @@ export default function (pi: ExtensionAPI) {
           cmdCtx.ui.notify("No active model selected. Select a model first with /model or pi --model.", "warning");
           return;
         }
-        cmdCtx.ui.notify(buildDoctorDiagnosis(model), "info");
+        const diagnosis = buildDoctorDiagnosis(model);
+        const adapter = selectAdapterForModel(model);
+        const statsState = model ? cacheStatsByModel[modelKey(model)] : undefined;
+        const samples = model ? getRecentSamples(modelKey(model)) : [];
+        const lowHitLines = buildLowHitDiagnosis(model, adapter, statsState, samples);
+        const fullDiagnosis = lowHitLines.length > 0
+          ? diagnosis + "\n" + lowHitLines.join("\n")
+          : diagnosis;
+        cmdCtx.ui.notify(fullDiagnosis, "info");
+      } else if (subcommand === "stats") {
+        if (!model) {
+          cmdCtx.ui.notify("No active model selected. Select a model first with /model or pi --model.", "warning");
+          return;
+        }
+        const adapter = selectAdapterForModel(model);
+        const key = model ? modelKey(model) : undefined;
+        const statsState = key ? cacheStatsByModel[key] : undefined;
+        const samples = model ? getRecentSamples(modelKey(model)) : [];
+        const output = buildStatsOutput(model, adapter, statsState, samples);
+        cmdCtx.ui.notify(output, "info");
       } else if (subcommand === "compat") {
         if (!model) {
           cmdCtx.ui.notify("No active model selected. Select a model first with /model or pi --model.", "warning");
@@ -3402,6 +3714,7 @@ export default function (pi: ExtensionAPI) {
         if (cmdCtx.hasUI) {
           const menuOptions = [
             "🩺 Doctor — Show current model cache configuration",
+            "📊 Stats — Show active model stats bucket and trend",
             "⚙️  Compat — Show compat suggestion with edit instructions",
             "❌ Cancel",
           ];
@@ -3410,9 +3723,28 @@ export default function (pi: ExtensionAPI) {
             if (!model) {
               cmdCtx.ui.notify("No active model selected. Select a model first with /model or pi --model.", "warning");
             } else {
-              cmdCtx.ui.notify(buildDoctorDiagnosis(model), "info");
+              const diagnosis = buildDoctorDiagnosis(model);
+              const adapter = selectAdapterForModel(model);
+              const statsState = model ? cacheStatsByModel[modelKey(model)] : undefined;
+              const samples = model ? getRecentSamples(modelKey(model)) : [];
+              const lowHitLines = buildLowHitDiagnosis(model, adapter, statsState, samples);
+              const fullDiagnosis = lowHitLines.length > 0
+                ? diagnosis + "\n" + lowHitLines.join("\n")
+                : diagnosis;
+              cmdCtx.ui.notify(fullDiagnosis, "info");
             }
           } else if (choice === menuOptions[1]) {
+            if (!model) {
+              cmdCtx.ui.notify("No active model selected. Select a model first with /model or pi --model.", "warning");
+            } else {
+              const adapter = selectAdapterForModel(model);
+              const key = model ? modelKey(model) : undefined;
+              const statsState = key ? cacheStatsByModel[key] : undefined;
+              const samples = model ? getRecentSamples(modelKey(model)) : [];
+              const output = buildStatsOutput(model, adapter, statsState, samples);
+              cmdCtx.ui.notify(output, "info");
+            }
+          } else if (choice === menuOptions[2]) {
             if (!model) {
               cmdCtx.ui.notify("No active model selected. Select a model first with /model or pi --model.", "warning");
             } else {
@@ -3436,7 +3768,8 @@ export default function (pi: ExtensionAPI) {
         // Fallback: text help when no interactive UI
         const diagnosis: string[] = [];
         diagnosis.push("📋 /cache-optimizer commands:");
-        diagnosis.push("  doctor  — Show current model/provider/api/baseUrl/compat status");
+        diagnosis.push("  doctor  — Show current model/provider/api/baseUrl/compat and low-hit diagnosis");
+        diagnosis.push("  stats   — Show active model stats bucket and recent trend");
         diagnosis.push("  compat  — Show compat suggestion with edit location");
         diagnosis.push("");
         if (model) {

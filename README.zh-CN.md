@@ -298,14 +298,43 @@ Gemini cache 1/2 · 0.18M/0.50M tok (36%)
 ```
 /cache-optimizer              — 交互菜单（无 UI 时显示文字帮助）
 /cache-optimizer doctor        — 显示 provider、model、API、base URL、compat 状态
+                                   及低命中原因诊断
+/cache-optimizer stats         — 显示当前模型的 stats 桶和近期趋势
 /cache-optimizer compat        — 显示 compat 建议和编辑说明
 ```
 
-不带参数时，当 Pi UI 支持时（`ctx.ui.select` 可用），`/cache-optimizer` 会显示交互选择菜单（Doctor / Compat / Cancel）。在非交互终端中，会回退到文字帮助和当前模型 compat 状态。
+不带参数时，当 Pi UI 支持时（`ctx.ui.select` 可用），`/cache-optimizer` 会显示交互选择菜单（Doctor / Stats / Compat / Cancel）。在非交互终端中，会回退到文字帮助和当前模型 compat 状态。
 
 ### `/cache-optimizer doctor`
 
 显示当前模型的 provider、model id、名称、API 类型、base URL、当前 `compat` 标志以及缺少的缓存/session-affinity 标志。如果缺少标志，还会显示可复制的 JSON 片段和精确编辑位置。
+
+输出中还会包含 "Cache diagnosis"（缓存诊断）章节，按优先级分析低命中原因：
+1. **缺少 compat 标志** — 缺少启用 prompt 缓存和 session-affinity 路由的标志。
+2. **路由/渠道风险** — 多后端路由可能导致缓存分散到不同上游实例。
+3. **缺少 usage 字段** — 代理可能未返回 prompt 层级的使用情况字段，导致 footer 低估命中率。
+4. **近期趋势低** — 当今日缓存命中率低于 30% 时，诊断提示代理路由不稳定或 prompt 前缀变化。
+
+对于已完整配置但命中率仍低的模型，诊断会重点提示粘性路由和上游缓存使用验证，而非 compat 标志。
+
+### `/cache-optimizer stats`
+
+显示当前模型的 stats 桶（`provider/modelId`），今日请求计数（命中/总数）、缓存输入令牌 vs 总输入令牌及命中率百分比。同时显示近期趋势摘要（最近 10 条和最近 30 条样本）：
+
+```text
+Model key: otokapi/gpt-5.5
+Adapter:   OpenAI cache
+
+── Today ──
+Requests:      3 hit / 10 total · 30%
+Cached tokens: 0.0015M / 0.005M input · 30%
+
+── Recent trend ──
+Recent 10/10: 3/10 hits · 30% tok cached
+Recent 10/10: 3/10 hits · 30% tok cached
+```
+
+如果当前模型没有匹配的 adapter，显示友好提示。如果尚未记录样本，趋势显示 "no samples"。
 
 如果所有 compat 标志都已配置且适用（第三方 `openai-completions` 代理），输出显示 `✅ Compat fully configured.`。对于不适用 compat 检查的模型（官方 OpenAI、非 `openai-completions` API、custom transport），显示 `ℹ️ Compat check not applicable for this model.`：
 
