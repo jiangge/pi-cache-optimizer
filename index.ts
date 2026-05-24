@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { mkdir, readFile, rename, unlink, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
@@ -132,6 +133,19 @@ type CacheStatsState = {
 type PersistedCacheStatsV3 = {
   version: 3;
   statsByModel: Record<string, CacheStats>;
+  legacyFamily: Partial<Record<CacheProviderId, CacheStats>>;
+};
+
+/**
+ * V4 format: session-scoped stats buckets.
+ * Each Pi process/session gets its own stats isolated by a hashed session id.
+ *
+ * sessions: sessionHash → modelKey (provider/id) → CacheStats
+ * legacyFamily: unchanged from v3 (migration/fallback when ctx.model is unknown)
+ */
+type PersistedCacheStatsV4 = {
+  version: 4;
+  sessions: Record<string, Record<string, CacheStats>>;
   legacyFamily: Partial<Record<CacheProviderId, CacheStats>>;
 };
 
@@ -560,6 +574,32 @@ function clampPromptCacheKey(key: string | undefined): string | undefined {
 
 function getSessionPromptCacheKey(ctx: ExtensionContext): string | undefined {
   return clampPromptCacheKey(ctx.sessionManager.getSessionId());
+}
+
+/**
+ * Hash a session id for use as a non-reversible opaque scope key.
+ * Returns a 16-character hex string (64 bits of SHA-256 digest prefix)
+ * suitable for scoping stats buckets without exposing the raw session id.
+ */
+function hashSessionId(sessionId: string): string {
+  return createHash("sha256").update(sessionId).digest("hex").slice(0, 16);
+}
+
+/**
+ * Build a session-scoped stats key from a session hash + provider/id.
+ * Pure function (no closure dependency) for use by tests and internals.
+ */
+function makeSessionModelKey(sessionHash: string, provider: string, id: string): string {
+  return `${sessionHash}:${provider}/${id}`;
+}
+
+/**
+ * Extract the user-facing model key from a session-scoped key.
+ * "abc123:otokapi/gpt-5.5" → "otokapi/gpt-5.5"
+ */
+function modelKeyFromSessionKey(sessionModelKey: string): string {
+  const idx = sessionModelKey.indexOf(":");
+  return idx >= 0 ? sessionModelKey.slice(idx + 1) : sessionModelKey;
 }
 
 function asRecord(value: unknown): UnknownRecord | undefined {
@@ -2651,7 +2691,39 @@ function parsePersistedCacheStats(value: unknown): CacheStatsState | undefined {
   const record = asRecord(value);
   if (!record) return undefined;
 
-  // version 3: model-scoped stats + legacy family fallback
+  // version 4: session-scoped stats + legacy family fallback
+  if (record.version === 4) {
+    const legacyFamily: Partial<Record<CacheProviderId, CacheStats>> = {};
+    const rawFamily = asRecord(record.legacyFamily);
+    if (rawFamily) {
+      for (const id of CACHE_PROVIDER_IDS) {
+        const stats = parseCacheStats(rawFamily[id]);
+        if (stats) legacyFamily[id] = stats;
+      }
+    }
+
+    // Collect all session entries into statsByModel with session-hash-prefixed keys
+    // (e.g. "abc123:otokapi/gpt-5.5") so that writePersistedCacheStats can later
+    // reconstruct individual sessions from the flat key format and other sessions'
+    // data is not silently lost on round-trip.
+    const statsByModel: Record<string, CacheStats> = {};
+    const rawSessions = asRecord(record.sessions);
+    if (rawSessions) {
+      for (const [sessionHash, modelMap] of Object.entries(rawSessions)) {
+        const parsedMap = asRecord(modelMap);
+        if (parsedMap) {
+          for (const [modelKey, val] of Object.entries(parsedMap)) {
+            const parsed = parseCacheStats(val);
+            if (parsed) statsByModel[`${sessionHash}:${modelKey}`] = parsed;
+          }
+        }
+      }
+    }
+
+    return { statsByModel, legacyFamily };
+  }
+
+  // version 3: migrate to v4 semantics by wrapping statsByModel into sessions
   if (record.version === 3) {
     const statsByModel: Record<string, CacheStats> = {};
     const rawModelMap = asRecord(record.statsByModel);
@@ -2736,11 +2808,122 @@ async function readPersistedCacheStats(): Promise<CacheStatsState | undefined> {
   return undefined;
 }
 
-async function writePersistedCacheStats(state: CacheStatsState): Promise<void> {
+/**
+ * The closure-internal writer. Since the closure has access to currentSessionHash,
+ * it passes the hash and statsByModel here. This function wraps them in the v4
+ * sessions format, combining with any previously-persisted sessions for safety.
+ *
+ * When called from the closure, `state.statsByModel` contains only the current
+ * session's entries (keyed by `${sessionHash}:${provider}/${id}`). We extract
+ * the model-key-only entries and store them under the session hash.
+ */
+/**
+ * Merge in-memory stats state into an existing sessions map for persistence.
+ *
+ * When `currentSessionHash` is provided (explicit hash mode):
+ *   - Current-session entries are extracted from `state.statsByModel` (keys
+ *     prefixed with `currentSessionHash:`) and written under the session hash.
+ *   - The transitional legacy `_nosession` bucket is DELETED — its entries
+ *     were already consumed and migrated into memory by `restoreCacheStats`.
+ *     Keeping `_nosession` on disk would allow resurrection of reset stats
+ *     on the next reload (the reset-undo bug).
+ *   - Other real session hashes are preserved intact.
+ *
+ * When `currentSessionHash` is undefined (no-hash mode):
+ *   - Keys with a hash prefix (`hash:provider/model`) are grouped under their
+ *     respective session hashes.
+ *   - Keys without a hash prefix (legacy v3) are grouped under `_nosession` so
+ *     `restoreCacheStats` can migrate them on the next load before the session
+ *     id is known.
+ *
+ * Pure function (no I/O) — suitable for unit tests without touching the real
+ * state file at `~/.pi/agent/pi-cache-optimizer-stats.json`.
+ */
+function mergeCacheSessions(
+  existingSessions: Record<string, Record<string, CacheStats>>,
+  state: CacheStatsState,
+  currentSessionHash?: string,
+): Record<string, Record<string, CacheStats>> {
+  // Deep-copy to avoid mutating the caller's object.
+  const sessions: Record<string, Record<string, CacheStats>> = {};
+  for (const [hash, models] of Object.entries(existingSessions)) {
+    sessions[hash] = { ...models };
+  }
+
+  if (currentSessionHash !== undefined) {
+    // Explicit hash mode: extract this session's data from state.statsByModel.
+    // When the session has no entries (e.g. after reset of sole bucket), this
+    // still sets an empty map, ensuring the deleted bucket does not return.
+    const prefix = `${currentSessionHash}:`;
+    const currentModelStats: Record<string, CacheStats> = {};
+    for (const [fullKey, stats] of Object.entries(state.statsByModel)) {
+      if (fullKey.startsWith(prefix)) {
+        currentModelStats[fullKey.slice(prefix.length)] = stats;
+      }
+    }
+    sessions[currentSessionHash] = currentModelStats;
+
+    // _nosession is a transitional legacy migration bucket — once we write
+    // under an authoritative session hash, those entries have already been
+    // consumed and migrated into memory by restoreCacheStats. Delete to
+    // prevent resurrection of reset stats on the next reload.
+    delete sessions["_nosession"];
+  } else {
+    // No-hash mode: group entries by their existing hash prefix to avoid
+    // collapsing multiple sessions into one bucket. Keys without a hash
+    // prefix (legacy v3) go under "_nosession" so restoreCacheStats can
+    // migrate them to the current session on next load.
+    const nosessionMap: Record<string, CacheStats> = {};
+    for (const [fullKey, stats] of Object.entries(state.statsByModel)) {
+      const idx = fullKey.indexOf(":");
+      if (idx >= 0) {
+        const hash = fullKey.slice(0, idx);
+        const modelKey = fullKey.slice(idx + 1);
+        if (!sessions[hash]) sessions[hash] = {};
+        sessions[hash][modelKey] = stats;
+      } else {
+        // Key without hash prefix (legacy v3) — group under _nosession.
+        nosessionMap[fullKey] = stats;
+      }
+    }
+    if (Object.keys(nosessionMap).length > 0) {
+      sessions["_nosession"] = nosessionMap;
+    }
+  }
+
+  return sessions;
+}
+
+async function writePersistedCacheStats(state: CacheStatsState, currentSessionHash?: string): Promise<void> {
   await mkdir(STATE_DIR, { recursive: true });
-  const payload: PersistedCacheStatsV3 = {
-    version: 3,
-    statsByModel: state.statsByModel,
+
+  // Read existing file to preserve other sessions' data.
+  let existingSessions: Record<string, Record<string, CacheStats>> = {};
+  try {
+    const raw = await readFile(STATE_FILE_PATH, "utf8");
+    const parsed = parsePersistedCacheStats(JSON.parse(raw));
+    if (parsed) {
+      // Reconstruct sessions from statsByModel keys.
+      // Each key has form `${hash}:${provider}/${id}`; group by hash.
+      for (const [fullKey, stats] of Object.entries(parsed.statsByModel)) {
+        const idx = fullKey.indexOf(":");
+        if (idx >= 0) {
+          const hash = fullKey.slice(0, idx);
+          const modelKey = fullKey.slice(idx + 1);
+          if (!existingSessions[hash]) existingSessions[hash] = {};
+          existingSessions[hash][modelKey] = stats;
+        }
+      }
+    }
+  } catch {
+    // Ignore read errors (file may not exist yet).
+  }
+
+  const sessions = mergeCacheSessions(existingSessions, state, currentSessionHash);
+
+  const payload: PersistedCacheStatsV4 = {
+    version: 4,
+    sessions,
     legacyFamily: state.legacyFamily,
   };
   const tempPath = `${STATE_FILE_PATH}.${process.pid}.${Date.now()}.tmp`;
@@ -3294,6 +3477,17 @@ export const __internals_for_tests = {
   formatTokenM,
   hasMissingUsageFields,
   keyForModelExt,
+  // Session-scoped helpers
+  hashSessionId,
+  makeSessionModelKey,
+  modelKeyFromSessionKey,
+  // Persistence helpers (for reload/reset tests)
+  mergeCacheSessions,
+  writePersistedCacheStats,
+  readPersistedCacheStats,
+  STATE_FILE_PATH,
+  LEGACY_STATE_FILE_PATH,
+  STATE_DIR,
 };
 
 export default function (pi: ExtensionAPI) {
@@ -3304,9 +3498,30 @@ export default function (pi: ExtensionAPI) {
   let persistenceWarningShown = false;
   let persistTimer: ReturnType<typeof setTimeout> | null = null;
   let integrityNotificationShown = false;
+  let currentSessionId = "";
+  let currentSessionHash = "";
+  let currentSessionHashSet = false;
   const PERSIST_DEBOUNCE_MS = 2000;
   /** In-memory recent usage samples per model key (not persisted, cleared on reload). */
   const recentSamplesByModelKey = new Map<string, CacheUsageSample[]>();
+
+  /**
+   * Build a session-scoped stats key from the current session hash + model key.
+   * Returns `${sessionHash}:${provider}/${id}`.
+   */
+  function sessionModelKey(model: { provider: string; id: string }): string {
+    const hash = currentSessionHash || "_nosession";
+    return `${hash}:${model.provider}/${model.id}`;
+  }
+
+  /**
+   * Extract the user-facing model key from a session-scoped key.
+   * "abc123:otokapi/gpt-5.5" → "otokapi/gpt-5.5"
+   */
+  function modelKeyFromSessionScoped(sKey: string): string {
+    const idx = sKey.indexOf(":");
+    return idx >= 0 ? sKey.slice(idx + 1) : sKey;
+  }
 
   function recordRecentSample(modelKeyStr: string, usage: UsageSnapshot, missingUsageFields: boolean): void {
     let samples = recentSamplesByModelKey.get(modelKeyStr);
@@ -3342,7 +3557,7 @@ export default function (pi: ExtensionAPI) {
   /** Look up active stats for a model, falling back to legacy family. */
   function getStatsForModel(model: PiModel | undefined, adapter: CacheProviderAdapter): CacheStats {
     if (model) {
-      const key = modelKey(model);
+      const key = sessionModelKey(model);
       const existing = cacheStatsByModel[key];
       if (existing) return existing;
     }
@@ -3369,7 +3584,7 @@ export default function (pi: ExtensionAPI) {
 
   async function persistCacheStats(ctx?: ExtensionContext): Promise<void> {
     try {
-      await writePersistedCacheStats(getCacheStatsState());
+      await writePersistedCacheStats(getCacheStatsState(), currentSessionHashSet ? currentSessionHash : undefined);
     } catch (error) {
       console.warn(`${LOG_PREFIX}: failed to persist cache stats`, error);
       if (!persistenceWarningShown) {
@@ -3435,20 +3650,80 @@ export default function (pi: ExtensionAPI) {
   }
 
   async function restoreCacheStats(reason: string, ctx: ExtensionContext): Promise<void> {
+    // Set session id on first load and on reload (same session).
+    const sid = ctx.sessionManager.getSessionId();
+    if (sid && (sid !== currentSessionId || !currentSessionHashSet)) {
+      currentSessionId = sid;
+      currentSessionHash = hashSessionId(sid);
+      currentSessionHashSet = true;
+    }
+
     if (reason === "reload") {
-      cacheStatsByModel = {};
-      cacheStatsLegacyFamily = emptyAllCacheStats();
+      // /reload: preserve session-scoped stats (same session hash).
+      // Pi extension reload creates a fresh closure, so cacheStatsByModel
+      // starts empty. Read persisted data and filter for current session.
       lastStatusText = undefined;
-      // Reset integrity diagnostics on reload
       lastPromptIntegrityWarningAt = 0;
       integrityNotificationShown = false;
       clearRecentSamples();
-      await flushPersistCacheStats(ctx);
+
+      const persisted = await readPersistedCacheStats();
+      if (persisted && currentSessionHash) {
+        const prefix = `${currentSessionHash}:`;
+        const filteredModelStats: Record<string, CacheStats> = {};
+        for (const [fullKey, stats] of Object.entries(persisted.statsByModel)) {
+          if (fullKey.startsWith(prefix)) {
+            // Current session's data
+            filteredModelStats[fullKey] = stats;
+          } else if (!fullKey.includes(":")) {
+            // Legacy v3-style key without session hash — migrate to current session
+            filteredModelStats[`${currentSessionHash}:${fullKey}`] = stats;
+          } else if (fullKey.startsWith("_nosession:")) {
+            // _nosession migration remnant from old-path v4 write — migrate to current session
+            filteredModelStats[`${currentSessionHash}:${fullKey.slice("_nosession:".length)}`] = stats;
+          }
+        }
+        cacheStatsByModel = filteredModelStats;
+        cacheStatsLegacyFamily = persisted.legacyFamily;
+      } else if (persisted) {
+        cacheStatsByModel = persisted.statsByModel;
+        cacheStatsLegacyFamily = persisted.legacyFamily;
+      } else {
+        cacheStatsByModel = {};
+        cacheStatsLegacyFamily = emptyAllCacheStats();
+      }
+
+      await rollOverStatsIfNeeded(ctx);
       return;
     }
 
+    // First load / process start: read persisted stats and filter for
+    // this session's entries. If the session has no persisted data yet,
+    // start fresh.
     const persisted = await readPersistedCacheStats();
-    if (persisted) {
+    if (persisted && currentSessionHash) {
+      const prefix = `${currentSessionHash}:`;
+      const filteredModelStats: Record<string, CacheStats> = {};
+      for (const [fullKey, stats] of Object.entries(persisted.statsByModel)) {
+        if (fullKey.startsWith(prefix)) {
+          // Current session's data — load it.
+          filteredModelStats[fullKey] = stats;
+        } else if (!fullKey.includes(":")) {
+          // Legacy v3-style key without session hash (e.g. "otokapi/gpt-5.5").
+          // Migrate to current session by prefixing with the session hash.
+          filteredModelStats[`${currentSessionHash}:${fullKey}`] = stats;
+        } else if (fullKey.startsWith("_nosession:")) {
+          // _nosession migration remnant from old-path v4 write — migrate to current session
+          filteredModelStats[`${currentSessionHash}:${fullKey.slice("_nosession:".length)}`] = stats;
+        }
+        // Other sessions' entries are preserved in the file but not loaded
+        // into memory; they'll be rewritten on next persist.
+      }
+      cacheStatsByModel = filteredModelStats;
+      cacheStatsLegacyFamily = persisted.legacyFamily;
+    } else if (persisted) {
+      // Persisted data exists but no session hash set yet.
+      // This shouldn't normally happen — use the data as-is.
       cacheStatsByModel = persisted.statsByModel;
       cacheStatsLegacyFamily = persisted.legacyFamily;
     } else {
@@ -3465,13 +3740,11 @@ export default function (pi: ExtensionAPI) {
     const adapter = selectAdapterForModel(model);
     let statusText: string | undefined;
     if (adapter) {
-      // Display only per-model scoped stats. A model that has never been
-      // used in this session shows 0/0 rather than falling back to legacy
-      // family aggregated stats (which could span different providers with
-      // the same model-family name). The message_end hook populates
-      // cacheStatsByModel[key] on first use with that model.
-      const key = model ? modelKey(model) : undefined;
-      const stats = key ? cacheStatsByModel[key] : undefined;
+      // Display session-scoped stats. A model that has never been used
+      // in this session shows 0/0. The message_end hook populates
+      // cacheStatsByModel[sessionModelKey(model)] on first use.
+      const sk = model ? sessionModelKey(model) : undefined;
+      const stats = sk ? cacheStatsByModel[sk] : undefined;
       statusText = formatCacheStats(adapter, stats ?? emptyCacheStats());
     }
 
@@ -3629,22 +3902,22 @@ export default function (pi: ExtensionAPI) {
 
     // Record recent sample (even when usage is missing, for trend diagnosis)
     if (ctx.model) {
-      const key = modelKey(ctx.model);
+      const sk = sessionModelKey(ctx.model);
       const missingFields = usage === undefined || (usage.cacheRead === 0 && usage.cacheWrite === 0 && usage.totalInput === 0)
         ? true
         : hasMissingUsageFields(event.message, adapter);
-      recordRecentSample(key, usage ?? { cacheRead: 0, cacheWrite: 0, totalInput: 0 }, missingFields);
+      recordRecentSample(sk, usage ?? { cacheRead: 0, cacheWrite: 0, totalInput: 0 }, missingFields);
     }
 
     if (!usage) return;
 
     await rollOverStatsIfNeeded(ctx);
 
-    // Update stats scoped to the active model (provider/id key).
+    // Update stats scoped to current session + active model.
     // Falls back to legacy family when ctx.model is undefined.
     if (ctx.model) {
-      const key = modelKey(ctx.model);
-      addUsageToCacheStats(getOrCreateStatsByModelKey(key), usage);
+      const sk = sessionModelKey(ctx.model);
+      addUsageToCacheStats(getOrCreateStatsByModelKey(sk), usage);
     } else {
       addUsageToCacheStats(getStatsForModel(undefined, adapter), usage);
     }
@@ -3660,6 +3933,7 @@ export default function (pi: ExtensionAPI) {
   //             with low-hit diagnosis
   //   stats   — show active model stats bucket, recent trend, usage
   //   compat  — show compat suggestion with file path
+  //   reset   — reset current session model stats bucket (local only)
   //   (no args) — interactive menu (with UI) or help summary
   // ────────────────────────────────────────────────────────────────
   pi.registerCommand("cache-optimizer", {
@@ -3675,8 +3949,9 @@ export default function (pi: ExtensionAPI) {
         }
         const diagnosis = buildDoctorDiagnosis(model);
         const adapter = selectAdapterForModel(model);
-        const statsState = model ? cacheStatsByModel[modelKey(model)] : undefined;
-        const samples = model ? getRecentSamples(modelKey(model)) : [];
+        const sk = model ? sessionModelKey(model) : undefined;
+        const statsState = sk ? cacheStatsByModel[sk] : undefined;
+        const samples = sk ? getRecentSamples(sk) : [];
         const lowHitLines = buildLowHitDiagnosis(model, adapter, statsState, samples);
         const fullDiagnosis = lowHitLines.length > 0
           ? diagnosis + "\n" + lowHitLines.join("\n")
@@ -3688,9 +3963,9 @@ export default function (pi: ExtensionAPI) {
           return;
         }
         const adapter = selectAdapterForModel(model);
-        const key = model ? modelKey(model) : undefined;
-        const statsState = key ? cacheStatsByModel[key] : undefined;
-        const samples = model ? getRecentSamples(modelKey(model)) : [];
+        const sk = model ? sessionModelKey(model) : undefined;
+        const statsState = sk ? cacheStatsByModel[sk] : undefined;
+        const samples = sk ? getRecentSamples(sk) : [];
         const output = buildStatsOutput(model, adapter, statsState, samples);
         cmdCtx.ui.notify(output, "info");
       } else if (subcommand === "compat") {
@@ -3709,6 +3984,38 @@ export default function (pi: ExtensionAPI) {
             "info",
           );
         }
+      } else if (subcommand === "reset") {
+        if (!model) {
+          cmdCtx.ui.notify("No active model selected. Select a model first with /model or pi --model.", "warning");
+          return;
+        }
+        const adapter = selectAdapterForModel(model);
+        if (!adapter) {
+          cmdCtx.ui.notify("ℹ️ Active model does not match a cache adapter. No stats to reset.", "info");
+          return;
+        }
+
+        const sk = sessionModelKey(model);
+        const displayKey = modelKey(model);
+
+        // Reset session-scoped stats for the active model.
+        delete cacheStatsByModel[sk];
+
+        // Clear recent samples for this session+model key.
+        recentSamplesByModelKey.delete(sk);
+
+        // Persist immediately.
+        await flushPersistCacheStats(cmdCtx as unknown as ExtensionContext);
+
+        // Update footer to show 0/0.
+        await publishStatus(cmdCtx as unknown as ExtensionContext, model);
+
+        cmdCtx.ui.notify(
+          `✅ Reset local session cache stats for "${displayKey}". ` +
+          "Upstream provider prompt cache was not modified. " +
+          "New requests will start a fresh stats bucket for this Pi session.",
+          "info",
+        );
       } else {
         // Try interactive selection menu when UI supports it
         if (cmdCtx.hasUI) {
@@ -3716,6 +4023,7 @@ export default function (pi: ExtensionAPI) {
             "🩺 Doctor — Show current model cache configuration",
             "📊 Stats — Show active model stats bucket and trend",
             "⚙️  Compat — Show compat suggestion with edit instructions",
+            "🔄 Reset — Reset local session stats for current model",
             "❌ Cancel",
           ];
           const choice = await cmdCtx.ui.select("Cache Optimizer", menuOptions);
@@ -3725,8 +4033,9 @@ export default function (pi: ExtensionAPI) {
             } else {
               const diagnosis = buildDoctorDiagnosis(model);
               const adapter = selectAdapterForModel(model);
-              const statsState = model ? cacheStatsByModel[modelKey(model)] : undefined;
-              const samples = model ? getRecentSamples(modelKey(model)) : [];
+              const sk = model ? sessionModelKey(model) : undefined;
+              const statsState = sk ? cacheStatsByModel[sk] : undefined;
+              const samples = sk ? getRecentSamples(sk) : [];
               const lowHitLines = buildLowHitDiagnosis(model, adapter, statsState, samples);
               const fullDiagnosis = lowHitLines.length > 0
                 ? diagnosis + "\n" + lowHitLines.join("\n")
@@ -3738,9 +4047,9 @@ export default function (pi: ExtensionAPI) {
               cmdCtx.ui.notify("No active model selected. Select a model first with /model or pi --model.", "warning");
             } else {
               const adapter = selectAdapterForModel(model);
-              const key = model ? modelKey(model) : undefined;
-              const statsState = key ? cacheStatsByModel[key] : undefined;
-              const samples = model ? getRecentSamples(modelKey(model)) : [];
+              const sk = model ? sessionModelKey(model) : undefined;
+              const statsState = sk ? cacheStatsByModel[sk] : undefined;
+              const samples = sk ? getRecentSamples(sk) : [];
               const output = buildStatsOutput(model, adapter, statsState, samples);
               cmdCtx.ui.notify(output, "info");
             }
@@ -3760,6 +4069,27 @@ export default function (pi: ExtensionAPI) {
                 );
               }
             }
+          } else if (choice === menuOptions[3]) {
+            if (!model) {
+              cmdCtx.ui.notify("No active model selected. Select a model first with /model or pi --model.", "warning");
+            } else {
+              const adapter = selectAdapterForModel(model);
+              if (!adapter) {
+                cmdCtx.ui.notify("ℹ️ Active model does not match a cache adapter. No stats to reset.", "info");
+              } else {
+                const sk = sessionModelKey(model);
+                const displayKey = modelKey(model);
+                delete cacheStatsByModel[sk];
+                recentSamplesByModelKey.delete(sk);
+                await flushPersistCacheStats(cmdCtx as unknown as ExtensionContext);
+                await publishStatus(cmdCtx as unknown as ExtensionContext, model);
+                cmdCtx.ui.notify(
+                  `✅ Reset local session cache stats for "${displayKey}". ` +
+                  "Upstream provider prompt cache was not modified.",
+                  "info",
+                );
+              }
+            }
           }
           // choice === "cancel" or undefined → no action
           return;
@@ -3771,16 +4101,18 @@ export default function (pi: ExtensionAPI) {
         diagnosis.push("  doctor  — Show current model/provider/api/baseUrl/compat and low-hit diagnosis");
         diagnosis.push("  stats   — Show active model stats bucket and recent trend");
         diagnosis.push("  compat  — Show compat suggestion with edit location");
+        diagnosis.push("  reset   — Reset local session stats for current model (does not affect upstream)");
         diagnosis.push("");
         if (model) {
+          const displayKey = modelKey(model);
           const missing = describeMissingOpenAICompatibleProxyCompat(model);
           if (missing.length > 0) {
-            diagnosis.push(`⚠️  Active model "${modelKey(model)}" missing compat: ${missing.join(", ")}`);
+            diagnosis.push(`⚠️  Active model "${displayKey}" missing compat: ${missing.join(", ")}`);
             diagnosis.push('Run "/cache-optimizer compat" for edit instructions.');
           } else if (isCompatCheckApplicable(model)) {
-            diagnosis.push(`✅ Active model "${modelKey(model)}": compat fully configured.`);
+            diagnosis.push(`✅ Active model "${displayKey}": compat fully configured.`);
           } else {
-            diagnosis.push(`ℹ️ Active model "${modelKey(model)}": compat check not applicable.`);
+            diagnosis.push(`ℹ️ Active model "${displayKey}": compat check not applicable.`);
           }
         } else {
           diagnosis.push("No active model selected.");

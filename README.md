@@ -254,11 +254,30 @@ Stats rules:
 - Stats are persisted in a small local JSON state file at `~/.pi/agent/pi-cache-optimizer-stats.json`. Earlier 1.x releases used `~/.pi/agent/deepseek-cache-optimizer-stats.json`; on first run after upgrade the old file is read once, copied into the new path, and best-effort deleted. The file stores only counters and the local day; it does not store API keys, prompts, messages, headers, or model output.
 - Existing v1 state files from DeepSeek-only releases are migrated into the DeepSeek adapter counters automatically.
 
-Reset behavior:
+Session scope:
 
-- Pi restarts do **not** clear stats; the persisted counters are restored.
-- `/reload` / extension reload resets the persisted counters because Pi exposes `session_start` with reason `reload`.
-- Crossing the local natural-day boundary resets counters on the next status update or supported-provider response.
+- Stats are now scoped per Pi session + provider/model, not global.
+- Each Pi process (session) starts with fresh counters. Different sessions using the
+  same provider/model do not share footer statistics or reset effects.
+- Within the same Pi session, stats accumulate normally for each provider/model.
+- Pi restarts start fresh stats for the new session.
+- `/reload` does **not** clear accumulated session-scoped stats; it only clears transient
+  in-memory data (recent samples, integrity notification state).
+- Crossing the local natural-day boundary resets counters on the next status update or
+  supported-provider response.
+- Persisted stats are stored under an opaque session hash key (SHA-256 hash of session id)
+  so that different sessions' data is isolated on disk. Raw session ids are never logged,
+  displayed, or written to the stats file.
+
+> **Concurrent-write caveat**: Stats are persisted atomically (write-temp then rename),
+> but multiple Pi processes reading and writing simultaneously can still experience
+> a lost-update window (the classic read-modify-write race). The implementation
+> preserves sequential operation semantics (each write replaces only the current
+> session's data and re-appends other sessions from the previous read), but does
+> **not** guarantee concurrent-safety across processes. If you run multiple Pi
+> instances using the same `models.json` with different provider/model IDs, their
+> stats files may occasionally overwrite each other's session data. This affects
+> only the on-disk persistence; in-memory counters per process remain correct.
 
 ## Suggested compat config
 
@@ -307,12 +326,34 @@ The extension registers a Pi command `/cache-optimizer` for interactive diagnosi
                                     and low-hit cause diagnosis
 /cache-optimizer stats         — show active model stats bucket and recent trend
 /cache-optimizer compat        — show compat suggestion with edit instructions
+/cache-optimizer reset         — reset local session stats for the current model
+                                  (does not affect upstream provider prompt cache)
 ```
 
 When run without arguments, `/cache-optimizer` shows an interactive selection menu
-(Doctor / Stats / Compat / Cancel) when the Pi UI supports it (`ctx.ui.select`). In
-non-interactive terminals, it falls back to text help with current model compat
+(Doctor / Stats / Compat / Reset / Cancel) when the Pi UI supports it (`ctx.ui.select`).
+In non-interactive terminals, it falls back to text help with current model compat
 status.
+
+### `/cache-optimizer reset`
+
+Resets only the current Pi session's stats bucket for the active provider/model.
+Clears today's request counters (hit/total), cached token counts, and recent trend
+samples for that model. Other provider/model buckets within the same session are
+unaffected, and other sessions' data is preserved.
+
+```text
+Provider: otokapi
+Model: gpt-5.5
+
+✅ Reset local session cache stats for "otokapi/gpt-5.5".
+   Upstream provider prompt cache was not modified.
+   New requests will start a fresh stats bucket for this Pi session.
+```
+
+If no active model is selected, a warning is shown. If the active model does not
+match a cache adapter (footer stats are not shown for it), a friendly no-op message
+is displayed instead.
 
 ### `/cache-optimizer doctor`
 

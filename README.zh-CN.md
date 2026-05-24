@@ -249,11 +249,48 @@ Gemini cache 1/2 · 0.18M/0.50M tok (36%)
 - 统计会持久化到本地小 JSON 文件：`~/.pi/agent/pi-cache-optimizer-stats.json`。早期 1.x 版本使用 `~/.pi/agent/deepseek-cache-optimizer-stats.json`；首次运行新版时会从旧路径读一次、复制到新路径、然后 best-effort 删除旧文件。该文件只保存计数器和本地日期，不保存 API key、prompt、消息内容、headers 或模型输出。
 - DeepSeek-only 旧版本的 v1 状态文件会自动迁移到 DeepSeek adapter 计数器。
 
-重置规则：
+## 统计桶隔离（Session-scoped）
 
-- Pi 重启**不会**清零统计；扩展会恢复已持久化的计数器。
-- `/reload` / extension reload 会清零并覆盖持久化计数器，因为 Pi 会暴露 `session_start` 的 `reason: "reload"`。
-- 长时间运行跨过本地自然日时，会在下一次状态更新或受支持 provider 响应统计前自动按本地日期清零。
+- 统计现在按 Pi session + provider/model 隔离，不再全局聚合。
+- 每个 Pi 进程（session）从零开始计数。不同 session 对同一 provider/model 的统计不共享。
+- 同一 Pi session 中，同一 provider/model 的统计正常累积。
+- Pi 进程重新启动时，新的 session 从头开始统计。
+- `/reload` **不会**清空累计的 session-scoped 统计；只清除临时内存状态（recent samples、integrity notification）。
+- 跨过本地自然日时，下一次状态更新或受支持 provider 响应时会自动按本地日期清零。
+- 持久化统计文件使用不透明的 session hash key（SHA-256 哈希后的 session id）来隔离不同 session 的数据。原始 session id 不会写入文件。
+
+> **并发写入说明**：统计以原子方式持久化（写 temp 文件再 rename），但多个 Pi 进程同时读写仍然存在 lost-update 窗口（经典的 read-modify-write 竞态）。实现中尽可能保留顺序语义（每次写入只替换当前 session 的数据，其他 session 的数据从前次读取追加），但**不保证**跨进程并发安全。如果同时运行多个 Pi 实例使用不同 provider/model，统计文件偶尔可能覆盖彼此 session 的数据。这只影响磁盘持久化；每个进程的内存统计始终正确。
+
+## 诊断命令
+
+扩展注册了 Pi 命令 `/cache-optimizer` 用于交互式诊断。
+
+```
+/cache-optimizer              — 交互菜单（无 UI 时显示文字帮助）
+/cache-optimizer doctor        — 显示 provider、model、API、base URL、compat 状态
+                                   及低命中原因诊断
+/cache-optimizer stats         — 显示当前模型的 stats 桶和近期趋势
+/cache-optimizer compat        — 显示 compat 建议和编辑说明
+/cache-optimizer reset         — 重置当前 Pi session 中当前模型的本地统计
+                                  （不影响上游 provider prompt cache）
+```
+
+不带参数时，当 Pi UI 支持时（`ctx.ui.select` 可用），`/cache-optimizer` 会显示交互选择菜单（Doctor / Stats / Compat / Reset / Cancel）。在非交互终端中，会回退到文字帮助和当前模型 compat 状态。
+
+### `/cache-optimizer reset`
+
+仅重置当前 Pi session 中活跃 provider/model 的统计桶。清除今日请求计数（命中/总数）、缓存 token 计数和近期趋势样本。同一 session 中其他 provider/model 的桶不受影响，其他 session 的数据也不受影响。
+
+```text
+Provider: otokapi
+Model: gpt-5.5
+
+✅ 已重置 "otokapi/gpt-5.5" 的本地 session 缓存统计。
+   上游 provider prompt cache 未被修改。
+   新的请求将为这个 Pi session 重新开始统计。
+```
+
+如果没有选中的模型，显示警告。如果当前模型不匹配缓存的 adapter（不显示底部统计），则显示友好的无操作提示。
 
 ## 建议的 compat 配置
 
@@ -290,97 +327,6 @@ Gemini cache 1/2 · 0.18M/0.50M tok (36%)
 对于通过 OpenAI-compatible endpoint 暴露的 Claude/Anthropic 模型，如果模型明显 Claude-like 但缺少 `cacheControlFormat: "anthropic"`，扩展可能提醒。只有在 endpoint 支持 Anthropic-style cache-control markers 时才应启用该 compat flag。
 
 > 提醒：只有在 endpoint 或代理明确支持时，才建议启用 session-affinity headers 或 cache-control compat。
-
-## 诊断命令
-
-扩展注册了 Pi 命令 `/cache-optimizer` 用于交互式诊断。
-
-```
-/cache-optimizer              — 交互菜单（无 UI 时显示文字帮助）
-/cache-optimizer doctor        — 显示 provider、model、API、base URL、compat 状态
-                                   及低命中原因诊断
-/cache-optimizer stats         — 显示当前模型的 stats 桶和近期趋势
-/cache-optimizer compat        — 显示 compat 建议和编辑说明
-```
-
-不带参数时，当 Pi UI 支持时（`ctx.ui.select` 可用），`/cache-optimizer` 会显示交互选择菜单（Doctor / Stats / Compat / Cancel）。在非交互终端中，会回退到文字帮助和当前模型 compat 状态。
-
-### `/cache-optimizer doctor`
-
-显示当前模型的 provider、model id、名称、API 类型、base URL、当前 `compat` 标志以及缺少的缓存/session-affinity 标志。如果缺少标志，还会显示可复制的 JSON 片段和精确编辑位置。
-
-输出中还会包含 "Cache diagnosis"（缓存诊断）章节，按优先级分析低命中原因：
-1. **缺少 compat 标志** — 缺少启用 prompt 缓存和 session-affinity 路由的标志。
-2. **路由/渠道风险** — 多后端路由可能导致缓存分散到不同上游实例。
-3. **缺少 usage 字段** — 代理可能未返回 prompt 层级的使用情况字段，导致 footer 低估命中率。
-4. **近期趋势低** — 当今日缓存命中率低于 30% 时，诊断提示代理路由不稳定或 prompt 前缀变化。
-
-对于已完整配置但命中率仍低的模型，诊断会重点提示粘性路由和上游缓存使用验证，而非 compat 标志。
-
-### `/cache-optimizer stats`
-
-显示当前模型的 stats 桶（`provider/modelId`），今日请求计数（命中/总数）、缓存输入令牌 vs 总输入令牌及命中率百分比。同时显示近期趋势摘要（最近 10 条和最近 30 条样本）：
-
-```text
-Model key: otokapi/gpt-5.5
-Adapter:   OpenAI cache
-
-── Today ──
-Requests:      3 hit / 10 total · 30%
-Cached tokens: 0.0015M / 0.005M input · 30%
-
-── Recent trend ──
-Recent 10/10: 3/10 hits · 30% tok cached
-Recent 10/10: 3/10 hits · 30% tok cached
-```
-
-如果当前模型没有匹配的 adapter，显示友好提示。如果尚未记录样本，趋势显示 "no samples"。
-
-如果所有 compat 标志都已配置且适用（第三方 `openai-completions` 代理），输出显示 `✅ Compat fully configured.`。对于不适用 compat 检查的模型（官方 OpenAI、非 `openai-completions` API、custom transport），显示 `ℹ️ Compat check not applicable for this model.`：
-
-```text
-Provider: otokapi
-Model:    gpt-5.5
-API:      openai-completions
-Base URL: https://otokapi.example.com/v1
-Compat:   {}
-⚠️  Missing compat flags: supportsLongCacheRetention, sendSessionAffinityHeaders
-Edit ~/.pi/agent/models.json -> providers["otokapi"] -> compat (same level as baseUrl/api/apiKey/models):
-{
-  "supportsLongCacheRetention": true,
-  "sendSessionAffinityHeaders": true
-}
-```
-
-### `/cache-optimizer compat`
-
-显示当前模型的 compat 建议，包括文件路径、provider 路径和可复制 JSON 片段。当没有缺失的 compat 标志时，如果模型是适用的第三方代理则显示 `✅ Compat fully configured.`，否则显示 `ℹ️ Compat check not applicable for this model.`。
-
-当模型通过已知的路由器/通道代理（OpenRouter、Vercel AI Gateway、LiteLLM、OneAPI/NewAPI/VoAPI 或通用第三方 OpenAI-compatible 代理）时，`doctor` 和 `compat` 子命令都会附加路由/通道诊断信息和建议。
-
-### 路由/通道诊断
-
-对于通过非官方 base URL 使用 OpenAI-compatible API（`openai-completions` 或 `openai-responses`）的模型，扩展会从 `provider`、`baseUrl` 和 `compat` 元数据中检测常见的路由/通道代理模式：
-
-| 类型 | 检测方式 | 建议 |
-|------|----------|------|
-| **OpenRouter** | baseUrl 或 provider 包含 `openrouter`/`openrouter.ai` | 在 compat 中用 `openRouterRouting.only` 或 `.order` 固定上游 provider |
-| **Vercel AI Gateway** | baseUrl 包含 `ai-gateway.vercel.sh` 或 provider 包含 `vercel` | 在 compat 中用 `vercelGatewayRouting.only` 或 `.order` 固定上游 |
-| **LiteLLM / OneAPI / NewAPI / VoAPI** | baseUrl 或 provider 包含 `litellm`、`oneapi`/`one-api`、`newapi`/`new-api`、`voapi`/`vo-api` | 确保每 session 固定路由，转发 `prompt_cache_key` + session-affinity headers，返回缓存用量字段 |
-| **通用第三方代理** | 任何非官方 base URL 的 `openai-completions` 模型，且不匹配以上类型 | 通用建议：验证单上游路由、转发 `prompt_cache_key` + session-affinity headers、返回缓存用量 |
-
-这些诊断**仅用于建议**。它们不参与 adapter selection（仍基于 id/name）、不参与 `prompt_cache_key` 注入、不参与 footer 统计、也不做任何自动化配置修改。检测仅使用 Pi 暴露的元数据（`provider`、`api`、`baseUrl`、`compat`），不会读取或暴露 API key、prompt、payload、headers 或模型输出。
-
-官方 OpenAI（`api.openai.com`）和 custom transport（`kiro-api`、`anthropic-messages`、`bedrock-converse-stream`）不会触发路由/通道诊断。
-
-### 安全说明
-
-命令只读取 Pi 通过 `ctx.model` 暴露的元数据：provider、id、name、api、baseUrl、compat。它**不会**读取或暴露：
-- API key 或环境密钥
-- 请求/响应 payload
-- Prompt 或模型输出
-- HTTP headers
-- `~/.pi/agent/models.json` 的原始内容
 
 ## 原理
 

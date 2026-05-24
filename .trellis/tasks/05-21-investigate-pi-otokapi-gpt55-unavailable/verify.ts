@@ -23,6 +23,9 @@
 // 10. parsePersistedCacheStats migrates v2->v3 (legacyFamily), v1->v3, and
 //     preserves v3 statsByModel + legacyFamily.
 // 11. formatCacheStats produces correct footer text.
+// 12. hashSessionId produces deterministic 16-char hashes.
+// 13. makeSessionModelKey / modelKeyFromSessionKey round-trip correctly.
+// 14. Same provider/model under different session hashes produce different keys.
 //
 // Exits 0 on success, 1 on any failed assertion.
 
@@ -179,6 +182,10 @@ const {
   formatTokenM,
   hasMissingUsageFields,
   keyForModelExt,
+  hashSessionId,
+  makeSessionModelKey,
+  modelKeyFromSessionKey,
+  mergeCacheSessions,
 } = __internals_for_tests;
 
 type Failure = { name: string; detail: string };
@@ -4187,6 +4194,627 @@ Line count: 10 / 1000
 {
   const result = keyForModelExt({ provider: "otokapi", id: "gpt-5.5" });
   expect("keyForModelExt", result === "otokapi/gpt-5.5", "expected provider/id key");
+}
+
+// ==========================================================================
+// Session-scoped tests (v4: Pi session + provider/model stats)
+// ==========================================================================
+
+// Test 27: hashSessionId produces deterministic 16-char hex strings
+{
+  const hash1 = hashSessionId("sess-test-session-123");
+  const hash2 = hashSessionId("sess-test-session-123");
+  expect(
+    "hash.deterministic",
+    hash1 === hash2,
+    `expected deterministic hash, got "${hash1}" vs "${hash2}"`,
+  );
+  expect(
+    "hash.length",
+    hash1.length === 16,
+    `expected 16-char hash, got ${hash1.length}: "${hash1}"`,
+  );
+  expect(
+    "hash.hex",
+    /^[0-9a-f]{16}$/.test(hash1),
+    `expected 16-char hex, got "${hash1}"`,
+  );
+
+  // Different session ids produce different hashes
+  const hash3 = hashSessionId("sess-different-456");
+  expect(
+    "hash.different",
+    hash1 !== hash3,
+    `expected different hashes for different session ids`,
+  );
+}
+
+// Test 28: makeSessionModelKey builds correct session-scoped keys
+{
+  const hash = "a1b2c3d4e5f6g7h8";
+  const key1 = makeSessionModelKey(hash, "otokapi", "gpt-5.5");
+  expect(
+    "sessionKey.otokapi-gpt55",
+    key1 === "a1b2c3d4e5f6g7h8:otokapi/gpt-5.5",
+    `expected "a1b2c3d4e5f6g7h8:otokapi/gpt-5.5", got "${key1}"`,
+  );
+
+  const key2 = makeSessionModelKey(hash, "openai", "gpt-4");
+  expect(
+    "sessionKey.openai-gpt4",
+    key2 === "a1b2c3d4e5f6g7h8:openai/gpt-4",
+    `expected "a1b2c3d4e5f6g7h8:openai/gpt-4", got "${key2}"`,
+  );
+}
+
+// Test 29: modelKeyFromSessionKey extracts the user-facing model key
+{
+  const display = modelKeyFromSessionKey("a1b2c3d4e5f6g7h8:otokapi/gpt-5.5");
+  expect(
+    "modelKeyFromSession.otokapi",
+    display === "otokapi/gpt-5.5",
+    `expected "otokapi/gpt-5.5", got "${display}"`,
+  );
+
+  // Plain key without hash prefix should be preserved
+  const plain = modelKeyFromSessionKey("otokapi/gpt-5.5");
+  expect(
+    "modelKeyFromSession.plain",
+    plain === "otokapi/gpt-5.5",
+    `expected "otokapi/gpt-5.5", got "${plain}"`,
+  );
+}
+
+// Test 30: Same provider/model under different session hashes produce different keys
+{
+  const hashA = hashSessionId("session-A");
+  const hashB = hashSessionId("session-B");
+
+  const keyA = makeSessionModelKey(hashA, "otokapi", "gpt-5.5");
+  const keyB = makeSessionModelKey(hashB, "otokapi", "gpt-5.5");
+
+  expect(
+    "sessionKey.isolated-same-model",
+    keyA !== keyB,
+    `expected different keys for same model in different sessions`,
+  );
+
+  // Same session + same model → same key
+  const keyA2 = makeSessionModelKey(hashA, "otokapi", "gpt-5.5");
+  expect(
+    "sessionKey.same-session-same-model",
+    keyA === keyA2,
+    `expected same key for same session + model`,
+  );
+
+  // Same session + different models → different keys
+  const keyA3 = makeSessionModelKey(hashA, "openai", "gpt-4");
+  expect(
+    "sessionKey.same-session-different-model",
+    keyA !== keyA3,
+    `expected different keys for different models in same session`,
+  );
+}
+
+// Test 31: makeSessionModelKey round-trips through modelKeyFromSessionKey
+{
+  const hash = hashSessionId("roundtrip-test-session");
+  const originalModelKey = "otokapi/gpt-5.5";
+  const sessionKey = makeSessionModelKey(hash, "otokapi", "gpt-5.5");
+  const display = modelKeyFromSessionKey(sessionKey);
+  expect(
+    "sessionKey.roundtrip",
+    display === originalModelKey,
+    `expected "${originalModelKey}", got "${display}" after round-trip`,
+  );
+}
+
+// ==========================================================================
+// Goal 1–5: Session-scoped persist/restore/reset harness tests
+//
+// These tests verify the core session-scoping logic WITHOUT file I/O.
+// They simulate the extension's restoreCacheStats (first load / reload)
+// and reset flows by constructing in-memory v4 CacheStatsState,
+// filtering by session hash (as restoreCacheStats does), and verifying
+// isolation properties.
+// ==========================================================================
+
+function buildEmptySessionModelStats(): Record<string, CacheStats> {
+  return {};
+}
+
+function buildEmptyLegacyFamily(): Partial<Record<CacheProviderId, CacheStats>> {
+  return emptyAllCacheStats();
+}
+
+function addModelToStats(
+  stats: Record<string, CacheStats>,
+  sessionHash: string,
+  provider: string,
+  id: string,
+  day: string,
+  totalRequests: number,
+  hitRequests: number,
+): void {
+  const sk = `${sessionHash}:${provider}/${id}`;
+  stats[sk] = {
+    day,
+    totalRequests,
+    hitRequests,
+    cachedInputTokens: hitRequests * 1000,
+    cacheWriteInputTokens: 0,
+    totalInputTokens: totalRequests * 1000,
+  };
+}
+
+function filterStatsForSession(
+  state: CacheStatsState,
+  targetHash: string,
+): Record<string, CacheStats> {
+  const prefix = `${targetHash}:`;
+  const filtered: Record<string, CacheStats> = {};
+  for (const [fullKey, stats] of Object.entries(state.statsByModel)) {
+    if (fullKey.startsWith(prefix)) {
+      filtered[fullKey] = stats;
+    } else if (!fullKey.includes(":")) {
+      // Legacy v3 key without hash — migrate to target session
+      filtered[`${targetHash}:${fullKey}`] = stats;
+    }
+  }
+  return filtered;
+}
+
+function removeModelFromState(
+  state: CacheStatsState,
+  targetHash: string,
+  provider: string,
+  id: string,
+): void {
+  const prefix = `${targetHash}:${provider}/${id}`;
+  for (const key of Object.keys(state.statsByModel)) {
+    if (key === prefix) {
+      delete state.statsByModel[key];
+      return;
+    }
+  }
+}
+
+function sessionModelKeysForHash(state: CacheStatsState, targetHash: string): string[] {
+  const prefix = `${targetHash}:`;
+  return Object.keys(state.statsByModel).filter((k) => k.startsWith(prefix));
+}
+
+// Test: Reload restores persisted session stats (does not return 0/0)
+{
+  const hashA = hashSessionId("session-A");
+  const hashB = hashSessionId("session-B");
+
+  // Pretend extension instance A recorded stats for session A
+  const persistedStateA: CacheStatsState = {
+    statsByModel: {},
+    legacyFamily: buildEmptyLegacyFamily(),
+  };
+  addModelToStats(persistedStateA.statsByModel, hashA, "otokapi", "gpt-5.5", "2026-05-24", 10, 3);
+  addModelToStats(persistedStateA.statsByModel, hashB, "cafecode", "gpt-5.5", "2026-05-24", 5, 1);
+
+  // Simulate reload: new extension instance (empty stats), restore from persisted
+  const freshState: CacheStatsState = {
+    statsByModel: {},
+    legacyFamily: buildEmptyLegacyFamily(),
+  };
+
+  // Simulate restoreCacheStats(reason="reload"): filter for session A
+  freshState.statsByModel = filterStatsForSession(persistedStateA, hashA);
+  freshState.legacyFamily = persistedStateA.legacyFamily;
+
+  // Verify session A stats are restored (not 0/0)
+  const sessionAKeys = Object.keys(freshState.statsByModel);
+  expect(
+    "reload.restores-sessionA-keys",
+    sessionAKeys.length === 1 && sessionAKeys[0].includes(hashA),
+    `expected 1 session A key after reload, got ${sessionAKeys.length}: ${JSON.stringify(sessionAKeys)}`,
+  );
+
+  const restoredModelKey = modelKeyFromSessionKey(sessionAKeys[0]);
+  expect(
+    "reload.restores-otokapi-gpt55",
+    restoredModelKey === "otokapi/gpt-5.5",
+    `expected restored model key "otokapi/gpt-5.5", got "${restoredModelKey}"`,
+  );
+
+  const restoredStats = freshState.statsByModel[sessionAKeys[0]];
+  expect(
+    "reload.restores-hits",
+    restoredStats?.hitRequests === 3,
+    `expected 3 hit requests after reload, got ${restoredStats?.hitRequests}`,
+  );
+  expect(
+    "reload.restores-total",
+    restoredStats?.totalRequests === 10,
+    `expected 10 total requests after reload, got ${restoredStats?.totalRequests}`,
+  );
+
+  // Session B data should NOT be in session A's restore
+  const sessionBKeys = Object.keys(freshState.statsByModel).filter((k) => k.includes(hashB));
+  expect(
+    "reload.sessionB-isolated",
+    sessionBKeys.length === 0,
+    `expected 0 session B keys in session A's restore, got ${sessionBKeys.length}`,
+  );
+}
+
+// Test: Reset removes bucket from persist and survives reload
+{
+  const hashA = hashSessionId("reset-test-session");
+
+  // Build state with one model
+  const state: CacheStatsState = {
+    statsByModel: {},
+    legacyFamily: buildEmptyLegacyFamily(),
+  };
+  addModelToStats(state.statsByModel, hashA, "otokapi", "gpt-5.5", "2026-05-24", 10, 3);
+
+  // Simulate reset: delete the model's stats entry
+  const sessionKeysBefore = sessionModelKeysForHash(state, hashA);
+  expect(
+    "reset.has-key-before",
+    sessionKeysBefore.length === 1,
+    `expected 1 session key before reset, got ${sessionKeysBefore.length}`,
+  );
+
+  removeModelFromState(state, hashA, "otokapi", "gpt-5.5");
+
+  const sessionKeysAfter = sessionModelKeysForHash(state, hashA);
+  expect(
+    "reset.no-key-after",
+    sessionKeysAfter.length === 0,
+    `expected 0 session keys after reset, got ${sessionKeysAfter.length}`,
+  );
+
+  // Simulate reload after reset: filter from persisted (which now has no entry)
+  const freshAfterReset = filterStatsForSession(state, hashA);
+  expect(
+    "reset.survives-reload",
+    Object.keys(freshAfterReset).length === 0,
+    `expected 0 keys after reload following reset, got ${Object.keys(freshAfterReset).length}`,
+  );
+}
+
+// Test: Reset leaves other models in same session intact
+{
+  const hashA = hashSessionId("multi-model-session");
+
+  const state: CacheStatsState = {
+    statsByModel: {},
+    legacyFamily: buildEmptyLegacyFamily(),
+  };
+  addModelToStats(state.statsByModel, hashA, "otokapi", "gpt-5.5", "2026-05-24", 10, 3);
+  addModelToStats(state.statsByModel, hashA, "otokapi", "gpt-4", "2026-05-24", 5, 2);
+
+  // Reset only gpt-5.5
+  removeModelFromState(state, hashA, "otokapi", "gpt-5.5");
+
+  const remaining = sessionModelKeysForHash(state, hashA);
+  expect(
+    "reset.other-model-preserved",
+    remaining.length === 1 && remaining[0].includes("otokapi/gpt-4"),
+    `expected gpt-4 preserved after reset, got ${JSON.stringify(remaining)}`,
+  );
+
+  // Verify gpt-4 stats intact
+  const gpt4Stats = state.statsByModel[remaining[0]];
+  expect(
+    "reset.other-model-stats",
+    gpt4Stats?.hitRequests === 2 && gpt4Stats?.totalRequests === 5,
+    `expected gpt-4 stats unchanged after reset, got hits=${gpt4Stats?.hitRequests}, total=${gpt4Stats?.totalRequests}`,
+  );
+}
+
+// Test: Reset leaves same model in different session intact
+{
+  const hashA = hashSessionId("session-A-isolated");
+  const hashB = hashSessionId("session-B-isolated");
+
+  const state: CacheStatsState = {
+    statsByModel: {},
+    legacyFamily: buildEmptyLegacyFamily(),
+  };
+  addModelToStats(state.statsByModel, hashA, "otokapi", "gpt-5.5", "2026-05-24", 10, 3);
+  addModelToStats(state.statsByModel, hashB, "cafecode", "gpt-5.5", "2026-05-24", 20, 8);
+
+  // Reset session A's gpt-5.5 only
+  removeModelFromState(state, hashA, "otokapi", "gpt-5.5");
+
+  // Session A: no keys
+  expect(
+    "reset.other-session.A-empty",
+    sessionModelKeysForHash(state, hashA).length === 0,
+    `expected session A empty after reset`,
+  );
+
+  // Session B: still has its gpt-5.5
+  const sessionBKeys = sessionModelKeysForHash(state, hashB);
+  expect(
+    "reset.other-session.B-intact",
+    sessionBKeys.length === 1 && sessionBKeys[0].includes("cafecode/gpt-5.5"),
+    `expected session B gpt-5.5 intact, got ${JSON.stringify(sessionBKeys)}`,
+  );
+
+  const sessionBStats = state.statsByModel[sessionBKeys[0]];
+  expect(
+    "reset.other-session.B-stats",
+    sessionBStats?.hitRequests === 8 && sessionBStats?.totalRequests === 20,
+    `expected session B stats unchanged, got hits=${sessionBStats?.hitRequests}, total=${sessionBStats?.totalRequests}`,
+  );
+}
+
+// Test: Legacy v3 keys (no hash prefix) are migrated to current session on first load
+{
+  const hashA = hashSessionId("migration-session");
+
+  // Simulate reading persisted v3 stats that were migrated by parsePersistedCacheStats
+  // In v3, statsByModel uses plain "provider/id" keys without hash prefix
+  const v3MigratedState: CacheStatsState = {
+    statsByModel: {
+      "otokapi/gpt-5.5": {
+        day: "2026-05-24",
+        totalRequests: 10,
+        hitRequests: 3,
+        cachedInputTokens: 3000,
+        cacheWriteInputTokens: 0,
+        totalInputTokens: 10000,
+      },
+    },
+    legacyFamily: buildEmptyLegacyFamily(),
+  };
+
+  // Simulate first-load filtering: migrate legacy keys to current session
+  const filtered = filterStatsForSession(v3MigratedState, hashA);
+  const filteredKeys = Object.keys(filtered);
+  expect(
+    "v3-migration.keys-count",
+    filteredKeys.length === 1,
+    `expected 1 key after v3 migration, got ${filteredKeys.length}: ${JSON.stringify(filteredKeys)}`,
+  );
+
+  const migratedKey = filteredKeys[0];
+  expect(
+    "v3-migration.has-session-hash",
+    migratedKey.startsWith(hashA),
+    `expected migrated key to start with session hash, got "${migratedKey}"`,
+  );
+
+  const displayKey = modelKeyFromSessionKey(migratedKey);
+  expect(
+    "v3-migration.display-key",
+    displayKey === "otokapi/gpt-5.5",
+    `expected display key "otokapi/gpt-5.5", got "${displayKey}"`,
+  );
+
+  const migratedStats = filtered[migratedKey];
+  expect(
+    "v3-migration.stats-preserved",
+    migratedStats?.hitRequests === 3 && migratedStats?.totalRequests === 10,
+    `expected migrated stats preserved, got hits=${migratedStats?.hitRequests}, total=${migratedStats?.totalRequests}`,
+  );
+}
+
+// Test: Same session hash + same provider/model produces the same internal key
+{
+  const hashA = hashSessionId("same-key-test");
+  const key1 = makeSessionModelKey(hashA, "otokapi", "gpt-5.5");
+  const key2 = makeSessionModelKey(hashA, "otokapi", "gpt-5.5");
+  expect(
+    "same-key.deterministic",
+    key1 === key2,
+    `expected same key for same session+model, got "${key1}" vs "${key2}"`,
+  );
+}
+
+// Test: Different providers with same model id under same session produce different keys
+{
+  const hashA = hashSessionId("provider-distinction");
+  const key1 = makeSessionModelKey(hashA, "otokapi", "gpt-5.5");
+  const key2 = makeSessionModelKey(hashA, "cafecode", "gpt-5.5");
+  expect(
+    "provider-distinct.different",
+    key1 !== key2,
+    `expected different keys for different providers under same session, got "${key1}" and "${key2}"`,
+  );
+}
+
+// Test: hashed session id is never the raw session id
+{
+  const rawId = "sess_raw_test_session_id_12345";
+  const hash = hashSessionId(rawId);
+  expect(
+    "hash.not-raw",
+    hash !== rawId,
+    `expected hash to differ from raw session id`,
+  );
+  expect(
+    "hash.sha256-prefix-length",
+    hash.length === 16,
+    `expected 16-char hash, got ${hash.length}: "${hash}"`,
+  );
+}
+
+// ==========================================================================
+// Test: mergeCacheSessions with _nosession — reset-undo regression guard
+// ==========================================================================
+//
+// Bug scenario (the reset-undo bug):
+//   1. Old v3 or v4 stats exist with `_nosession:otokapi/gpt-5.5` on disk.
+//   2. restoreCacheStats migrates `_nosession` stats into current session in memory.
+//   3. User runs /cache-optimizer reset for that model (before any normal stats write).
+//   4. writePersistedCacheStats(state, currentSessionHash) preserves existing
+//      `_nosession` entries in the file, even though the current session's entry
+//      was cleared from memory.
+//   5. Next reload re-migrates `_nosession` back → stats resurrected!
+//
+// The fix: writePersistedCacheStats must DELETE `_nosession` from existingSessions
+// when currentSessionHash is provided (authoritative session-aware write).
+//
+// This test exercises the pure helper mergeCacheSessions.
+{
+  const sessionHash = hashSessionId("test-reset-nosession-regression");
+  const otherSessionHash = hashSessionId("other-session");
+
+  // Helper for creating a CacheStats-like record.
+  const stats = (reqs: number, hits: number) => ({
+    day: "2026-05-24",
+    totalRequests: reqs,
+    hitRequests: hits,
+    cachedInputTokens: hits * 1000,
+    cacheWriteInputTokens: 0,
+    totalInputTokens: reqs * 2000,
+  });
+
+  // Simulate existing file data with:
+  //   - _nosession:otokapi/gpt-5.5 (legacy migrated bucket)
+  //   - otherSessionHash:otherProvider/model (a different real session)
+  const existingSessions = {
+    _nosession: {
+      "otokapi/gpt-5.5": stats(10, 3),  // legacy 10 req, 3 hits
+    },
+    [otherSessionHash]: {
+      "otherProvider/model": stats(5, 5),  // different session, untouched
+    },
+  };
+
+  // Scenario A: currentSessionHash + empty statsByModel (reset scenario)
+  // This simulates what happens after restoreCacheStats migrates _nosession to
+  // current session, then the user resets, and writePersistedCacheStats is called.
+  {
+    const emptyState = {
+      statsByModel: {
+        // The _nosession data was already migrated to current session in memory
+        // on load, but then reset deleted it. No current-session entries remain.
+      },
+      legacyFamily: {},
+    };
+
+    const merged = mergeCacheSessions(existingSessions, emptyState, sessionHash);
+
+    // _nosession MUST be removed (consumed on authoritative write)
+    expect(
+      "nosession-reset.removed",
+      merged._nosession === undefined,
+      `expected _nosession to be removed when currentSessionHash provided, got ${JSON.stringify(Object.keys(merged))}`,
+    );
+
+    // Current session must appear (even if empty, after reset)
+    expect(
+      "nosession-reset.current-session-exists",
+      merged[sessionHash] !== undefined,
+      "expected current session hash key to exist (even if empty)",
+    );
+
+    // Current session must have NO entries (empty after reset)
+    expect(
+      "nosession-reset.current-session-empty",
+      Object.keys(merged[sessionHash]).length === 0,
+      `expected current session to be empty after reset, got ${JSON.stringify(Object.keys(merged[sessionHash]))}`,
+    );
+
+    // Other real sessions must be preserved
+    expect(
+      "nosession-reset.other-session-preserved",
+      merged[otherSessionHash] !== undefined &&
+        merged[otherSessionHash]["otherProvider/model"]?.hitRequests === 5,
+      "expected other session data to be preserved intact",
+    );
+  }
+
+  // Scenario B: currentSessionHash + current session has real data (normal write)
+  // _nosession should still be removed since we're writing with a session hash.
+  {
+    const stateWithData = {
+      statsByModel: {
+        [`${sessionHash}:otokapi/gpt-5.5`]: stats(15, 8),
+      },
+      legacyFamily: {},
+    };
+
+    const merged = mergeCacheSessions(existingSessions, stateWithData, sessionHash);
+
+    expect(
+      "nosession-normal.removed",
+      merged._nosession === undefined,
+      "expected _nosession removed even in normal write",
+    );
+
+    // Current session must have the real data
+    expect(
+      "nosession-normal.current-data-kept",
+      merged[sessionHash]?.["otokapi/gpt-5.5"]?.hitRequests === 8,
+      "expected current session stats to include the 8 hits",
+    );
+
+    // Other sessions preserved
+    expect(
+      "nosession-normal.other-preserved",
+      merged[otherSessionHash]?.["otherProvider/model"]?.hitRequests === 5,
+      "expected other session data to be preserved",
+    );
+  }
+
+  // Scenario C: no-hash mode (currentSessionHash undefined) — _nosession entries
+  // SHOULD be populated from unhashed keys in statsByModel. This tests that the
+  // no-hash path still works correctly for the transitional case.
+  {
+    const legacyState = {
+      statsByModel: {
+        "otokapi/gpt-5.5": stats(10, 3),  // no hash prefix → legacy v3
+      },
+      legacyFamily: {},
+    };
+
+    const merged = mergeCacheSessions(existingSessions, legacyState);
+
+    // _nosession should exist (populated from legacy v3 key)
+    expect(
+      "nosession-nohash.preserved",
+      merged._nosession !== undefined,
+      "expected _nosession to exist in no-hash mode",
+    );
+    expect(
+      "nosession-nohash.legacy-data",
+      merged._nosession?.["otokapi/gpt-5.5"]?.hitRequests === 3,
+      "expected legacy stats in _nosession",
+    );
+  }
+
+  // Scenario D: currentSessionHash provided, no _nosession in existing sessions
+  // (common case with modern session-tagged file). Should not throw or create _nosession.
+  {
+    const cleanExisting = {
+      [otherSessionHash]: {
+        "otherProvider/model": stats(5, 5),
+      },
+    };
+
+    const merged = mergeCacheSessions(cleanExisting, {
+      statsByModel: { [`${sessionHash}:some/model`]: stats(1, 1) },
+      legacyFamily: {},
+    }, sessionHash);
+
+    expect(
+      "nosession-clean.removed",
+      merged._nosession === undefined,
+      "expected _nosession to stay undefined when not present in input",
+    );
+    expect(
+      "nosession-clean.current-data",
+      merged[sessionHash]?.["some/model"]?.hitRequests === 1,
+      "expected current session data to be present",
+    );
+    expect(
+      "nosession-clean.other-preserved",
+      merged[otherSessionHash]?.["otherProvider/model"]?.hitRequests === 5,
+      "expected other session data preserved",
+    );
+  }
 }
 
 // ==========================================================================
