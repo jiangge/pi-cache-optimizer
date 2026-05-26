@@ -42,6 +42,8 @@ const {
   isOpenAIFamilyToken,
   describeMissingOpenAIFamilyProxyCompat,
   describeMissingOpenAICompatibleProxyCompat,
+  buildSafeOpenAIProxyCompatSuggestion,
+  getPromptCacheRetentionUnsupportedHint,
   isOfficialOpenAIBaseUrl,
   isCompatCheckApplicable,
   buildDoctorDiagnosis,
@@ -1053,7 +1055,7 @@ Line count: 10 / 1000
 }
 
 // ==========================================================================
-// Test 23: buildOpenAIProxyCompatWarningText — produces valid, parseable JSON suggestion
+// Test 23: buildOpenAIProxyCompatWarningText — safe default suggestion avoids risky long-retention flag
 // ==========================================================================
 {
   // --- Both flags missing ---
@@ -1076,22 +1078,34 @@ Line count: 10 / 1000
       expect("warning-both.json-parseable", false, `JSON.parse threw: ${e}`);
     }
     if (parsed) {
-      expect("warning-both.supportsLongCacheRetention", parsed.supportsLongCacheRetention === true, "expected supportsLongCacheRetention: true");
+      expect("warning-both.no-risky-retention-json", parsed.supportsLongCacheRetention === undefined, "expected safe JSON to omit supportsLongCacheRetention");
       expect("warning-both.sendSessionAffinityHeaders", parsed.sendSessionAffinityHeaders === true, "expected sendSessionAffinityHeaders: true");
-      expect("warning-both.exactly-two-keys", Object.keys(parsed).length === 2, "expected exactly 2 keys in JSON");
+      expect("warning-both.exactly-one-key", Object.keys(parsed).length === 1, "expected exactly 1 key in safe JSON");
     }
   }
 
-  // Verify the warning text also includes prose explanations
+  expect(
+    "warning-both.safe-helper",
+    buildSafeOpenAIProxyCompatSuggestion(bothMissing).sendSessionAffinityHeaders === true && buildSafeOpenAIProxyCompatSuggestion(bothMissing).supportsLongCacheRetention === undefined,
+    "expected safe helper to recommend only session affinity",
+  );
+
+  // Verify the warning text also includes prose explanations and 400 recovery guidance
   expect(
     "warning-both.prose-retention",
-    bothText.includes("long prompt cache retention"),
-    "expected prose explanation for supportsLongCacheRetention",
+    bothText.includes("optional") && bothText.includes("prompt_cache_retention"),
+    "expected optional long-retention explanation",
   );
   expect(
     "warning-both.prose-affinity",
-    bothText.includes("session affinity"),
+    bothText.includes("session") && bothText.includes("backend"),
     "expected prose explanation for sendSessionAffinityHeaders",
+  );
+
+  expect(
+    "warning-both.unsupported-hint",
+    bothText.includes(getPromptCacheRetentionUnsupportedHint()),
+    "expected unsupported prompt_cache_retention hint",
   );
 
   // Make sure there are NO inline comments (//) in the text
@@ -1100,18 +1114,21 @@ Line count: 10 / 1000
   // --- Only supportsLongCacheRetention missing ---
   const onlyRetention = ["supportsLongCacheRetention"];
   const retentionText = buildOpenAIProxyCompatWarningText("otokapi/gpt-5.5", onlyRetention);
-  const jsonRetMatch = retentionText.match(/{[\s\S]*?\n}/);
   expect(
-    "warning-retention.json-exists",
-    jsonRetMatch !== null,
-    "expected JSON object for retention-only warning",
+    "warning-retention.no-json",
+    retentionText.match(/{[\s\S]*?\n}/) === null,
+    "expected no JSON suggestion for retention-only warning",
   );
-  if (jsonRetMatch) {
-    const parsed = JSON.parse(jsonRetMatch[0]);
-    expect("warning-retention.only-one-key", Object.keys(parsed).length === 1, "expected exactly 1 key in JSON");
-    expect("warning-retention.supportsLongCacheRetention", parsed.supportsLongCacheRetention === true, "expected supportsLongCacheRetention: true");
-    expect("warning-retention.no-affinity", parsed.sendSessionAffinityHeaders === undefined, "expected no sendSessionAffinityHeaders");
-  }
+  expect(
+    "warning-retention.no-safe-suggestion",
+    Object.keys(buildSafeOpenAIProxyCompatSuggestion(onlyRetention)).length === 0,
+    "expected no safe automatic suggestion for retention-only warning",
+  );
+  expect(
+    "warning-retention.unsupported-hint",
+    retentionText.includes("400 Unsupported parameter: prompt_cache_retention"),
+    "expected retention warning to mention 400 recovery",
+  );
 
   // --- Only sendSessionAffinityHeaders missing ---
   const onlyAffinity = ["sendSessionAffinityHeaders"];

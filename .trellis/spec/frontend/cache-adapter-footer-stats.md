@@ -175,14 +175,18 @@ core's own cache transport.
 
 For models using `api: "openai-completions"` through a non-official
 base URL (not `api.openai.com`), warn once per model when merged compat lacks
-one or both of:
+one or both of `supportsLongCacheRetention` and `sendSessionAffinityHeaders`.
+The copyable JSON suggestion MUST be conservative: recommend
+`sendSessionAffinityHeaders: true` by default when missing, but do NOT
+recommend `supportsLongCacheRetention: true` as an automatic safe default.
+Long retention is optional and must be accompanied by guidance to enable it only
+when the endpoint/proxy explicitly supports OpenAI `prompt_cache_retention`.
 
-```json
-{
-  "supportsLongCacheRetention": true,
-  "sendSessionAffinityHeaders": true
-}
-```
+If a third-party proxy returns `400 Unsupported parameter: prompt_cache_retention`,
+the user should remove/avoid `supportsLongCacheRetention` for that channel while
+keeping `sendSessionAffinityHeaders` if supported. This extension does not write
+`prompt_cache_retention` directly; it requests `PI_CACHE_RETENTION=long`, and Pi
+may send the parameter when compat says long retention is supported.
 
 This warning is advisory only and MUST NOT mutate the user's `models.json`.
 
@@ -763,14 +767,16 @@ The extension registers a Pi command `/cache-optimizer` with six subcommands.
 These are current-process runtime switches, not persistent config writes.
 
 * `enable` turns runtime optimization back on, requests `PI_CACHE_RETENTION=long`,
+  resets current-session stats/recent samples for before/after comparison,
   republishes the footer, and shows a status summary for prompt rewrite,
   OpenAI-compatible `prompt_cache_key` fallback, footer stats, compat warnings, and
   `PI_CACHE_RETENTION`.
 * `disable` turns runtime optimization off, restores the startup `PI_CACHE_RETENTION`
   value (or unsets it if it was originally unset), suppresses prompt mutations,
-  OpenAI-compatible `prompt_cache_key` fallback, compat warnings, and footer stat
-  updates, republishes the footer as `Cache Optimizer disabled` for adapter-matched
-  models, and shows the same status summary.
+  OpenAI-compatible `prompt_cache_key` fallback, and compat warnings, resets
+  current-session stats/recent samples, keeps collecting footer stats in disabled
+  comparison mode, republishes the footer as `Cache Optimizer disabled · <stats>`
+  for adapter-matched models, and shows the same status summary.
 * Neither command writes environment files, Pi settings, `models.json`, or stats files.
   Run `/reload` or restart Pi to return to startup behavior.
 
@@ -778,8 +784,10 @@ These are current-process runtime switches, not persistent config writes.
 
 Shows current active model status: provider, model id/name, API type, base URL,
 merged compat flags, and whether any cache/session-affinity compat flags are missing.
-If compat flags are missing, includes a copyable JSON suggestion and the edit location
-(`~/.pi/agent/models.json -> providers.<id> -> compat`).
+If compat flags are missing, includes a copyable safe JSON suggestion and the edit
+location (`~/.pi/agent/models.json -> providers.<id> -> compat`). The JSON only
+includes `sendSessionAffinityHeaders: true` when missing; `supportsLongCacheRetention`
+is explained as optional/risky rather than inserted into the copyable safe snippet.
 
 When the compat check applies (third-party `openai-completions` proxy) and no flags
 are missing, shows `✅ Compat fully configured.`
@@ -803,6 +811,9 @@ For fully configured models that still have low cache hit rates, the diagnosis e
 and upstream cache usage verification rather than compat flags.
 
 The output MUST NOT include API keys, secrets, prompts, payloads, headers, or model output.
+If a previous `after_provider_response` saw HTTP 400 for this model while
+`supportsLongCacheRetention` was enabled, doctor includes a stronger hint to remove/avoid
+that flag if the provider error text is `Unsupported parameter: prompt_cache_retention`.
 
 ### `/cache-optimizer stats`
 
@@ -939,15 +950,15 @@ compat). It does NOT read or expose:
 
 | Scenario | Expected behavior |
 |---|---|
-| `/cache-optimizer doctor` with model that has missing compat flags | Output includes `Missing compat flags: supportsLongCacheRetention, sendSessionAffinityHeaders` and a copyable JSON suggestion with `~/.pi/agent/models.json -> providers["<id>"]` path |
+| `/cache-optimizer doctor` with model that has missing compat flags | Output includes `Missing compat flags: supportsLongCacheRetention, sendSessionAffinityHeaders`, a copyable safe JSON suggestion with `sendSessionAffinityHeaders: true`, the `~/.pi/agent/models.json -> providers["<id>"]` path, and optional/risky guidance for `supportsLongCacheRetention` |
 | `/cache-optimizer doctor` without an active model | Notification: "No active model selected" |
 | `/cache-optimizer doctor` with applicable fully-configured model | Shows `✅ Compat fully configured.` (without "(or not applicable)") |
 | `/cache-optimizer doctor` with non-applicable model (official OpenAI, non-openai-completions, custom transport) | Shows `ℹ️ Compat check not applicable for this model.` |
 | `/cache-optimizer compat` with a fully configured applicable model | Shows `✅ Compat fully configured.` |
 | `/cache-optimizer compat` with a non-applicable model | Shows `ℹ️ Compat check not applicable for this model.` |
-| `/cache-optimizer enable` | Runtime optimizer becomes enabled, `PI_CACHE_RETENTION=long` is requested, footer republishes, and notification lists active feature states |
-| `/cache-optimizer disable` | Runtime optimizer becomes disabled for this Pi process, startup `PI_CACHE_RETENTION` is restored/unset, adapter-matched footer shows `Cache Optimizer disabled`, and notification lists disabled feature states |
-| Runtime disabled before hooks fire | `before_agent_start` returns `{}`, `before_provider_request` does not add `prompt_cache_key`, `message_end` does not update stats, and session/model compat warnings are suppressed |
+| `/cache-optimizer enable` | Runtime optimizer becomes enabled, `PI_CACHE_RETENTION=long` is requested, current-session stats/recent samples reset, footer republishes, and notification lists active feature states |
+| `/cache-optimizer disable` | Runtime optimizer becomes disabled for this Pi process, startup `PI_CACHE_RETENTION` is restored/unset, current-session stats/recent samples reset, adapter-matched footer shows `Cache Optimizer disabled · <stats>`, and notification lists disabled feature states |
+| Runtime disabled before hooks fire | `before_agent_start` returns `{}`, `before_provider_request` does not add `prompt_cache_key`, `message_end` continues updating comparison stats, and session/model compat warnings are suppressed |
 | `/cache-optimizer` (no args) with UI supports select | Shows interactive selection menu (Enable / Disable / Doctor / Stats / Compat / Reset / Cancel) |
 | `/cache-optimizer` (no args) without UI | Text help lists `enable`, `disable`, `doctor`, `stats`, `compat`, `reset` subcommands plus runtime state |
 | Footer status for missing-compat model | Shows `⚠️ compat` appended to the cache stats line |
@@ -957,10 +968,11 @@ compat). It does NOT read or expose:
 | `/cache-optimizer doctor` with LiteLLM/OneAPI/NewAPI/VoAPI model | Output includes `🔀 Router/channel: Self-hosted aggregation proxy detected` with sticky routing and prompt_cache_key guidance |
 | `/cache-optimizer doctor` with generic third-party OpenAI-compatible proxy | Output includes `🔀 Router/channel: Third-party OpenAI-compatible proxy` with general guidance |
 | `/cache-optimizer doctor` with official OpenAI or kiro-api model | Output does NOT include router/channel notes (not applicable) |
-| `/cache-optimizer compat` with missing-compat OpenRouter model | Shows missing flags + JSON + OpenRouter channel notes |
-| `/cache-optimizer compat` with fully-configured OpenRouter model | Shows `✅ Compat fully configured.` followed by OpenRouter channel notes |
+| `/cache-optimizer compat` with missing-compat OpenRouter model | Shows missing flags + safe JSON + OpenRouter channel notes |
+| `/cache-optimizer compat` with fully-configured OpenRouter model | Shows `✅ Compat fully configured.` followed by OpenRouter channel notes; if `supportsLongCacheRetention` is enabled, also includes the `prompt_cache_retention` 400 recovery hint |
 | Router/channel diagnostics do not affect adapter selection | An OpenRouter Llama model still selects the Llama adapter, not an "OpenRouter" adapter |
 | Diagnostic text must not expose API keys, prompts, payloads, or model output | All router/channel output uses only provider, api, baseUrl, compat metadata |
+| Third-party OpenAI-compatible proxy returns HTTP 400 while `supportsLongCacheRetention` is enabled | Extension records a one-time model-scoped warning and `/cache-optimizer doctor` surfaces the `prompt_cache_retention` recovery hint |
 | `/cache-optimizer stats` with model matching an adapter | Output includes model key, request counts, token counts, hit rate, recent trend |
 | `/cache-optimizer stats` with unseen model bucket | Shows 0/0, not legacy family aggregates |
 | `/cache-optimizer stats` with unsupported model (no adapter) | Shows friendly message "No cache-adapter-matched model active" |

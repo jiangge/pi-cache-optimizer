@@ -42,8 +42,8 @@ Run `/reload` in Pi after install/update/remove so extension hooks refresh.
 | Command | Effect |
 |---|---|
 | `/cache-optimizer` | Interactive menu when UI supports it; otherwise prints help and current state. |
-| `/cache-optimizer enable` | Enables runtime optimizations for the current Pi process and shows which parts are on. |
-| `/cache-optimizer disable` | Disables runtime optimizations for the current Pi process and changes the footer to `Cache Optimizer disabled`. Run `/reload` or restart Pi to return to startup behavior. |
+| `/cache-optimizer enable` | Enables runtime optimizations for the current Pi process, resets current-session stats, and starts a fresh “enabled” measurement. |
+| `/cache-optimizer disable` | Disables optimization for the current Pi process, resets current-session stats, and keeps collecting footer stats in disabled comparison mode. Run `/reload` or restart Pi to return to startup behavior. |
 | `/cache-optimizer doctor` | Shows active model/provider/API/base URL/compat plus low-hit diagnosis. |
 | `/cache-optimizer compat` | Shows copyable compat advice for the active model, if applicable. |
 | `/cache-optimizer stats` | Shows today's session-scoped counters and recent trend for the active model. |
@@ -62,7 +62,7 @@ Run `/reload` in Pi after install/update/remove so extension hooks refresh.
 
 ## OpenAI-compatible proxy setup
 
-For third-party `openai-completions` proxies such as Otokapi / LiteLLM / OneAPI / NewAPI / OpenRouter-like channels, low cache hit rate is often caused by multi-backend routing. Add compat flags only if your endpoint supports them:
+For third-party `openai-completions` proxies such as Otokapi / LiteLLM / OneAPI / NewAPI / OpenRouter-like channels, low cache hit rate is often caused by multi-backend routing. The safe default is session affinity:
 
 ```json
 {
@@ -72,7 +72,6 @@ For third-party `openai-completions` proxies such as Otokapi / LiteLLM / OneAPI 
       "baseUrl": "https://example.com/v1",
       "apiKey": "env:YOUR_API_KEY",
       "compat": {
-        "supportsLongCacheRetention": true,
         "sendSessionAffinityHeaders": true
       },
       "models": [
@@ -83,7 +82,7 @@ For third-party `openai-completions` proxies such as Otokapi / LiteLLM / OneAPI 
 }
 ```
 
-If a proxy returns `400 Unsupported parameter: prompt_cache_retention`, remove/avoid `supportsLongCacheRetention` for that channel, keep `sendSessionAffinityHeaders` if supported, and use `/cache-optimizer compat` / `/cache-optimizer doctor` for diagnosis. This extension itself only advises; it does not edit `models.json`.
+Only add `supportsLongCacheRetention: true` after the endpoint/proxy explicitly supports OpenAI long prompt cache retention. This extension does not directly write `prompt_cache_retention`; it requests `PI_CACHE_RETENTION=long`, and Pi may send `prompt_cache_retention` when compat says long retention is supported. If a proxy returns `400 Unsupported parameter: prompt_cache_retention`, remove/avoid `supportsLongCacheRetention` for that channel, keep `sendSessionAffinityHeaders` if supported, and use `/cache-optimizer compat` / `/cache-optimizer doctor` for diagnosis. When a 400 is observed while long retention compat is enabled, the extension adds a one-time warning and doctor hint. This extension itself only advises; it does not edit `models.json`.
 
 ## Footer stats
 

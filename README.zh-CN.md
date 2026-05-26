@@ -42,8 +42,8 @@ pi remove npm:pi-deepseek-cache-optimizer && pi install npm:pi-cache-optimizer
 | 命令 | 作用 |
 |---|---|
 | `/cache-optimizer` | UI 支持时打开交互菜单；否则打印帮助和当前状态。 |
-| `/cache-optimizer enable` | 在当前 Pi 进程中开启运行时优化，并显示哪些功能已开启。 |
-| `/cache-optimizer disable` | 在当前 Pi 进程中关闭运行时优化，footer 显示 `Cache Optimizer disabled`。运行 `/reload` 或重启 Pi 后回到启动时行为。 |
+| `/cache-optimizer enable` | 在当前 Pi 进程中开启运行时优化，清零当前 session 统计，并开始新的“开启状态”测量。 |
+| `/cache-optimizer disable` | 在当前 Pi 进程中关闭优化，清零当前 session 统计，并继续以 disabled 对比模式采集 footer 统计。运行 `/reload` 或重启 Pi 后回到启动时行为。 |
 | `/cache-optimizer doctor` | 显示当前模型 / provider / API / base URL / compat 与低命中诊断。 |
 | `/cache-optimizer compat` | 对当前模型显示可复制的 compat 建议（如适用）。 |
 | `/cache-optimizer stats` | 显示当前模型今天的 session-scoped 统计和近期趋势。 |
@@ -62,7 +62,7 @@ pi remove npm:pi-deepseek-cache-optimizer && pi install npm:pi-cache-optimizer
 
 ## OpenAI-compatible 代理配置
 
-对 Otokapi / LiteLLM / OneAPI / NewAPI / 类 OpenRouter 渠道等第三方 `openai-completions` 代理，缓存命中率低通常是因为请求被分散到多个后端。仅在你的 endpoint 支持时添加 compat flags：
+对 Otokapi / LiteLLM / OneAPI / NewAPI / 类 OpenRouter 渠道等第三方 `openai-completions` 代理，缓存命中率低通常是因为请求被分散到多个后端。安全默认配置是 session affinity：
 
 ```json
 {
@@ -72,7 +72,6 @@ pi remove npm:pi-deepseek-cache-optimizer && pi install npm:pi-cache-optimizer
       "baseUrl": "https://example.com/v1",
       "apiKey": "env:YOUR_API_KEY",
       "compat": {
-        "supportsLongCacheRetention": true,
         "sendSessionAffinityHeaders": true
       },
       "models": [
@@ -83,7 +82,7 @@ pi remove npm:pi-deepseek-cache-optimizer && pi install npm:pi-cache-optimizer
 }
 ```
 
-如果某代理返回 `400 Unsupported parameter: prompt_cache_retention`，请为该渠道移除 / 避免 `supportsLongCacheRetention`，如支持可保留 `sendSessionAffinityHeaders`，并用 `/cache-optimizer compat` / `/cache-optimizer doctor` 诊断。本扩展只给建议，不会修改 `models.json`。
+只有在 endpoint / proxy 明确支持 OpenAI long prompt cache retention 时，才添加 `supportsLongCacheRetention: true`。本扩展不会直接写入 `prompt_cache_retention`；它会请求 `PI_CACHE_RETENTION=long`，当 compat 声明支持 long retention 时，Pi 可能发送 `prompt_cache_retention`。如果某代理返回 `400 Unsupported parameter: prompt_cache_retention`，请为该渠道移除 / 避免 `supportsLongCacheRetention`，如支持可保留 `sendSessionAffinityHeaders`，并用 `/cache-optimizer compat` / `/cache-optimizer doctor` 诊断。当启用 long retention compat 时观察到 400，本扩展会给一次性 warning，并在 doctor 中提示。本扩展只给建议，不会修改 `models.json`。
 
 ## Footer 统计
 

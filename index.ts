@@ -716,7 +716,7 @@ function getOptimizerRuntimeModeLines(): string[] {
   lines.push(`Runtime state: ${state}`);
   lines.push(`• Prompt rewrite: ${runtimeOptimizerEnabled && !isEnabledEnv(process.env[NO_PROMPT_REWRITE_ENV]) ? "on" : "off"}`);
   lines.push(`• OpenAI prompt_cache_key fallback: ${shouldInjectOpenAIPromptCacheKey() ? "on" : "off"}`);
-  lines.push(`• Footer cache stats: ${runtimeOptimizerEnabled ? "on" : "off"}`);
+  lines.push(`• Footer cache stats: on${runtimeOptimizerEnabled ? "" : " (comparison mode)"}`);
   lines.push(`• Compat warnings: ${runtimeOptimizerEnabled ? "on" : "off"}`);
   lines.push(`• ${PI_CACHE_RETENTION_ENV}: ${process.env[PI_CACHE_RETENTION_ENV] ?? "(unset)"}`);
   if (!runtimeOptimizerEnabled) {
@@ -1512,6 +1512,40 @@ function describeMissingOpenAICompatibleProxyCompat(model: PiModel): string[] {
   return missing;
 }
 
+function buildSafeOpenAIProxyCompatSuggestion(missing: string[]): Record<string, boolean> {
+  const suggestion: Record<string, boolean> = {};
+  if (missing.includes("sendSessionAffinityHeaders")) {
+    suggestion.sendSessionAffinityHeaders = true;
+  }
+  return suggestion;
+}
+
+function getPromptCacheRetentionUnsupportedHint(): string {
+  return "If this channel returns `400 Unsupported parameter: prompt_cache_retention`, remove/avoid `supportsLongCacheRetention`; this extension does not write that field directly, but Pi may send it when long retention is requested and compat says the proxy supports it.";
+}
+
+function appendOpenAIProxyCompatAdviceLines(lines: string[], missing: string[], options: { includeJsonIntro?: boolean } = {}): void {
+  const suggestion = buildSafeOpenAIProxyCompatSuggestion(missing);
+  const hasSafeSuggestion = Object.keys(suggestion).length > 0;
+
+  if (hasSafeSuggestion) {
+    if (options.includeJsonIntro !== false) {
+      lines.push("Safe default suggestion:");
+    }
+    lines.push(JSON.stringify(suggestion, null, 2));
+  } else if (missing.includes("supportsLongCacheRetention")) {
+    lines.push("No safe automatic JSON change is recommended for `supportsLongCacheRetention`.");
+  }
+
+  if (missing.includes("sendSessionAffinityHeaders")) {
+    lines.push("- sendSessionAffinityHeaders: recommended for third-party proxies when supported; it helps keep one Pi session on the same upstream/backend.");
+  }
+  if (missing.includes("supportsLongCacheRetention")) {
+    lines.push("- supportsLongCacheRetention: optional. Enable only after your endpoint/proxy explicitly supports OpenAI long prompt cache retention.");
+    lines.push(`- ${getPromptCacheRetentionUnsupportedHint()}`);
+  }
+}
+
 /**
  * Build the warning text displayed to users when an OpenAI-family third-party
  * proxy is missing one or more cache/session-affinity compat flags.
@@ -1525,11 +1559,6 @@ function describeMissingOpenAICompatibleProxyCompat(model: PiModel): string[] {
  * exercise it via __internals_for_tests.
  */
 function buildOpenAIProxyCompatWarningText(key: string, missing: string[]): string {
-  const suggestion: Record<string, boolean> = {};
-  for (const flag of missing) {
-    suggestion[flag] = true;
-  }
-
   // Extract provider id from the model key (e.g. "otokapi/gpt-5.5" -> "otokapi").
   // If no slash is found, fall back to the key itself.
   const slashIdx = key.indexOf("/");
@@ -1538,19 +1567,11 @@ function buildOpenAIProxyCompatWarningText(key: string, missing: string[]): stri
   const modelsJsonPath = getModelsJsonDisplayPath();
   const lines: string[] = [
     `💡 pi-cache-optimizer: ${key} is a third-party GPT/OpenAI-compatible proxy but merged compat lacks ${missing.join(" and ")}.`,
-    `Edit ${modelsJsonPath} -> providers["${providerLabel}"] -> compat (at the same level as baseUrl/api/apiKey/models):`,
-    ``,
-    JSON.stringify(suggestion, null, 2),
+    `Edit ${modelsJsonPath} -> providers["${providerLabel}"] -> compat (at the same level as baseUrl/api/apiKey/models).`,
     ``,
   ];
 
-  for (const flag of missing) {
-    if (flag === "supportsLongCacheRetention") {
-      lines.push("- supportsLongCacheRetention: confirm your endpoint or proxy supports long prompt cache retention.");
-    } else if (flag === "sendSessionAffinityHeaders") {
-      lines.push("- sendSessionAffinityHeaders: keeps requests on the same backend for proxy cache locality (session affinity).");
-    }
-  }
+  appendOpenAIProxyCompatAdviceLines(lines, missing);
 
   return lines.join("\n");
 }
@@ -3139,7 +3160,10 @@ function describeRouterChannelDiagnostics(model: PiModel): string[] {
       "   • Return cache usage fields (prompt_cache_hit_tokens, etc.) in the response.",
     );
     notes.push(
-      `   Example compat: { "sendSessionAffinityHeaders": true, "supportsLongCacheRetention": true }`,
+      `   Safe compat default: { "sendSessionAffinityHeaders": true }`,
+    );
+    notes.push(
+      `   Add supportsLongCacheRetention only if the proxy explicitly supports prompt_cache_retention.`,
     );
 
     return notes;
@@ -3172,7 +3196,7 @@ function describeRouterChannelDiagnostics(model: PiModel): string[] {
   return notes;
 }
 
-function buildDoctorDiagnosis(model: PiModel): string {
+function buildDoctorDiagnosis(model: PiModel, options: { promptCacheRetention400?: boolean } = {}): string {
   const lines: string[] = [];
   lines.push(`Provider: ${model.provider}`);
   lines.push(`Model:    ${model.id}`);
@@ -3189,14 +3213,23 @@ function buildDoctorDiagnosis(model: PiModel): string {
     const key = modelKey(model);
     const slashIdx = key.indexOf("/");
     const providerLabel = slashIdx > 0 ? key.slice(0, slashIdx) : key;
-    const suggestion = Object.fromEntries(missing.map((f) => [f, true]));
     const modelsJsonPath = getModelsJsonDisplayPath();
-    lines.push(`Edit ${modelsJsonPath} -> providers["${providerLabel}"] -> compat (same level as baseUrl/api/apiKey/models):`);
-    lines.push(JSON.stringify(suggestion, null, 2));
+    lines.push(`Edit ${modelsJsonPath} -> providers["${providerLabel}"] -> compat (same level as baseUrl/api/apiKey/models).`);
+    appendOpenAIProxyCompatAdviceLines(lines, missing);
   } else if (isCompatCheckApplicable(model)) {
     lines.push("✅ Compat fully configured.");
   } else {
     lines.push("ℹ️ Compat check not applicable for this model.");
+  }
+
+  if (isCompatCheckApplicable(model) && compat.supportsLongCacheRetention === true) {
+    lines.push("");
+    if (options.promptCacheRetention400) {
+      lines.push("⚠️  A 400 response was observed while supportsLongCacheRetention is enabled.");
+      lines.push(`   ${getPromptCacheRetentionUnsupportedHint()}`);
+    } else {
+      lines.push(`ℹ️ Long retention is enabled. ${getPromptCacheRetentionUnsupportedHint()}`);
+    }
   }
 
   // ── Router/channel diagnostics ──
@@ -3349,22 +3382,22 @@ function buildCompatDiagnosis(model: PiModel): string | undefined {
   if (missing.length > 0) {
     const slashIdx = key.indexOf("/");
     const providerLabel = slashIdx > 0 ? key.slice(0, slashIdx) : key;
-    const suggestion = Object.fromEntries(missing.map((f) => [f, true]));
     const modelsJsonPath = getModelsJsonDisplayPath();
     lines.push(`Active model: ${key}`);
     lines.push(`Missing: ${missing.join(", ")}`);
     lines.push("");
     lines.push(`Edit ${modelsJsonPath} -> providers["${providerLabel}"] -> compat`);
-    lines.push(`(at the same level as baseUrl/api/apiKey/models) and add:`);
-    lines.push(JSON.stringify(suggestion, null, 2));
-    lines.push("");
-    lines.push(`Only enable if your endpoint supports them.`);
+    lines.push(`(at the same level as baseUrl/api/apiKey/models).`);
+    appendOpenAIProxyCompatAdviceLines(lines, missing);
   }
 
   // When compat is fully configured but router notes exist, prefix the status.
   if (routerNotes.length > 0 && missing.length === 0) {
     if (isCompatCheckApplicable(model)) {
       lines.push("✅ Compat fully configured.");
+      if (getCompat(model).supportsLongCacheRetention === true) {
+        lines.push(getPromptCacheRetentionUnsupportedHint());
+      }
     } else {
       lines.push("ℹ️ Compat check not applicable for this model.");
     }
@@ -3408,6 +3441,8 @@ export const __internals_for_tests = {
   isOpenAIFamilyToken,
   describeMissingOpenAIFamilyProxyCompat,
   describeMissingOpenAICompatibleProxyCompat,
+  buildSafeOpenAIProxyCompatSuggestion,
+  getPromptCacheRetentionUnsupportedHint,
   isOfficialOpenAIBaseUrl,
   // Non-GPT OpenAI-compatible model detection
   isKimiLikeModel,
@@ -3570,6 +3605,8 @@ export const __internals_for_tests = {
 
 export default function (pi: ExtensionAPI) {
   const warnedModels = new Set<string>();
+  const promptCacheRetention400Models = new Set<string>();
+  const warnedPromptCacheRetention400Models = new Set<string>();
   let cacheStatsByModel: Record<string, CacheStats> = {};
   let cacheStatsLegacyFamily: Partial<Record<CacheProviderId, CacheStats>> = emptyAllCacheStats();
   let lastStatusText: string | undefined;
@@ -3658,6 +3695,17 @@ export default function (pi: ExtensionAPI) {
     const created = emptyCacheStats();
     cacheStatsByModel[key] = created;
     return created;
+  }
+
+  function resetCurrentSessionStats(): void {
+    const prefix = `${currentSessionHash || "_nosession"}:`;
+    for (const key of Object.keys(cacheStatsByModel)) {
+      if (key.startsWith(prefix)) delete cacheStatsByModel[key];
+    }
+    for (const key of Array.from(recentSamplesByModelKey.keys())) {
+      if (key.startsWith(prefix)) recentSamplesByModelKey.delete(key);
+    }
+    lastStatusText = undefined;
   }
 
   async function persistCacheStats(ctx?: ExtensionContext): Promise<void> {
@@ -3818,16 +3866,13 @@ export default function (pi: ExtensionAPI) {
     const adapter = selectAdapterForModel(model);
     let statusText: string | undefined;
     if (adapter) {
-      if (!runtimeOptimizerEnabled) {
-        statusText = "Cache Optimizer disabled";
-      } else {
-        // Display session-scoped stats. A model that has never been used
-        // in this session shows 0/0. The message_end hook populates
-        // cacheStatsByModel[sessionModelKey(model)] on first use.
-        const sk = model ? sessionModelKey(model) : undefined;
-        const stats = sk ? cacheStatsByModel[sk] : undefined;
-        statusText = formatCacheStats(adapter, stats ?? emptyCacheStats());
-      }
+      // Display session-scoped stats. A model that has never been used
+      // in this session shows 0/0. The message_end hook populates
+      // cacheStatsByModel[sessionModelKey(model)] on first use.
+      const sk = model ? sessionModelKey(model) : undefined;
+      const stats = sk ? cacheStatsByModel[sk] : undefined;
+      const statsText = formatCacheStats(adapter, stats ?? emptyCacheStats());
+      statusText = runtimeOptimizerEnabled ? statsText : `Cache Optimizer disabled · ${statsText}`;
     }
 
     // If optimizeSystemPrompt detected structural truncation on this or
@@ -3861,7 +3906,7 @@ export default function (pi: ExtensionAPI) {
     // update so the marker persists through stats changes and day
     // rollovers. Redundant setStatus calls are blocked by the
     // `lastStatusText` early return above.
-    if (statusText !== undefined && model) {
+    if (runtimeOptimizerEnabled && statusText !== undefined && model) {
       const compatMissing = describeMissingOpenAICompatibleProxyCompat(model);
       if (compatMissing.length > 0) {
         statusText = statusText + " ⚠️ compat";
@@ -3978,9 +4023,26 @@ export default function (pi: ExtensionAPI) {
     return addOpenAIPromptCacheKey(event.payload, getSessionPromptCacheKey(ctx));
   });
 
-  pi.on("message_end", async (event, ctx) => {
-    if (!runtimeOptimizerEnabled) return;
+  pi.on("after_provider_response", (event, ctx) => {
+    const model = ctx.model;
+    if (!runtimeOptimizerEnabled || !model) return;
+    if (event.status !== 400) return;
+    if (!isCompatCheckApplicable(model)) return;
+    if (getCompat(model).supportsLongCacheRetention !== true) return;
 
+    const key = modelKey(model);
+    promptCacheRetention400Models.add(key);
+    if (warnedPromptCacheRetention400Models.has(key)) return;
+    warnedPromptCacheRetention400Models.add(key);
+    ctx.ui.notify(
+      `⚠️ ${LOG_PREFIX}: ${key} returned HTTP 400 while supportsLongCacheRetention is enabled. ` +
+      getPromptCacheRetentionUnsupportedHint() +
+      ` Run /cache-optimizer doctor for the exact edit location.`,
+      "warning",
+    );
+  });
+
+  pi.on("message_end", async (event, ctx) => {
     const adapter = selectAdapterForAssistantMessage(event.message, ctx.model);
     if (!adapter) return;
 
@@ -4032,20 +4094,22 @@ export default function (pi: ExtensionAPI) {
 
       if (subcommand === "enable") {
         setRuntimeOptimizerEnabled(true);
-        lastStatusText = undefined;
+        resetCurrentSessionStats();
+        await flushPersistCacheStats(cmdCtx as unknown as ExtensionContext);
         await publishStatus(cmdCtx as unknown as ExtensionContext, model);
-        cmdCtx.ui.notify(`✅ Pi Cache Optimizer enabled for this Pi process.\n${formatOptimizerRuntimeMode()}`, "info");
+        cmdCtx.ui.notify(`✅ Pi Cache Optimizer enabled for this Pi process. Current-session stats were reset for before/after comparison.\n${formatOptimizerRuntimeMode()}`, "info");
       } else if (subcommand === "disable") {
         setRuntimeOptimizerEnabled(false);
-        lastStatusText = undefined;
+        resetCurrentSessionStats();
+        await flushPersistCacheStats(cmdCtx as unknown as ExtensionContext);
         await publishStatus(cmdCtx as unknown as ExtensionContext, model);
-        cmdCtx.ui.notify(`⏸️ Pi Cache Optimizer disabled for this Pi process.\n${formatOptimizerRuntimeMode()}`, "warning");
+        cmdCtx.ui.notify(`⏸️ Pi Cache Optimizer disabled for this Pi process. Current-session stats were reset and will keep collecting while disabled for comparison.\n${formatOptimizerRuntimeMode()}`, "warning");
       } else if (subcommand === "doctor") {
         if (!model) {
           cmdCtx.ui.notify("No active model selected. Select a model first with /model or pi --model.", "warning");
           return;
         }
-        const diagnosis = buildDoctorDiagnosis(model);
+        const diagnosis = buildDoctorDiagnosis(model, { promptCacheRetention400: promptCacheRetention400Models.has(modelKey(model)) });
         const adapter = selectAdapterForModel(model);
         const sk = model ? sessionModelKey(model) : undefined;
         const statsState = sk ? cacheStatsByModel[sk] : undefined;
@@ -4129,19 +4193,21 @@ export default function (pi: ExtensionAPI) {
           const choice = await cmdCtx.ui.select("Cache Optimizer", menuOptions);
           if (choice === menuOptions[0]) {
             setRuntimeOptimizerEnabled(true);
-            lastStatusText = undefined;
+            resetCurrentSessionStats();
+            await flushPersistCacheStats(cmdCtx as unknown as ExtensionContext);
             await publishStatus(cmdCtx as unknown as ExtensionContext, model);
-            cmdCtx.ui.notify(`✅ Pi Cache Optimizer enabled for this Pi process.\n${formatOptimizerRuntimeMode()}`, "info");
+            cmdCtx.ui.notify(`✅ Pi Cache Optimizer enabled for this Pi process. Current-session stats were reset for before/after comparison.\n${formatOptimizerRuntimeMode()}`, "info");
           } else if (choice === menuOptions[1]) {
             setRuntimeOptimizerEnabled(false);
-            lastStatusText = undefined;
+            resetCurrentSessionStats();
+            await flushPersistCacheStats(cmdCtx as unknown as ExtensionContext);
             await publishStatus(cmdCtx as unknown as ExtensionContext, model);
-            cmdCtx.ui.notify(`⏸️ Pi Cache Optimizer disabled for this Pi process.\n${formatOptimizerRuntimeMode()}`, "warning");
+            cmdCtx.ui.notify(`⏸️ Pi Cache Optimizer disabled for this Pi process. Current-session stats were reset and will keep collecting while disabled for comparison.\n${formatOptimizerRuntimeMode()}`, "warning");
           } else if (choice === menuOptions[2]) {
             if (!model) {
               cmdCtx.ui.notify("No active model selected. Select a model first with /model or pi --model.", "warning");
             } else {
-              const diagnosis = buildDoctorDiagnosis(model);
+              const diagnosis = buildDoctorDiagnosis(model, { promptCacheRetention400: promptCacheRetention400Models.has(modelKey(model)) });
               const adapter = selectAdapterForModel(model);
               const sk = model ? sessionModelKey(model) : undefined;
               const statsState = sk ? cacheStatsByModel[sk] : undefined;
