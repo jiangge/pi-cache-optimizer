@@ -4,6 +4,39 @@ import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import type { BuildSystemPromptOptions, ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 
+type MutableEnv = Record<string, string | undefined>;
+
+type CacheRetentionEnvSnapshot = {
+  wasSet: boolean;
+  value?: string;
+};
+
+const PI_CACHE_RETENTION_ENV = "PI_CACHE_RETENTION";
+const LONG_CACHE_RETENTION_VALUE = "long";
+
+function captureCacheRetentionEnv(env: MutableEnv = process.env): CacheRetentionEnvSnapshot {
+  return {
+    wasSet: Object.prototype.hasOwnProperty.call(env, PI_CACHE_RETENTION_ENV),
+    value: env[PI_CACHE_RETENTION_ENV],
+  };
+}
+
+function requestLongCacheRetention(env: MutableEnv = process.env): void {
+  if (!env[PI_CACHE_RETENTION_ENV] || env[PI_CACHE_RETENTION_ENV] !== LONG_CACHE_RETENTION_VALUE) {
+    env[PI_CACHE_RETENTION_ENV] = LONG_CACHE_RETENTION_VALUE;
+  }
+}
+
+function restoreCacheRetentionEnv(snapshot: CacheRetentionEnvSnapshot, env: MutableEnv = process.env): void {
+  if (snapshot.wasSet) {
+    env[PI_CACHE_RETENTION_ENV] = snapshot.value;
+  } else {
+    delete env[PI_CACHE_RETENTION_ENV];
+  }
+}
+
+const STARTUP_CACHE_RETENTION_ENV = captureCacheRetentionEnv();
+
 /**
  * Pi Cache Optimizer (formerly pi-deepseek-cache-optimizer)
  *
@@ -19,10 +52,9 @@ import type { BuildSystemPromptOptions, ExtensionAPI, ExtensionContext } from "@
 
 // ============================================================
 // Automatically request long prompt-cache retention when Pi supports it.
+// /cache-optimizer disable restores the startup value for this Pi process.
 // ============================================================
-if (!process.env.PI_CACHE_RETENTION || process.env.PI_CACHE_RETENTION !== "long") {
-  process.env.PI_CACHE_RETENTION = "long";
-}
+requestLongCacheRetention();
 
 type PiModel = NonNullable<ExtensionContext["model"]>;
 type UnknownRecord = Record<string, unknown>;
@@ -39,6 +71,8 @@ const NO_OPENAI_CACHE_KEY_ENV = "PI_CACHE_OPTIMIZER_NO_OPENAI_CACHE_KEY";
 const OPENAI_PROMPT_CACHE_KEY_MAX_LENGTH = 64;
 const NO_SKILL_COMPRESSION_ENV = "PI_CACHE_OPTIMIZER_NO_SKILL_COMPRESSION";
 const NO_PROMPT_REWRITE_ENV = "PI_CACHE_OPTIMIZER_NO_PROMPT_REWRITE";
+
+let runtimeOptimizerEnabled = true;
 
 // WORM-flag: if optimizeSystemPrompt ever detects that its blind-replace
 // logic has accidentally truncated a structural marker (any XML tag or
@@ -657,9 +691,44 @@ function isDisabledEnv(value: string | undefined): boolean {
 }
 
 function shouldInjectOpenAIPromptCacheKey(): boolean {
+  if (!runtimeOptimizerEnabled) return false;
   if (isEnabledEnv(process.env[NO_OPENAI_CACHE_KEY_ENV])) return false;
   if (isDisabledEnv(process.env[OPENAI_CACHE_KEY_ENV])) return false;
   return true;
+}
+
+function setRuntimeOptimizerEnabled(enabled: boolean, env: MutableEnv = process.env): void {
+  runtimeOptimizerEnabled = enabled;
+  if (enabled) {
+    requestLongCacheRetention(env);
+  } else {
+    restoreCacheRetentionEnv(STARTUP_CACHE_RETENTION_ENV, env);
+  }
+}
+
+function isRuntimeOptimizerEnabled(): boolean {
+  return runtimeOptimizerEnabled;
+}
+
+function getOptimizerRuntimeModeLines(): string[] {
+  const state = runtimeOptimizerEnabled ? "enabled" : "disabled";
+  const lines: string[] = [];
+  lines.push(`Runtime state: ${state}`);
+  lines.push(`• Prompt rewrite: ${runtimeOptimizerEnabled && !isEnabledEnv(process.env[NO_PROMPT_REWRITE_ENV]) ? "on" : "off"}`);
+  lines.push(`• OpenAI prompt_cache_key fallback: ${shouldInjectOpenAIPromptCacheKey() ? "on" : "off"}`);
+  lines.push(`• Footer cache stats: ${runtimeOptimizerEnabled ? "on" : "off"}`);
+  lines.push(`• Compat warnings: ${runtimeOptimizerEnabled ? "on" : "off"}`);
+  lines.push(`• ${PI_CACHE_RETENTION_ENV}: ${process.env[PI_CACHE_RETENTION_ENV] ?? "(unset)"}`);
+  if (!runtimeOptimizerEnabled) {
+    lines.push("This is a current-process switch. Run /reload or restart Pi to return to startup behavior.");
+  } else if (isEnabledEnv(process.env[NO_PROMPT_REWRITE_ENV]) || !shouldInjectOpenAIPromptCacheKey()) {
+    lines.push("Some features are still disabled by environment variables.");
+  }
+  return lines;
+}
+
+function formatOptimizerRuntimeMode(): string {
+  return getOptimizerRuntimeModeLines().join("\n");
 }
 
 function isAssistantMessage(message: unknown): boolean {
@@ -3454,6 +3523,15 @@ export const __internals_for_tests = {
   modelKey,
   // Platform-friendly path helper
   getModelsJsonDisplayPath,
+  captureCacheRetentionEnv,
+  requestLongCacheRetention,
+  restoreCacheRetentionEnv,
+  setRuntimeOptimizerEnabled,
+  isRuntimeOptimizerEnabled,
+  getOptimizerRuntimeModeLines,
+  formatOptimizerRuntimeMode,
+  PI_CACHE_RETENTION_ENV,
+  LONG_CACHE_RETENTION_VALUE,
   // Integrity diagnostics
   getLastPromptIntegrityWarningAt,
   // Diagnostic command helpers
@@ -3740,12 +3818,16 @@ export default function (pi: ExtensionAPI) {
     const adapter = selectAdapterForModel(model);
     let statusText: string | undefined;
     if (adapter) {
-      // Display session-scoped stats. A model that has never been used
-      // in this session shows 0/0. The message_end hook populates
-      // cacheStatsByModel[sessionModelKey(model)] on first use.
-      const sk = model ? sessionModelKey(model) : undefined;
-      const stats = sk ? cacheStatsByModel[sk] : undefined;
-      statusText = formatCacheStats(adapter, stats ?? emptyCacheStats());
+      if (!runtimeOptimizerEnabled) {
+        statusText = "Cache Optimizer disabled";
+      } else {
+        // Display session-scoped stats. A model that has never been used
+        // in this session shows 0/0. The message_end hook populates
+        // cacheStatsByModel[sessionModelKey(model)] on first use.
+        const sk = model ? sessionModelKey(model) : undefined;
+        const stats = sk ? cacheStatsByModel[sk] : undefined;
+        statusText = formatCacheStats(adapter, stats ?? emptyCacheStats());
+      }
     }
 
     // If optimizeSystemPrompt detected structural truncation on this or
@@ -3794,12 +3876,12 @@ export default function (pi: ExtensionAPI) {
 
   pi.on("session_start", async (event, ctx) => {
     await restoreCacheStats(event.reason, ctx);
-    notifyCacheCompatIfNeeded(ctx.model, ctx, warnedModels);
+    if (runtimeOptimizerEnabled) notifyCacheCompatIfNeeded(ctx.model, ctx, warnedModels);
     await publishStatus(ctx);
   });
 
   pi.on("model_select", async (event, ctx) => {
-    notifyCacheCompatIfNeeded(event.model, ctx, warnedModels);
+    if (runtimeOptimizerEnabled) notifyCacheCompatIfNeeded(event.model, ctx, warnedModels);
     await publishStatus(ctx, event.model);
   });
 
@@ -3837,6 +3919,8 @@ export default function (pi: ExtensionAPI) {
         return {};
       }
     }
+
+    if (!runtimeOptimizerEnabled) return {};
 
     // Global opt-out: PI_CACHE_OPTIMIZER_NO_PROMPT_REWRITE=1 bypasses all
     // prompt mutations below (session-overview churn strip, skill compression,
@@ -3895,6 +3979,8 @@ export default function (pi: ExtensionAPI) {
   });
 
   pi.on("message_end", async (event, ctx) => {
+    if (!runtimeOptimizerEnabled) return;
+
     const adapter = selectAdapterForAssistantMessage(event.message, ctx.model);
     if (!adapter) return;
 
@@ -3929,6 +4015,8 @@ export default function (pi: ExtensionAPI) {
   // ────────────────────────────────────────────────────────────────
   // Register /cache-optimizer command
   // Subcommands:
+  //   enable  — enable runtime prompt/cache optimizations for this process
+  //   disable — disable runtime prompt/cache optimizations for this process
   //   doctor  — show current model/provider/api/baseUrl/compat status
   //             with low-hit diagnosis
   //   stats   — show active model stats bucket, recent trend, usage
@@ -3942,7 +4030,17 @@ export default function (pi: ExtensionAPI) {
       const model = cmdCtx.model;
       const subcommand = args.trim().toLowerCase().split(/\s+/)[0] || "help";
 
-      if (subcommand === "doctor") {
+      if (subcommand === "enable") {
+        setRuntimeOptimizerEnabled(true);
+        lastStatusText = undefined;
+        await publishStatus(cmdCtx as unknown as ExtensionContext, model);
+        cmdCtx.ui.notify(`✅ Pi Cache Optimizer enabled for this Pi process.\n${formatOptimizerRuntimeMode()}`, "info");
+      } else if (subcommand === "disable") {
+        setRuntimeOptimizerEnabled(false);
+        lastStatusText = undefined;
+        await publishStatus(cmdCtx as unknown as ExtensionContext, model);
+        cmdCtx.ui.notify(`⏸️ Pi Cache Optimizer disabled for this Pi process.\n${formatOptimizerRuntimeMode()}`, "warning");
+      } else if (subcommand === "doctor") {
         if (!model) {
           cmdCtx.ui.notify("No active model selected. Select a model first with /model or pi --model.", "warning");
           return;
@@ -4020,6 +4118,8 @@ export default function (pi: ExtensionAPI) {
         // Try interactive selection menu when UI supports it
         if (cmdCtx.hasUI) {
           const menuOptions = [
+            "✅ Enable — Turn on runtime optimizations for this Pi process",
+            "⏸️ Disable — Turn off runtime optimizations for this Pi process",
             "🩺 Doctor — Show current model cache configuration",
             "📊 Stats — Show active model stats bucket and trend",
             "⚙️  Compat — Show compat suggestion with edit instructions",
@@ -4028,6 +4128,16 @@ export default function (pi: ExtensionAPI) {
           ];
           const choice = await cmdCtx.ui.select("Cache Optimizer", menuOptions);
           if (choice === menuOptions[0]) {
+            setRuntimeOptimizerEnabled(true);
+            lastStatusText = undefined;
+            await publishStatus(cmdCtx as unknown as ExtensionContext, model);
+            cmdCtx.ui.notify(`✅ Pi Cache Optimizer enabled for this Pi process.\n${formatOptimizerRuntimeMode()}`, "info");
+          } else if (choice === menuOptions[1]) {
+            setRuntimeOptimizerEnabled(false);
+            lastStatusText = undefined;
+            await publishStatus(cmdCtx as unknown as ExtensionContext, model);
+            cmdCtx.ui.notify(`⏸️ Pi Cache Optimizer disabled for this Pi process.\n${formatOptimizerRuntimeMode()}`, "warning");
+          } else if (choice === menuOptions[2]) {
             if (!model) {
               cmdCtx.ui.notify("No active model selected. Select a model first with /model or pi --model.", "warning");
             } else {
@@ -4042,7 +4152,7 @@ export default function (pi: ExtensionAPI) {
                 : diagnosis;
               cmdCtx.ui.notify(fullDiagnosis, "info");
             }
-          } else if (choice === menuOptions[1]) {
+          } else if (choice === menuOptions[3]) {
             if (!model) {
               cmdCtx.ui.notify("No active model selected. Select a model first with /model or pi --model.", "warning");
             } else {
@@ -4053,7 +4163,7 @@ export default function (pi: ExtensionAPI) {
               const output = buildStatsOutput(model, adapter, statsState, samples);
               cmdCtx.ui.notify(output, "info");
             }
-          } else if (choice === menuOptions[2]) {
+          } else if (choice === menuOptions[4]) {
             if (!model) {
               cmdCtx.ui.notify("No active model selected. Select a model first with /model or pi --model.", "warning");
             } else {
@@ -4069,7 +4179,7 @@ export default function (pi: ExtensionAPI) {
                 );
               }
             }
-          } else if (choice === menuOptions[3]) {
+          } else if (choice === menuOptions[5]) {
             if (!model) {
               cmdCtx.ui.notify("No active model selected. Select a model first with /model or pi --model.", "warning");
             } else {
@@ -4098,10 +4208,14 @@ export default function (pi: ExtensionAPI) {
         // Fallback: text help when no interactive UI
         const diagnosis: string[] = [];
         diagnosis.push("📋 /cache-optimizer commands:");
+        diagnosis.push("  enable  — Enable prompt/cache optimizations for this Pi process");
+        diagnosis.push("  disable — Disable prompt/cache optimizations for this Pi process");
         diagnosis.push("  doctor  — Show current model/provider/api/baseUrl/compat and low-hit diagnosis");
         diagnosis.push("  stats   — Show active model stats bucket and recent trend");
         diagnosis.push("  compat  — Show compat suggestion with edit location");
         diagnosis.push("  reset   — Reset local session stats for current model (does not affect upstream)");
+        diagnosis.push("");
+        diagnosis.push(formatOptimizerRuntimeMode());
         diagnosis.push("");
         if (model) {
           const displayKey = modelKey(model);

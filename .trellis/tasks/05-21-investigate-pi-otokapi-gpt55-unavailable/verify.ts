@@ -160,6 +160,15 @@ const {
   modelKey,
   buildOpenAIProxyCompatWarningText,
   getModelsJsonDisplayPath,
+  captureCacheRetentionEnv,
+  requestLongCacheRetention,
+  restoreCacheRetentionEnv,
+  setRuntimeOptimizerEnabled,
+  isRuntimeOptimizerEnabled,
+  getOptimizerRuntimeModeLines,
+  formatOptimizerRuntimeMode,
+  PI_CACHE_RETENTION_ENV,
+  LONG_CACHE_RETENTION_VALUE,
   getLastPromptIntegrityWarningAt,
   // Cache stats helpers
   addUsageToCacheStats,
@@ -387,7 +396,13 @@ function makeUsageSnapshot(overrides: Partial<ReturnType<typeof emptyCacheStats>
     // OPENAI_CACHE_KEY=1 (no NO_OPENAI_CACHE_KEY) → enabled
     process.env.PI_CACHE_OPTIMIZER_OPENAI_CACHE_KEY = "1";
     expect("shouldInject.key-1", shouldInjectOpenAIPromptCacheKey() === true, "expected true when OPENAI_CACHE_KEY=1");
+
+    setRuntimeOptimizerEnabled(false);
+    expect("shouldInject.runtime-disabled", shouldInjectOpenAIPromptCacheKey() === false, "expected false when runtime optimizer is disabled");
+    setRuntimeOptimizerEnabled(true);
+    expect("shouldInject.runtime-enabled", shouldInjectOpenAIPromptCacheKey() === true, "expected true after runtime optimizer is re-enabled");
   } finally {
+    setRuntimeOptimizerEnabled(true);
     // Restore
     if (savedNoKey !== undefined) process.env.PI_CACHE_OPTIMIZER_NO_OPENAI_CACHE_KEY = savedNoKey;
     else delete process.env.PI_CACHE_OPTIMIZER_NO_OPENAI_CACHE_KEY;
@@ -396,7 +411,37 @@ function makeUsageSnapshot(overrides: Partial<ReturnType<typeof emptyCacheStats>
   }
 }
 
-// ==========================================================================
+// ===========================================================================
+// Test 5a: runtime enable/disable helpers — current-process switch
+// ===========================================================================
+{
+  const env: Record<string, string | undefined> = { PI_CACHE_RETENTION: "short" };
+  const snapshot = captureCacheRetentionEnv(env);
+  requestLongCacheRetention(env);
+  expect("runtime.requestLongCacheRetention", env.PI_CACHE_RETENTION === LONG_CACHE_RETENTION_VALUE, "expected long cache retention request");
+  restoreCacheRetentionEnv(snapshot, env);
+  expect("runtime.restoreExistingRetention", env.PI_CACHE_RETENTION === "short", "expected original retention value restored");
+
+  const emptyEnv: Record<string, string | undefined> = {};
+  const emptySnapshot = captureCacheRetentionEnv(emptyEnv);
+  requestLongCacheRetention(emptyEnv);
+  expect("runtime.requestLongCacheRetention.empty", emptyEnv.PI_CACHE_RETENTION === "long", "expected empty env to receive long retention");
+  restoreCacheRetentionEnv(emptySnapshot, emptyEnv);
+  expect("runtime.restoreUnsetRetention", emptyEnv.PI_CACHE_RETENTION === undefined, "expected unset retention to be deleted");
+
+  setRuntimeOptimizerEnabled(false, env);
+  expect("runtime.disabled-state", isRuntimeOptimizerEnabled() === false, "expected runtime disabled");
+  const disabledText = formatOptimizerRuntimeMode();
+  expect("runtime.disabled-text", disabledText.includes("Runtime state: disabled"), `unexpected disabled mode text: ${disabledText}`);
+
+  setRuntimeOptimizerEnabled(true, env);
+  expect("runtime.enabled-state", isRuntimeOptimizerEnabled() === true, "expected runtime enabled");
+  expect("runtime.enabled-retention", env.PI_CACHE_RETENTION === "long", "expected runtime enable to request long retention");
+  const enabledLines = getOptimizerRuntimeModeLines();
+  expect("runtime.enabled-lines", enabledLines.some((line) => line.includes("Runtime state: enabled")), `unexpected enabled mode lines: ${enabledLines.join(" | ")}`);
+}
+
+// ===========================================================================
 // Test 5b: PI_CACHE_OPTIMIZER_NO_PROMPT_REWRITE env var opt-out
 // ==========================================================================
 {

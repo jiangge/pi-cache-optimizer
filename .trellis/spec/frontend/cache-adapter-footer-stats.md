@@ -159,9 +159,14 @@ core's own cache transport.
   `on`) or legacy-style `PI_CACHE_OPTIMIZER_OPENAI_CACHE_KEY=0` (disabled:
   `0`, `false`, `no`, `off`).
 * All `before_agent_start` prompt mutations (session-overview churn strip,
-  skill compression, stable-prefix reorder) can be disabled with:
+  skill compression, stable-prefix reorder) can be disabled persistently with:
   `PI_CACHE_OPTIMIZER_NO_PROMPT_REWRITE=1` (truthy: `1`, `true`, `yes`, `on`).
   Footer stats and the OpenAI `prompt_cache_key` fallback remain active.
+* Runtime `/cache-optimizer disable` is broader but process-local: it disables prompt
+  mutations, OpenAI-compatible `prompt_cache_key` fallback, compat warnings, footer
+  stat updates, and restores the startup `PI_CACHE_RETENTION` value for the current
+  Pi process. `/cache-optimizer enable` re-enables those runtime features and requests
+  `PI_CACHE_RETENTION=long` again. `/reload` or process restart returns to startup behavior.
 * Official OpenAI Responses / Codex prompt bypass remains unchanged: the
   `before_agent_start` hook still avoids prompt rewriting for
   `openai-codex-responses` and `openai-responses`.
@@ -751,7 +756,23 @@ Rules:
 
 ## Diagnostic command (`/cache-optimizer`)
 
-The extension registers a Pi command `/cache-optimizer` with four subcommands.
+The extension registers a Pi command `/cache-optimizer` with six subcommands.
+
+### `/cache-optimizer enable` / `/cache-optimizer disable`
+
+These are current-process runtime switches, not persistent config writes.
+
+* `enable` turns runtime optimization back on, requests `PI_CACHE_RETENTION=long`,
+  republishes the footer, and shows a status summary for prompt rewrite,
+  OpenAI-compatible `prompt_cache_key` fallback, footer stats, compat warnings, and
+  `PI_CACHE_RETENTION`.
+* `disable` turns runtime optimization off, restores the startup `PI_CACHE_RETENTION`
+  value (or unsets it if it was originally unset), suppresses prompt mutations,
+  OpenAI-compatible `prompt_cache_key` fallback, compat warnings, and footer stat
+  updates, republishes the footer as `Cache Optimizer disabled` for adapter-matched
+  models, and shows the same status summary.
+* Neither command writes environment files, Pi settings, `models.json`, or stats files.
+  Run `/reload` or restart Pi to return to startup behavior.
 
 ### `/cache-optimizer doctor`
 
@@ -837,12 +858,13 @@ other Pi sessions.
 ### No arguments
 
 When the Pi UI supports it (`ctx.ui.select` available), shows an interactive
-selection menu with options: Doctor, Stats, Compat, Reset, Cancel. Selecting a
-subcommand executes the corresponding logic. Cancel closes the menu.
+selection menu with options: Enable, Disable, Doctor, Stats, Compat, Reset, Cancel.
+Selecting a subcommand executes the corresponding logic. Cancel closes the menu.
 
 In non-interactive terminals (no `ui.select`), falls back to a short text help
-listing available subcommands and a one-line summary of the active model's compat
-status (using the same applicability-respecting text as doctor/compat).
+listing available subcommands, runtime enabled/disabled state, and a one-line summary
+of the active model's compat status (using the same applicability-respecting text as
+doctor/compat).
 
 ### Recent samples (in-memory, no persistence)
 
@@ -923,8 +945,11 @@ compat). It does NOT read or expose:
 | `/cache-optimizer doctor` with non-applicable model (official OpenAI, non-openai-completions, custom transport) | Shows `ℹ️ Compat check not applicable for this model.` |
 | `/cache-optimizer compat` with a fully configured applicable model | Shows `✅ Compat fully configured.` |
 | `/cache-optimizer compat` with a non-applicable model | Shows `ℹ️ Compat check not applicable for this model.` |
-| `/cache-optimizer` (no args) with UI supports select | Shows interactive selection menu (Doctor / Stats / Compat / Reset / Cancel) |
-| `/cache-optimizer` (no args) without UI | Text help lists `doctor`, `stats`, `compat`, `reset` subcommands |
+| `/cache-optimizer enable` | Runtime optimizer becomes enabled, `PI_CACHE_RETENTION=long` is requested, footer republishes, and notification lists active feature states |
+| `/cache-optimizer disable` | Runtime optimizer becomes disabled for this Pi process, startup `PI_CACHE_RETENTION` is restored/unset, adapter-matched footer shows `Cache Optimizer disabled`, and notification lists disabled feature states |
+| Runtime disabled before hooks fire | `before_agent_start` returns `{}`, `before_provider_request` does not add `prompt_cache_key`, `message_end` does not update stats, and session/model compat warnings are suppressed |
+| `/cache-optimizer` (no args) with UI supports select | Shows interactive selection menu (Enable / Disable / Doctor / Stats / Compat / Reset / Cancel) |
+| `/cache-optimizer` (no args) without UI | Text help lists `enable`, `disable`, `doctor`, `stats`, `compat`, `reset` subcommands plus runtime state |
 | Footer status for missing-compat model | Shows `⚠️ compat` appended to the cache stats line |
 | Footer status when compat is fixed or model changes | `⚠️ compat` marker clears |
 | `/cache-optimizer doctor` with OpenRouter model | Output includes `🔀 Router/channel: OpenRouter detected` with routing fix suggestion and JSON example for `openRouterRouting` |
