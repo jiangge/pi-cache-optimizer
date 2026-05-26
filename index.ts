@@ -4182,13 +4182,13 @@ export default function (pi: ExtensionAPI) {
         // Try interactive selection menu when UI supports it
         if (cmdCtx.hasUI) {
           const menuOptions = [
-            "✅ Enable — Turn on runtime optimizations for this Pi process",
-            "⏸️ Disable — Turn off runtime optimizations for this Pi process",
-            "🩺 Doctor — Show current model cache configuration",
-            "📊 Stats — Show active model stats bucket and trend",
-            "⚙️  Compat — Show compat suggestion with edit instructions",
-            "🔄 Reset — Reset local session stats for current model",
-            "❌ Cancel",
+            "Enable — Turn on runtime optimizations",
+            "Disable — Turn off runtime optimizations",
+            "Doctor — Show cache configuration",
+            "Stats — Show cache stats and trend",
+            "Compat — Show compat suggestion",
+            "Reset — Reset local session stats",
+            "Cancel",
           ];
           const choice = await cmdCtx.ui.select("Cache Optimizer", menuOptions);
           if (choice === menuOptions[0]) {

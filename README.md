@@ -12,6 +12,18 @@ Pi extension for improving provider-side KV / prompt cache hit rates. It keeps s
 
 > Renamed from `pi-deepseek-cache-optimizer`. Existing footer counters migrate automatically. This package never creates, edits, backs up, or deletes your `~/.pi/agent/models.json`.
 
+## Contents
+
+- [What it does](#what-it-does)
+- [Install](#install)
+- [Commands](#commands)
+- [Persistent opt-out](#persistent-opt-out)
+- [OpenAI-compatible proxy setup](#openai-compatible-proxy-setup)
+- [Footer stats](#footer-stats)
+- [Uninstall](#uninstall)
+- [Verify effect](#verify-effect)
+- [License](#license)
+
 ## What it does
 
 - Reorders stable system-prompt content before dynamic context.
@@ -62,7 +74,7 @@ Run `/reload` in Pi after install/update/remove so extension hooks refresh.
 
 ## OpenAI-compatible proxy setup
 
-For third-party `openai-completions` proxies such as Otokapi / LiteLLM / OneAPI / NewAPI / OpenRouter-like channels, low cache hit rate is often caused by multi-backend routing. The safe default is session affinity:
+For third-party `openai-completions` proxies such as LiteLLM / OneAPI / NewAPI / OpenRouter-like channels, low cache hit rate is often caused by multi-backend routing. The safe default is session affinity:
 
 ```json
 {
@@ -106,10 +118,13 @@ pi remove npm:pi-cache-optimizer
 
 Then run `/reload` or restart Pi. Optional local stats cleanup:
 
-```bash
-rm -f ~/.pi/agent/pi-cache-optimizer-stats.json
-rm -f ~/.pi/agent/deepseek-cache-optimizer-stats.json
-```
+| Platform | Delete local stats files |
+|---|---|
+| Linux / macOS / WSL | `rm -f ~/.pi/agent/pi-cache-optimizer-stats.json ~/.pi/agent/deepseek-cache-optimizer-stats.json` |
+| Windows PowerShell | `Remove-Item -Force "$env:USERPROFILE\.pi\agent\pi-cache-optimizer-stats.json", "$env:USERPROFILE\.pi\agent\deepseek-cache-optimizer-stats.json" -ErrorAction SilentlyContinue` |
+| Windows Command Prompt | `del /f /q "%USERPROFILE%\.pi\agent\pi-cache-optimizer-stats.json" "%USERPROFILE%\.pi\agent\deepseek-cache-optimizer-stats.json" 2>nul` |
+
+Do not delete `models.json` during cleanup; it contains your Pi model/provider configuration and is not owned by this package.
 
 ## Verify effect
 

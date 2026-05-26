@@ -2278,46 +2278,75 @@ Line count: 10 / 1000
 }
 
 // ==========================================================================
-// Test 45: Select menu options structure — verify the three menu options exist
+// Test 45: Select menu options structure — verify concise icon-free menu options
 // ==========================================================================
 {
   // Build the menu options (same as in the command handler)
   const menuOptions = [
-    "🩺 Doctor — Show current model cache configuration",
-    "⚙️  Compat — Show compat suggestion with edit instructions",
-    "❌ Cancel",
+    "Enable — Turn on runtime optimizations",
+    "Disable — Turn off runtime optimizations",
+    "Doctor — Show cache configuration",
+    "Stats — Show cache stats and trend",
+    "Compat — Show compat suggestion",
+    "Reset — Reset local session stats",
+    "Cancel",
   ];
 
   expect(
-    "menu.three-options",
-    menuOptions.length === 3,
-    `expected exactly 3 menu options, got ${menuOptions.length}`,
+    "menu.seven-options",
+    menuOptions.length === 7,
+    `expected exactly 7 menu options, got ${menuOptions.length}`,
   );
 
-  // Each option must be a non-empty string
+  // Each option must be a non-empty string and avoid leading icons.
   for (const opt of menuOptions) {
     expect(
       `menu.label-non-empty:${opt.slice(0, 10)}`,
       opt.length > 0,
       `expected menu option to be non-empty`,
     );
+    expect(
+      `menu.no-leading-icon:${opt.slice(0, 10)}`,
+      /^[A-Za-z]/.test(opt),
+      `expected menu option to start with a word, got ${JSON.stringify(opt)}`,
+    );
   }
 
   // Check expected content via substring matches (Pi select takes string[])
   expect(
+    "menu.has-enable",
+    menuOptions[0].includes("Enable"),
+    "expected menu option 0 to mention Enable",
+  );
+  expect(
+    "menu.has-disable",
+    menuOptions[1].includes("Disable"),
+    "expected menu option 1 to mention Disable",
+  );
+  expect(
     "menu.has-doctor",
-    menuOptions[0].includes("Doctor"),
-    "expected menu option 0 to mention Doctor",
+    menuOptions[2].includes("Doctor"),
+    "expected menu option 2 to mention Doctor",
+  );
+  expect(
+    "menu.has-stats",
+    menuOptions[3].includes("Stats"),
+    "expected menu option 3 to mention Stats",
   );
   expect(
     "menu.has-compat",
-    menuOptions[1].includes("Compat"),
-    "expected menu option 1 to mention Compat",
+    menuOptions[4].includes("Compat"),
+    "expected menu option 4 to mention Compat",
+  );
+  expect(
+    "menu.has-reset",
+    menuOptions[5].includes("Reset"),
+    "expected menu option 5 to mention Reset",
   );
   expect(
     "menu.has-cancel",
-    menuOptions[2].includes("Cancel"),
-    "expected menu option 2 to mention Cancel",
+    menuOptions[6].includes("Cancel"),
+    "expected menu option 6 to mention Cancel",
   );
 }
 

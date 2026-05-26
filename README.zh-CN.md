@@ -12,6 +12,18 @@
 
 > 本包已从 `pi-deepseek-cache-optimizer` 改名。已有底部统计会自动迁移。本扩展绝不会创建、修改、备份或删除你的 `~/.pi/agent/models.json`。
 
+## 目录
+
+- [功能](#功能)
+- [安装](#安装)
+- [命令](#命令)
+- [持久 Opt-out](#持久-opt-out)
+- [OpenAI-compatible 代理配置](#openai-compatible-代理配置)
+- [Footer 统计](#footer-统计)
+- [卸载](#卸载)
+- [验证效果](#验证效果)
+- [License](#license)
+
 ## 功能
 
 - 将稳定的 system prompt 内容移动到动态上下文之前。
@@ -62,7 +74,7 @@ pi remove npm:pi-deepseek-cache-optimizer && pi install npm:pi-cache-optimizer
 
 ## OpenAI-compatible 代理配置
 
-对 Otokapi / LiteLLM / OneAPI / NewAPI / 类 OpenRouter 渠道等第三方 `openai-completions` 代理，缓存命中率低通常是因为请求被分散到多个后端。安全默认配置是 session affinity：
+对 LiteLLM / OneAPI / NewAPI / 类 OpenRouter 渠道等第三方 `openai-completions` 代理，缓存命中率低通常是因为请求被分散到多个后端。安全默认配置是 session affinity：
 
 ```json
 {
@@ -106,10 +118,13 @@ pi remove npm:pi-cache-optimizer
 
 然后运行 `/reload` 或重启 Pi。可选：删除本地统计文件：
 
-```bash
-rm -f ~/.pi/agent/pi-cache-optimizer-stats.json
-rm -f ~/.pi/agent/deepseek-cache-optimizer-stats.json
-```
+| 平台 | 删除本地统计文件 |
+|---|---|
+| Linux / macOS / WSL | `rm -f ~/.pi/agent/pi-cache-optimizer-stats.json ~/.pi/agent/deepseek-cache-optimizer-stats.json` |
+| Windows PowerShell | `Remove-Item -Force "$env:USERPROFILE\.pi\agent\pi-cache-optimizer-stats.json", "$env:USERPROFILE\.pi\agent\deepseek-cache-optimizer-stats.json" -ErrorAction SilentlyContinue` |
+| Windows 命令提示符 | `del /f /q "%USERPROFILE%\.pi\agent\pi-cache-optimizer-stats.json" "%USERPROFILE%\.pi\agent\deepseek-cache-optimizer-stats.json" 2>nul` |
+
+清理时不要删除 `models.json`；它保存你的 Pi 模型 / provider 配置，不属于本包。
 
 ## 验证效果
 
