@@ -69,12 +69,12 @@ pi remove npm:pi-deepseek-cache-optimizer && pi install npm:pi-cache-optimizer
 |---|---|
 | `PI_CACHE_OPTIMIZER_NO_PROMPT_REWRITE=1` | 只关闭 prompt 改写；footer 统计和 cache-key fallback 仍启用。 |
 | `PI_CACHE_OPTIMIZER_NO_SKILL_COMPRESSION=1` | 保留 Pi 原始 verbose skill XML。 |
-| `PI_CACHE_OPTIMIZER_OPENAI_CACHE_KEY=0` | 关闭 OpenAI-compatible `prompt_cache_key` fallback。 |
-| `PI_CACHE_OPTIMIZER_NO_OPENAI_CACHE_KEY=1` | 关闭 OpenAI-compatible `prompt_cache_key` fallback。 |
+| `PI_CACHE_OPTIMIZER_NO_OPENAI_CACHE_KEY=1` | 关闭 OpenAI-compatible `prompt_cache_key` fallback。推荐使用这个显式 opt-out。 |
+| `PI_CACHE_OPTIMIZER_OPENAI_CACHE_KEY=0` | 通过旧的反向开关关闭同一个 fallback。取值 `0`、`false`、`no`、`off` 时关闭。 |
 
 ## OpenAI-compatible 代理配置
 
-对 LiteLLM / OneAPI / NewAPI / 类 OpenRouter 渠道等第三方 `openai-completions` 代理，缓存命中率低通常是因为请求被分散到多个后端。安全默认配置是 session affinity：
+LiteLLM / OneAPI / NewAPI / 类 OpenRouter 渠道等第三方 `openai-completions` 代理，常会把同一个 session 分散到多个上游后端，导致 provider 侧 prompt cache 被拆散。建议先启用 session affinity：
 
 ```json
 {
@@ -94,7 +94,13 @@ pi remove npm:pi-deepseek-cache-optimizer && pi install npm:pi-cache-optimizer
 }
 ```
 
-只有在 endpoint / proxy 明确支持 OpenAI long prompt cache retention 时，才添加 `supportsLongCacheRetention: true`。本扩展不会直接写入 `prompt_cache_retention`；它会请求 `PI_CACHE_RETENTION=long`，当 compat 声明支持 long retention 时，Pi 可能发送 `prompt_cache_retention`。如果某代理返回 `400 Unsupported parameter: prompt_cache_retention`，请为该渠道移除 / 避免 `supportsLongCacheRetention`，如支持可保留 `sendSessionAffinityHeaders`，并用 `/cache-optimizer compat` / `/cache-optimizer doctor` 诊断。当启用 long retention compat 时观察到 400，本扩展会给一次性 warning，并在 doctor 中提示。本扩展只给建议，不会修改 `models.json`。
+说明：
+
+- `sendSessionAffinityHeaders: true` 是安全默认项，前提是你的代理支持 sticky routing。
+- `supportsLongCacheRetention: true` 是可选项。只有 endpoint 明确支持 OpenAI long prompt cache retention 时才添加。
+- 如果出现 `400 Unsupported parameter: prompt_cache_retention`，请为该渠道移除 / 避免 `supportsLongCacheRetention`；如支持，可保留 `sendSessionAffinityHeaders`。
+- 使用 `/cache-optimizer compat` 或 `/cache-optimizer doctor` 查看当前模型的具体建议。
+- 本扩展只给建议，不会修改 `models.json`。
 
 ## Footer 统计
 
@@ -103,8 +109,10 @@ pi remove npm:pi-deepseek-cache-optimizer && pi install npm:pi-cache-optimizer
 示例 footer：
 
 ```text
-OpenAI cache 3/10 (30%) · 0.002M/0.005M tok ⚠️ compat
+OpenAI cache 3/10 · 0.002M/0.005M tok (40%) ⚠️ compat
 ```
+
+格式：`<label> <命中请求数>/<总请求数> · <cached input tokens>/<total input tokens> tok (<token 命中率>)`。部分 adapter 还可能追加 `· write <tokens> tok`，运行时诊断可能追加 `⚠️ compat` 或 `⚠️ integrity`。
 
 支持的 footer label 包括：DS、Claude、OpenAI、Gemini、Kimi、Qwen、GLM、MiniMax、Hunyuan、Mistral、Grok、Llama、Nemotron、Cohere、Yi、Doubao、ERNIE、Baichuan、StepFun、Spark、InternLM、Gemma、Phi、Jamba、Solar、Sonar、Nova、Reka、Falcon、DBRX、MPT、StableLM、Aquila、EXAONE、HyperCLOVA、Luminous、Hermes、Granite、Arctic、Pangu、SenseNova、Zhinao、MiniCPM、XVERSE、Orion、OpenChat、Vicuna、Wizard、Zephyr、Dolphin、OpenOrca、Starling、BLOOM、RWKV、Aya。
 

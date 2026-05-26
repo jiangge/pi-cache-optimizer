@@ -69,12 +69,12 @@ Run `/reload` in Pi after install/update/remove so extension hooks refresh.
 |---|---|
 | `PI_CACHE_OPTIMIZER_NO_PROMPT_REWRITE=1` | Disable prompt mutations only; footer stats and cache-key fallback remain active. |
 | `PI_CACHE_OPTIMIZER_NO_SKILL_COMPRESSION=1` | Keep Pi's verbose skill XML. |
-| `PI_CACHE_OPTIMIZER_OPENAI_CACHE_KEY=0` | Disable the OpenAI-compatible `prompt_cache_key` fallback. |
-| `PI_CACHE_OPTIMIZER_NO_OPENAI_CACHE_KEY=1` | Disable the OpenAI-compatible `prompt_cache_key` fallback. |
+| `PI_CACHE_OPTIMIZER_NO_OPENAI_CACHE_KEY=1` | Disable the OpenAI-compatible `prompt_cache_key` fallback. Preferred explicit opt-out. |
+| `PI_CACHE_OPTIMIZER_OPENAI_CACHE_KEY=0` | Disable the same fallback via the legacy inverse switch. Values `0`, `false`, `no`, or `off` disable it. |
 
 ## OpenAI-compatible proxy setup
 
-For third-party `openai-completions` proxies such as LiteLLM / OneAPI / NewAPI / OpenRouter-like channels, low cache hit rate is often caused by multi-backend routing. The safe default is session affinity:
+Third-party `openai-completions` proxies (LiteLLM / OneAPI / NewAPI / OpenRouter-like channels) often route one session across multiple upstream backends. That splits provider-side prompt caches. Start with session affinity:
 
 ```json
 {
@@ -94,7 +94,13 @@ For third-party `openai-completions` proxies such as LiteLLM / OneAPI / NewAPI /
 }
 ```
 
-Only add `supportsLongCacheRetention: true` after the endpoint/proxy explicitly supports OpenAI long prompt cache retention. This extension does not directly write `prompt_cache_retention`; it requests `PI_CACHE_RETENTION=long`, and Pi may send `prompt_cache_retention` when compat says long retention is supported. If a proxy returns `400 Unsupported parameter: prompt_cache_retention`, remove/avoid `supportsLongCacheRetention` for that channel, keep `sendSessionAffinityHeaders` if supported, and use `/cache-optimizer compat` / `/cache-optimizer doctor` for diagnosis. When a 400 is observed while long retention compat is enabled, the extension adds a one-time warning and doctor hint. This extension itself only advises; it does not edit `models.json`.
+Notes:
+
+- `sendSessionAffinityHeaders: true` is the safe default when your proxy supports sticky routing.
+- `supportsLongCacheRetention: true` is optional. Add it only when the endpoint explicitly supports OpenAI long prompt cache retention.
+- If you see `400 Unsupported parameter: prompt_cache_retention`, remove/avoid `supportsLongCacheRetention` for that channel. Keep `sendSessionAffinityHeaders` if supported.
+- Use `/cache-optimizer compat` or `/cache-optimizer doctor` to see model-specific advice.
+- This extension only advises; it does not edit `models.json`.
 
 ## Footer stats
 
@@ -103,8 +109,10 @@ Stats are read-only local counters stored at `~/.pi/agent/pi-cache-optimizer-sta
 Example footer:
 
 ```text
-OpenAI cache 3/10 (30%) · 0.002M/0.005M tok ⚠️ compat
+OpenAI cache 3/10 · 0.002M/0.005M tok (40%) ⚠️ compat
 ```
+
+Format: `<label> <hit requests>/<total requests> · <cached input tokens>/<total input tokens> tok (<token hit rate>)`. Some adapters may also append `· write <tokens> tok`, and runtime diagnostics may append `⚠️ compat` or `⚠️ integrity`.
 
 Supported footer labels include: DS, Claude, OpenAI, Gemini, Kimi, Qwen, GLM, MiniMax, Hunyuan, Mistral, Grok, Llama, Nemotron, Cohere, Yi, Doubao, ERNIE, Baichuan, StepFun, Spark, InternLM, Gemma, Phi, Jamba, Solar, Sonar, Nova, Reka, Falcon, DBRX, MPT, StableLM, Aquila, EXAONE, HyperCLOVA, Luminous, Hermes, Granite, Arctic, Pangu, SenseNova, Zhinao, MiniCPM, XVERSE, Orion, OpenChat, Vicuna, Wizard, Zephyr, Dolphin, OpenOrca, Starling, BLOOM, RWKV, and Aya.
 
