@@ -19,3 +19,18 @@ If you're using Codex or another agent-capable tool, additional project-scoped h
 Managed by Trellis. Edits outside this block are preserved; edits inside may be overwritten by a future `trellis update`.
 
 <!-- TRELLIS:END -->
+
+## Agent skills
+
+### Issue tracker
+
+Issues are tracked on GitHub using the `gh` CLI. See `docs/agents/issue-tracker.md`.
+
+### Triage labels
+
+Triage labels map to the default triage vocabulary. See `docs/agents/triage-labels.md`.
+
+### Domain docs
+
+This repository uses a single-context domain layout with a global `CONTEXT.md`. See `docs/agents/domain.md`.
+
