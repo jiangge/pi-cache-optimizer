@@ -61,6 +61,8 @@ const {
   isGLMLikeAssistantMessage,
   isMiniMaxLikeModel,
   isMiniMaxLikeAssistantMessage,
+  isMimoLikeModel,
+  isMimoLikeAssistantMessage,
   isHunyuanLikeModel,
   isHunyuanLikeAssistantMessage,
   // Additional OpenAI-compatible model detection
@@ -158,6 +160,8 @@ const {
   isRwkvLikeAssistantMessage,
   isAyaLikeModel,
   isAyaLikeAssistantMessage,
+  selectAdapterForModel,
+  selectAdapterForAssistantMessage,
   getCompat,
   modelKey,
   buildOpenAIProxyCompatWarningText,
@@ -1250,6 +1254,14 @@ Line count: 10 / 1000
   expect("detect.minimax-id", isMiniMaxLikeModel(makeModel({ id: "minimax-m2.5" })) === true, "expected minimax-m2.5 to match");
   expect("detect.minimax-not-glm", isMiniMaxLikeModel(makeModel({ id: "glm-5" })) === false, "expected glm-5 to NOT match MiniMax");
 
+  // Mimo / MiMo detection
+  expect("detect.mimo-id", isMimoLikeModel(makeModel({ id: "mimo-vl-7b" })) === true, "expected mimo-vl-7b to match");
+  expect("detect.mimo-name", isMimoLikeModel(makeModel({ id: "custom", name: "Xiaomi MiMo" })) === true, "expected Xiaomi MiMo name to match");
+  expect("detect.mimo-mi-mo", isMimoLikeModel(makeModel({ id: "xiaomi-mi-mo-7b" })) === true, "expected xiaomi-mi-mo-7b to match");
+  expect("detect.mimo-xiaomimimo", isMimoLikeModel(makeModel({ id: "xiaomimimo-vl" })) === true, "expected xiaomimimo-vl to match");
+  expect("detect.mimo-not-mimosa", isMimoLikeModel(makeModel({ id: "mimosa-v1" })) === false, "expected mimosa-v1 to NOT match Mimo");
+  expect("detect.mimo-not-gpt", isMimoLikeModel(makeModel({ id: "gpt-4" })) === false, "expected gpt-4 to NOT match Mimo");
+
   // Hunyuan detection
   expect("detect.hunyuan-id", isHunyuanLikeModel(makeModel({ id: "hunyuan-large" })) === true, "expected hunyuan-large to match");
   expect("detect.hunyuan-not-qwen", isHunyuanLikeModel(makeModel({ id: "qwen3" })) === false, "expected qwen3 to NOT match Hunyuan");
@@ -1276,6 +1288,16 @@ Line count: 10 / 1000
     "expected MiniMax assistant message to match",
   );
   expect(
+    "detect.mimo-assistant",
+    isMimoLikeAssistantMessage({ role: "assistant", model: "mimo-vl-7b" }, undefined) === true,
+    "expected Mimo assistant message to match",
+  );
+  expect(
+    "detect.mimo-mi-mo-assistant",
+    isMimoLikeAssistantMessage({ role: "assistant", name: "xiaomi-mi-mo" }, undefined) === true,
+    "expected xiaomi-mi-mo assistant message with name to match",
+  );
+  expect(
     "detect.hunyuan-assistant",
     isHunyuanLikeAssistantMessage({ role: "assistant", model: "hunyuan-large" }, undefined) === true,
     "expected Hunyuan assistant message to match",
@@ -1292,10 +1314,8 @@ Line count: 10 / 1000
 // Test 26: New adapters from CACHE_PROVIDER_ADAPTERS — selectAdapterForModel returns correct adapter
 // ==========================================================================
 {
-  // NOTE: selectAdapterForModel is not exported in __internals_for_tests.
-  // We instead verify that the model detection functions used by the adapters
-  // return correct results, and that our formatCacheStats produces the right
-  // labels for each new adapter type.
+  // We verify both the model detection functions used by the adapters and the
+  // internal adapter selector exposed only through __internals_for_tests.
 
   // Kimi adapter label
   const kimiStats = emptyCacheStats("2026-05-22");
@@ -1341,6 +1361,27 @@ Line count: 10 / 1000
     minimaxFormatted.startsWith("MiniMax cache"),
     `expected label "MiniMax cache", got: "${minimaxFormatted}"`,
   );
+
+  // Mimo adapter label
+  const mimoFormatted = formatCacheStats(
+    { id: "openai", label: "Mimo cache", showCacheWrite: false } as Parameters<typeof formatCacheStats>[0],
+    emptyCacheStats("2026-05-22"),
+  );
+  expect(
+    "newAdapter.mimo-label",
+    mimoFormatted.startsWith("Mimo cache"),
+    `expected label "Mimo cache", got: "${mimoFormatted}"`,
+  );
+  const mimoSelected = selectAdapterForModel(makeModel({ id: "mimo-vl-7b", name: "Xiaomi MiMo VL" }));
+  expect("newAdapter.mimo-select-label", mimoSelected?.label === "Mimo cache", `expected Mimo adapter selection, got: ${mimoSelected?.label}`);
+  const mimoAssistantSelected = selectAdapterForAssistantMessage(
+    { role: "assistant", model: "mimo-vl-7b", usage: { input: 100, cacheRead: 40, cacheWrite: 10 } },
+    undefined,
+  );
+  expect("newAdapter.mimo-assistant-select", mimoAssistantSelected?.label === "Mimo cache", `expected Mimo assistant adapter, got: ${mimoAssistantSelected?.label}`);
+  expect("newAdapter.mimo-role-gate", selectAdapterForAssistantMessage({ role: "user", model: "mimo-vl-7b" }, undefined) === undefined, "expected user message to be blocked by adapter role gate");
+  const mimoUsage = mimoAssistantSelected?.normalizeUsage({ role: "assistant", model: "mimo-vl-7b", usage: { input: 100, cacheRead: 40, cacheWrite: 10 } });
+  expect("newAdapter.mimo-usage-normalization", mimoUsage?.cacheRead === 40 && mimoUsage?.cacheWrite === 10 && mimoUsage?.totalInput === 150, `expected OpenAI-shaped/Pi-normalized usage for Mimo, got: ${JSON.stringify(mimoUsage)}`);
 
   // Hunyuan adapter label
   const hunyuanFormatted = formatCacheStats(
@@ -1425,6 +1466,20 @@ Line count: 10 / 1000
     "relaxedGate.glm-api-match",
     isOpenAICompatibleApi(glmModel.api) === true,
     "expected isOpenAICompatibleApi to accept openai-completions for GLM",
+  );
+
+  // A Mimo model with openai-completions API — gate should PASS
+  const mimoModel = makeModel({
+    id: "mimo-vl-7b",
+    name: "Xiaomi MiMo VL",
+    provider: "xiaomi",
+    api: "openai-completions",
+    baseUrl: "https://mimo.example.com/v1",
+  });
+  expect(
+    "relaxedGate.mimo-api-match",
+    isOpenAICompatibleApi(mimoModel.api) === true,
+    "expected isOpenAICompatibleApi to accept openai-completions for Mimo",
   );
 
   // A Kimi model with kiro-api (custom transport) — gate should BLOCK
@@ -3568,6 +3623,16 @@ Line count: 10 / 1000
   const minicpmProxy = makeModel({ id: "minicpm-2b", provider: "openbmb", api: "openai-completions", baseUrl: "https://minicpm.example.com/v1", compat: {} });
   const minicpmMissing = describeMissingOpenAICompatibleProxyCompat(minicpmProxy);
   expect("broadCompat.minicpm-both-missing", minicpmMissing.length === 2, `expected both flags missing for MiniCPM proxy, got: ${JSON.stringify(minicpmMissing)}`);
+
+  // Mimo proxy — should fire compat warning
+  const mimoProxy = makeModel({ id: "mimo-vl-7b", provider: "xiaomi", api: "openai-completions", baseUrl: "https://mimo.example.com/v1", compat: {} });
+  const mimoMissing = describeMissingOpenAICompatibleProxyCompat(mimoProxy);
+  expect("broadCompat.mimo-both-missing", mimoMissing.length === 2, `expected both flags missing for Mimo proxy, got: ${JSON.stringify(mimoMissing)}`);
+
+  // Mimo with kiro-api — should NOT fire
+  const mimoKiro = makeModel({ id: "mimo-vl-7b", provider: "xiaomi", api: "kiro-api", baseUrl: "https://kiro.example.com/v1", compat: {} });
+  const mimoKiroMissing = describeMissingOpenAICompatibleProxyCompat(mimoKiro);
+  expect("broadCompat.mimo-kiro-skip", mimoKiroMissing.length === 0, `expected no compat warnings for Mimo with kiro-api, got: ${JSON.stringify(mimoKiroMissing)}`);
 
   // XVERSE with openai-responses — should NOT fire
   const xverseResponses = makeModel({ id: "xverse-13b", provider: "xverse", api: "openai-responses", baseUrl: "https://xverse.example.com/v1", compat: {} });

@@ -35,6 +35,7 @@ OpenAI-family just because they use an OpenAI-shaped API.
 | Qwen / Alibaba | `qwen` | `Qwen cache` |
 | GLM / Zhipu | `glm` | `GLM cache` |
 | MiniMax | `minimax` | `MiniMax cache` |
+| Xiaomi MiMo / Mimo | pattern `mi-?mo` with safe boundaries | `Mimo cache` |
 | Hunyuan / Tencent | `hunyuan` | `Hunyuan cache` |
 | Mistral | `mistral`, `mixtral`, `codestral` | `Mistral cache` |
 | xAI / Grok | `grok`, pattern `xai` with safe boundaries | `Grok cache` |
@@ -143,7 +144,7 @@ core's own cache transport.
 * Scope gate: the active model's `api` MUST be an OpenAI-compatible Pi adapter
   (`openai-completions` or `openai-responses`). Unlike the initial implementation,
   the model `id`/`name` no longer needs to match GPT-family tokens — all models
-  using an OpenAI-shaped API (including Kimi, Qwen, GLM, MiniMax, Hunyuan, and
+  using an OpenAI-shaped API (including Kimi, Qwen, GLM, MiniMax, Mimo, Hunyuan, and
   any future OpenAI-compatible provider) receive the session-id fallback. Custom
   transports such as `kiro-api` remain excluded by the API gate.
 * Cache-key source: use `ctx.sessionManager.getSessionId()`, clamped to
@@ -355,14 +356,14 @@ and removing `_nosession`.
 | `openai-completions`/`openai-responses` payload (any model) has no effective key | Extension adds `prompt_cache_key` from `ctx.sessionManager.getSessionId()` if a non-empty session id is available. |
 | Payload has non-empty `prompt_cache_key` or `promptCacheKey` | Extension does not replace it. |
 | Payload has `prompt_cache_key: undefined`, `null`, `""`, or whitespace | Treat as missing; extension may add the session-id fallback. |
-| Model id/name looks GPT-like or Kimi/Qwen/GLM/MiniMax/Hunyuan-like but API is a custom transport (e.g. `kiro-api`) | Do not add OpenAI `prompt_cache_key`; do not assume compat layers reach custom transports. |
-| Third-party `openai-completions` proxy (GPT, Kimi, Qwen, GLM, MiniMax, Hunyuan, etc.) missing cache/session-affinity compat | Warn once per model with a copyable `compat` suggestion; do not edit `models.json`. |
+| Model id/name looks GPT-like or Kimi/Qwen/GLM/MiniMax/Mimo/Hunyuan-like but API is a custom transport (e.g. `kiro-api`) | Do not add OpenAI `prompt_cache_key`; do not assume compat layers reach custom transports. |
+| Third-party `openai-completions` proxy (GPT, Kimi, Qwen, GLM, MiniMax, Mimo, Hunyuan, etc.) missing cache/session-affinity compat | Warn once per model with a copyable `compat` suggestion; do not edit `models.json`. |
 | Old stats path exists, new stats path missing | Read old v1/v2/v3 data, write the new path atomically in v4 shape, best-effort `unlink` old. v2 `statsByProvider` data moves to `legacyFamily`; v3 unscoped model keys are assigned to the current session on restore. |
 | New v2 stats file exists | Load v2 `statsByProvider` into `legacyFamily`; start with empty session stats; next write persists v4. |
 | New v3 stats file has entries for `otokapi/gpt-5.5` and `cafecode/gpt-5.5` | Migrate both unscoped keys into the current session hash; selecting either model displays only that provider/model key's counters, even though both use the OpenAI-family footer label. |
 | Selected matching model has no current-session entry yet | Display empty same-day stats (`0/0`, `0M/0M`) instead of legacy family aggregate counters. |
 | `/reload` session_start reason | Re-read persisted v4 data for the same current session hash, clear only transient state (recent samples, integrity notifications), and re-publish footer with current stats. |
-| Non-GPT OpenAI-compatible model (Kimi, Qwen, GLM, MiniMax, Hunyuan, Mistral, Grok, Llama, Nemotron, Cohere, Yi) with `openai-completions` API | Selected adapter shows the corresponding footer label; compat warning fires for non-official base URLs missing cache/session-affinity flags. |
+| Non-GPT OpenAI-compatible model (Kimi, Qwen, GLM, MiniMax, Mimo, Hunyuan, Mistral, Grok, Llama, Nemotron, Cohere, Yi) with `openai-completions` API | Selected adapter shows the corresponding footer label; compat warning fires for non-official base URLs missing cache/session-affinity flags. |
 | Model id/name contains both GPT-family and non-GPT tokens (e.g. `kimi-gpt-4`) | GPT adapter takes precedence (earlier in `CACHE_PROVIDER_ADAPTERS`). Footer shows `OpenAI cache`, stats still scoped by provider/model key. |
 | Different Pi sessions with same provider/model | Keys differ by session hash; footer shows only current session's counters. |
 | Same Pi session, same provider/model | Same session hash → same stats bucket; counters accumulate. |
@@ -462,7 +463,7 @@ task-level verification script that asserts:
 * Existing validation still passes: unsupported models clear the footer, corrupt
   stats fall back safely, and atomic write / `npm pack --dry-run` / `git diff
   --check` remain green.
-* New adapters for Kimi, Qwen, GLM, MiniMax, Hunyuan, Mistral, Grok/xAI, Llama, Nemotron, Cohere, Yi: each detection function
+* New adapters for Kimi, Qwen, GLM, MiniMax, Mimo, Hunyuan, Mistral, Grok/xAI, Llama, Nemotron, Cohere, Yi: each detection function
   returns correct results for id/name matches and non-matches, assistant message
   matching is role-gated, and compat warnings use the broadened
   `describeMissingOpenAICompatibleProxyCompat`.

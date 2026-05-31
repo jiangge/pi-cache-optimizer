@@ -126,6 +126,7 @@ const MIN_STABLE_CANDIDATE_LENGTH = 8;
 const ASSISTANT_MESSAGE_MODEL_TOKEN_KEYS = ["model", "name"];
 const OPENAI_REASONING_MODEL_PATTERN = /(^|[/\s:_-])o[1345]($|[-_.:/\s])/;
 const XAI_MODEL_PATTERN = /(^|[/\s:_-])xai($|[-_.:/\s])/;
+const MIMO_MODEL_PATTERN = /(^|[/\s:_-])mi-?mo($|[-_.:/\s])/i;
 const PPLX_MODEL_PATTERN = /(^|[/\s:_-])pplx($|[-_.:/\s])/i;
 const NOVA_MODEL_PATTERN = /(^|[/\s:_-])nova($|[-_.:/\s])/i;
 const MPT_MODEL_PATTERN = /(^|[/\s:_-])mpt($|[-_.:/\s])/i;
@@ -831,6 +832,18 @@ function isMiniMaxLikeAssistantMessage(message: unknown, model: PiModel | undefi
   return modelOrAssistantMessageHas(message, model, ["minimax"]);
 }
 
+function isMimoLikeModel(model: PiModel | undefined): boolean {
+  const tokens = getModelIdNameTokenValues(model);
+  return hasAnyTokenContaining(tokens, ["xiaomimimo"]) || tokens.some((t) => MIMO_MODEL_PATTERN.test(t));
+}
+function isMimoLikeAssistantMessage(message: unknown, model: PiModel | undefined): boolean {
+  const allTokens = [
+    ...getModelIdNameTokenValues(model),
+    ...getAssistantMessageModelTokenValues(message),
+  ];
+  return hasAnyTokenContaining(allTokens, ["xiaomimimo"]) || allTokens.some((t) => MIMO_MODEL_PATTERN.test(t));
+}
+
 function isHunyuanLikeModel(model: PiModel | undefined): boolean {
   return hasAnyTokenContaining(getModelIdNameTokenValues(model), ["hunyuan"]);
 }
@@ -1492,7 +1505,7 @@ function describeMissingOpenAIFamilyProxyCompat(model: PiModel): string[] {
 /**
  * Like describeMissingOpenAIFamilyProxyCompat but without the isOpenAIFamilyModel
  * gate. Warns for ANY model using openai-completions through a non-official base
- * URL — covers GPT, Kimi, Qwen, GLM, MiniMax, Hunyuan, and any other
+ * URL — covers GPT, Kimi, Qwen, GLM, MiniMax, Mimo, Hunyuan, and any other
  * OpenAI-compatible proxy.
  */
 function describeMissingOpenAICompatibleProxyCompat(model: PiModel): string[] {
@@ -1732,6 +1745,23 @@ const CACHE_PROVIDER_ADAPTERS: CacheProviderAdapter[] = [
     matchesAssistantMessage(message, model) {
       if (!isAssistantMessage(message)) return false;
       return isMiniMaxLikeAssistantMessage(message, model);
+    },
+    normalizeUsage(message) {
+      return normalizeWithFallback(message, getOpenAIRawUsage);
+    },
+    warningText(model) {
+      const missing = describeMissingOpenAICompatibleProxyCompat(model);
+      if (missing.length === 0) return undefined;
+      return buildOpenAIProxyCompatWarningText(modelKey(model), missing);
+    },
+  },
+  {
+    id: "openai" as CacheProviderId,
+    label: "Mimo cache",
+    matchesModel: isMimoLikeModel,
+    matchesAssistantMessage(message, model) {
+      if (!isAssistantMessage(message)) return false;
+      return isMimoLikeAssistantMessage(message, model);
     },
     normalizeUsage(message) {
       return normalizeWithFallback(message, getOpenAIRawUsage);
@@ -3453,6 +3483,8 @@ export const __internals_for_tests = {
   isGLMLikeAssistantMessage,
   isMiniMaxLikeModel,
   isMiniMaxLikeAssistantMessage,
+  isMimoLikeModel,
+  isMimoLikeAssistantMessage,
   isHunyuanLikeModel,
   isHunyuanLikeAssistantMessage,
   // Additional OpenAI-compatible model detection
@@ -3551,6 +3583,8 @@ export const __internals_for_tests = {
   isRwkvLikeAssistantMessage,
   isAyaLikeModel,
   isAyaLikeAssistantMessage,
+  selectAdapterForModel,
+  selectAdapterForAssistantMessage,
   buildOpenAIProxyCompatWarningText,
   getModelIdNameTokenValues,
   getAssistantMessageModelTokenValues,
