@@ -8,8 +8,6 @@
 
 用于提升 Pi 中 provider 侧 KV Cache / Prompt Cache 命中率的扩展：把稳定 prompt 内容前置，给 OpenAI-compatible 请求补保守的 `prompt_cache_key`，提示代理渠道常见缓存路由兼容问题，并在底部显示只读缓存统计。
 
-**GitHub About：** Improve Pi prompt/KV cache hit rates with stable prompts, OpenAI-compatible cache keys, proxy compat warnings, and footer cache stats.
-
 > 本包已从 `pi-deepseek-cache-optimizer` 改名。已有底部统计会自动迁移。本扩展绝不会创建、修改、备份或删除你的 `~/.pi/agent/models.json`。
 
 ## 目录

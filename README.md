@@ -8,8 +8,6 @@
 
 Pi extension for improving provider-side KV / prompt cache hit rates. It keeps stable prompt content near the front, adds a conservative OpenAI-compatible `prompt_cache_key` fallback, warns about common proxy cache-routing gaps, and shows read-only footer cache stats.
 
-**GitHub About:** Improve Pi prompt/KV cache hit rates with stable prompts, OpenAI-compatible cache keys, proxy compat warnings, and footer cache stats.
-
 > Renamed from `pi-deepseek-cache-optimizer`. Existing footer counters migrate automatically. This package never creates, edits, backs up, or deletes your `~/.pi/agent/models.json`.
 
 ## Contents
