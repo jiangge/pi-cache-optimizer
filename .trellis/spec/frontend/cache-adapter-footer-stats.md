@@ -1006,7 +1006,7 @@ compat). It does NOT read or expose:
 | `/cache-optimizer compat` with fully-configured OpenRouter model | Shows `✅ Compat fully configured.` followed by OpenRouter channel notes; if `supportsLongCacheRetention` is enabled, also includes the `prompt_cache_retention` 400 recovery hint |
 | Router/channel diagnostics do not affect adapter selection | An OpenRouter Llama model still selects the Llama adapter, not an "OpenRouter" adapter |
 | Diagnostic text must not expose API keys, prompts, payloads, or model output | All router/channel output uses only provider, api, baseUrl, compat metadata |
-| Third-party OpenAI-compatible proxy returns HTTP 400 while `supportsLongCacheRetention` is enabled | Extension records a one-time model-scoped warning and `/cache-optimizer doctor` surfaces the `prompt_cache_retention` recovery hint |
+| Third-party OpenAI-compatible proxy (`openai-completions` or `openai-responses`) returns HTTP 400 while `supportsLongCacheRetention` is enabled | Extension records a one-time model-scoped warning and `/cache-optimizer doctor` surfaces the `prompt_cache_retention` recovery hint |
 | `/cache-optimizer stats` with model matching an adapter | Output includes model key, request counts, token counts, hit rate, recent trend |
 | `/cache-optimizer stats` with unseen model bucket | Shows 0/0, not legacy family aggregates |
 | `/cache-optimizer stats` with unsupported model (no adapter) | Shows friendly message "No cache-adapter-matched model active" |

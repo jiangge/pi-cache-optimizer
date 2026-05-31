@@ -51,6 +51,7 @@ const {
   getPromptCacheRetentionUnsupportedHint,
   isOfficialOpenAIBaseUrl,
   isCompatCheckApplicable,
+  isPromptCacheRetention400Applicable,
   buildDoctorDiagnosis,
   buildCompatDiagnosis,
   describeRouterChannelDiagnostics,
@@ -2282,6 +2283,45 @@ Line count: 10 / 1000
     isCompatCheckApplicable(responsesModel) === false,
     "expected false for openai-responses API",
   );
+
+  const responsesLongRetention = makeModel({
+    id: "deepseek-v4-pro",
+    provider: "deepseek",
+    api: "openai-responses",
+    baseUrl: "https://deepseek-responses.example.com/v1",
+    compat: { supportsLongCacheRetention: true, sendSessionIdHeader: true },
+  });
+  expect(
+    "promptCacheRetention400.responses-applicable",
+    isPromptCacheRetention400Applicable(responsesLongRetention) === true,
+    "expected 400 recovery tracking to apply to third-party openai-responses with long retention enabled",
+  );
+
+  const responsesNoLongRetention = makeModel({
+    id: "deepseek-v4-pro",
+    provider: "deepseek",
+    api: "openai-responses",
+    baseUrl: "https://deepseek-responses.example.com/v1",
+    compat: { supportsLongCacheRetention: false, sendSessionIdHeader: true },
+  });
+  expect(
+    "promptCacheRetention400.responses-no-long-retention",
+    isPromptCacheRetention400Applicable(responsesNoLongRetention) === false,
+    "expected 400 recovery tracking to skip when long retention is not enabled",
+  );
+
+  const officialResponsesLongRetention = makeModel({
+    id: "gpt-4.1",
+    provider: "openai",
+    api: "openai-responses",
+    baseUrl: "https://api.openai.com/v1",
+    compat: { supportsLongCacheRetention: true },
+  });
+  expect(
+    "promptCacheRetention400.official-responses-skip",
+    isPromptCacheRetention400Applicable(officialResponsesLongRetention) === false,
+    "expected official OpenAI responses API to skip third-party recovery tracking",
+  );
 }
 
 // ==========================================================================
@@ -2373,6 +2413,25 @@ Line count: 10 / 1000
     "doctor.deepseek-thinking-format",
     doctorOutput5.includes('"thinkingFormat": "deepseek"'),
     `expected doctor output to include DeepSeek thinkingFormat suggestion, got: ${JSON.stringify(doctorOutput5.slice(0, 500))}`,
+  );
+
+  const deepseekResponsesConfigured = makeModel({
+    id: "deepseek-v4-pro",
+    provider: "deepseek",
+    api: "openai-responses",
+    baseUrl: "https://deepseek-responses.example.com/v1",
+    compat: {
+      supportsLongCacheRetention: true,
+      sendSessionIdHeader: true,
+      requiresReasoningContentOnAssistantMessages: true,
+      thinkingFormat: "deepseek",
+    },
+  });
+  const doctorOutput6 = buildDoctorDiagnosis(deepseekResponsesConfigured, { promptCacheRetention400: true });
+  expect(
+    "doctor.deepseek-responses-400-hint",
+    doctorOutput6.includes("A 400 response was observed") && doctorOutput6.includes("prompt_cache_retention"),
+    `expected DeepSeek openai-responses doctor output to include prompt_cache_retention 400 hint, got: ${JSON.stringify(doctorOutput6)}`,
   );
 }
 

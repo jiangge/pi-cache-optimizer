@@ -3131,6 +3131,12 @@ function isCompatCheckApplicable(model: PiModel): boolean {
   return lower(model.api) === "openai-completions" && !isOfficialOpenAIBaseUrl(model);
 }
 
+function isPromptCacheRetention400Applicable(model: PiModel): boolean {
+  return isOpenAICompatibleApi(model.api) &&
+    !isOfficialOpenAIBaseUrl(model) &&
+    getCompat(model).supportsLongCacheRetention === true;
+}
+
 /**
  * Detect router / channel profiles from a PiModel and return diagnostic notes.
  *
@@ -3330,7 +3336,7 @@ function buildDoctorDiagnosis(model: PiModel, options: { promptCacheRetention400
     lines.push("ℹ️ Compat check not applicable for this model.");
   }
 
-  if (isCompatCheckApplicable(model) && compat.supportsLongCacheRetention === true) {
+  if (isPromptCacheRetention400Applicable(model)) {
     lines.push("");
     if (options.promptCacheRetention400) {
       lines.push("⚠️  A 400 response was observed while supportsLongCacheRetention is enabled.");
@@ -3508,7 +3514,7 @@ function buildCompatDiagnosis(model: PiModel): string | undefined {
   if (routerNotes.length > 0 && missing.length === 0) {
     if (deepSeekCompatApplicable || isCompatCheckApplicable(model)) {
       lines.push("✅ Compat fully configured.");
-      if (getCompat(model).supportsLongCacheRetention === true) {
+      if (isPromptCacheRetention400Applicable(model)) {
         lines.push(getPromptCacheRetentionUnsupportedHint());
       }
     } else {
@@ -3562,6 +3568,8 @@ export const __internals_for_tests = {
   buildSafeOpenAIProxyCompatSuggestion,
   getPromptCacheRetentionUnsupportedHint,
   isOfficialOpenAIBaseUrl,
+  isCompatCheckApplicable,
+  isPromptCacheRetention400Applicable,
   // Non-GPT OpenAI-compatible model detection
   isKimiLikeModel,
   isKimiLikeAssistantMessage,
@@ -4149,8 +4157,7 @@ export default function (pi: ExtensionAPI) {
     const model = ctx.model;
     if (!runtimeOptimizerEnabled || !model) return;
     if (event.status !== 400) return;
-    if (!isCompatCheckApplicable(model)) return;
-    if (getCompat(model).supportsLongCacheRetention !== true) return;
+    if (!isPromptCacheRetention400Applicable(model)) return;
 
     const key = modelKey(model);
     promptCacheRetention400Models.add(key);
