@@ -42,6 +42,11 @@ const {
   isOpenAIFamilyToken,
   describeMissingOpenAIFamilyProxyCompat,
   describeMissingOpenAICompatibleProxyCompat,
+  describeMissingDeepSeekCompat,
+  isDeepSeekCompatCheckApplicable,
+  describeMissingCacheCompatForModel,
+  buildDeepSeekCompatSuggestion,
+  buildDeepSeekCompatWarningText,
   buildSafeOpenAIProxyCompatSuggestion,
   getPromptCacheRetentionUnsupportedHint,
   isOfficialOpenAIBaseUrl,
@@ -662,6 +667,99 @@ Line count: 10 / 1000
   });
   const proxyFullMissing = describeMissingOpenAIFamilyProxyCompat(proxyFullModel);
   expect("compat.proxy-full", proxyFullMissing.length === 0, `expected no warnings for fully-configured proxy, got: ${JSON.stringify(proxyFullMissing)}`);
+}
+
+// ==========================================================================
+// Test 9b: DeepSeek-specific compat flags from Pi Mono guidance
+// ==========================================================================
+{
+  const deepseekProxy = makeModel({
+    id: "deepseek-v4-pro",
+    name: "DeepSeek V4 Pro",
+    provider: "deepseek",
+    api: "openai-completions",
+    baseUrl: "https://api.deepseek.com/v1",
+    compat: {},
+  });
+  const missing = describeMissingDeepSeekCompat(deepseekProxy);
+  expect(
+    "deepseekCompat.all-missing",
+    missing.includes("supportsLongCacheRetention") &&
+      missing.includes("sendSessionAffinityHeaders") &&
+      missing.includes("requiresReasoningContentOnAssistantMessages") &&
+      missing.includes("thinkingFormat"),
+    `expected DeepSeek proxy to miss cache + reasoning compat flags, got: ${JSON.stringify(missing)}`,
+  );
+  expect(
+    "deepseekCompat.applicable",
+    isDeepSeekCompatCheckApplicable(deepseekProxy) === true,
+    "expected DeepSeek openai-completions model to use DeepSeek compat check",
+  );
+  expect(
+    "deepseekCompat.adapter-aware",
+    describeMissingCacheCompatForModel(deepseekProxy).includes("requiresReasoningContentOnAssistantMessages"),
+    "expected adapter-aware compat check to include DeepSeek reasoning_content flag",
+  );
+
+  const suggestion = buildDeepSeekCompatSuggestion(missing);
+  expect(
+    "deepseekCompat.suggestion-reasoning-content",
+    suggestion.requiresReasoningContentOnAssistantMessages === true,
+    `expected suggestion to include requiresReasoningContentOnAssistantMessages: true, got ${JSON.stringify(suggestion)}`,
+  );
+  expect(
+    "deepseekCompat.suggestion-thinking-format",
+    suggestion.thinkingFormat === "deepseek",
+    `expected suggestion to include thinkingFormat: deepseek, got ${JSON.stringify(suggestion)}`,
+  );
+
+  const configured = makeModel({
+    id: "deepseek-v4-pro",
+    provider: "deepseek",
+    api: "openai-completions",
+    baseUrl: "https://api.deepseek.com/v1",
+    compat: {
+      supportsLongCacheRetention: true,
+      sendSessionAffinityHeaders: true,
+      requiresReasoningContentOnAssistantMessages: true,
+      thinkingFormat: "deepseek",
+    },
+  });
+  expect(
+    "deepseekCompat.configured-none",
+    describeMissingDeepSeekCompat(configured).length === 0,
+    `expected no missing DeepSeek flags when fully configured, got ${JSON.stringify(describeMissingDeepSeekCompat(configured))}`,
+  );
+
+  const responsesProxy = makeModel({
+    id: "deepseek-v4-pro",
+    provider: "deepseek",
+    api: "openai-responses",
+    baseUrl: "https://deepseek-responses.example.com/v1",
+    compat: {
+      supportsLongCacheRetention: true,
+      requiresReasoningContentOnAssistantMessages: true,
+      thinkingFormat: "deepseek",
+    },
+  });
+  const responsesMissing = describeMissingDeepSeekCompat(responsesProxy);
+  expect(
+    "deepseekCompat.responses-session-id",
+    responsesMissing.length === 1 && responsesMissing[0] === "sendSessionIdHeader",
+    `expected openai-responses DeepSeek proxy to require sendSessionIdHeader only, got ${JSON.stringify(responsesMissing)}`,
+  );
+
+  const warningText = buildDeepSeekCompatWarningText(modelKey(deepseekProxy), missing);
+  expect(
+    "deepseekCompat.warning-reasoning-content",
+    warningText.includes('"requiresReasoningContentOnAssistantMessages": true'),
+    `expected warning to include reasoning_content compat JSON, got ${warningText}`,
+  );
+  expect(
+    "deepseekCompat.warning-thinking-format",
+    warningText.includes('"thinkingFormat": "deepseek"'),
+    `expected warning to include thinkingFormat JSON, got ${warningText}`,
+  );
 }
 
 // ==========================================================================
@@ -1790,16 +1888,17 @@ Line count: 10 / 1000
 // ==========================================================================
 {
   // The deepseek compat warning text
-  const key = "deepseek/deepseek-v4-pro";
-  const missing = ["supportsLongCacheRetention", "sendSessionAffinityHeaders"];
+  const model = makeModel({ provider: "deepseek", id: "deepseek-v4-pro", api: "openai-completions" });
+  const key = modelKey(model);
+  const missing = [
+    "supportsLongCacheRetention",
+    "sendSessionAffinityHeaders",
+    "requiresReasoningContentOnAssistantMessages",
+    "thinkingFormat",
+  ];
 
-  // Simulate the deepseek warningText logic
-  const slashIdx = key.indexOf("/");
-  const providerLabel = slashIdx > 0 ? key.slice(0, slashIdx) : key;
   const modelsJsonPath = getModelsJsonDisplayPath();
-  const text =
-    `💡 pi-cache-optimizer: ${key} is DeepSeek-like but merged compat lacks ${missing.join(" and ")}. ` +
-    `Proxies may reduce or hide cache hits. Edit ${modelsJsonPath} -> providers["${providerLabel}"] -> compat (at the same level as baseUrl/api/apiKey/models).`;
+  const text = buildDeepSeekCompatWarningText(key, missing);
 
   expect(
     "deepseek-warning.includes-models-json",
@@ -1815,6 +1914,16 @@ Line count: 10 / 1000
     "deepseek-warning.includes-compat",
     text.includes("-> compat"),
     "expected deepseek warning to mention compat location",
+  );
+  expect(
+    "deepseek-warning.includes-reasoning-content",
+    text.includes('"requiresReasoningContentOnAssistantMessages": true'),
+    "expected deepseek warning to include requiresReasoningContentOnAssistantMessages suggestion",
+  );
+  expect(
+    "deepseek-warning.includes-thinking-format",
+    text.includes('"thinkingFormat": "deepseek"'),
+    "expected deepseek warning to include thinkingFormat suggestion",
   );
   expect(
     "deepseek-warning.no-secrets",
@@ -2246,6 +2355,25 @@ Line count: 10 / 1000
     doctorOutput4.includes("✅ Compat fully configured.") === false,
     "expected doctor output to NOT show fully configured when flags are missing",
   );
+
+  const deepseekMissing = makeModel({
+    id: "deepseek-v4-pro",
+    provider: "deepseek",
+    api: "openai-completions",
+    baseUrl: "https://api.deepseek.com/v1",
+    compat: {},
+  });
+  const doctorOutput5 = buildDoctorDiagnosis(deepseekMissing);
+  expect(
+    "doctor.deepseek-reasoning-content",
+    doctorOutput5.includes("requiresReasoningContentOnAssistantMessages"),
+    `expected doctor output to include DeepSeek reasoning_content compat flag, got: ${JSON.stringify(doctorOutput5.slice(0, 300))}`,
+  );
+  expect(
+    "doctor.deepseek-thinking-format",
+    doctorOutput5.includes('"thinkingFormat": "deepseek"'),
+    `expected doctor output to include DeepSeek thinkingFormat suggestion, got: ${JSON.stringify(doctorOutput5.slice(0, 500))}`,
+  );
 }
 
 // ==========================================================================
@@ -2315,6 +2443,32 @@ Line count: 10 / 1000
       "buildCompatDiagnosis.missing-contains-provider",
       compatResult.includes('providers["otokapi"]'),
       'expected compat result to contain providers["otokapi"]',
+    );
+  }
+
+  const deepseekProxy = makeModel({
+    id: "deepseek-v4-pro",
+    provider: "deepseek",
+    api: "openai-completions",
+    baseUrl: "https://api.deepseek.com/v1",
+    compat: {},
+  });
+  const deepseekCompatResult = buildCompatDiagnosis(deepseekProxy);
+  expect(
+    "buildCompatDiagnosis.deepseek-returns-string",
+    typeof deepseekCompatResult === "string",
+    "expected buildCompatDiagnosis to return a string for DeepSeek when compat is missing",
+  );
+  if (deepseekCompatResult) {
+    expect(
+      "buildCompatDiagnosis.deepseek-reasoning-content",
+      deepseekCompatResult.includes("requiresReasoningContentOnAssistantMessages"),
+      `expected DeepSeek compat result to include reasoning_content flag, got: ${JSON.stringify(deepseekCompatResult.slice(0, 300))}`,
+    );
+    expect(
+      "buildCompatDiagnosis.deepseek-thinking-format",
+      deepseekCompatResult.includes('"thinkingFormat": "deepseek"'),
+      `expected DeepSeek compat result to include thinkingFormat suggestion, got: ${JSON.stringify(deepseekCompatResult.slice(0, 500))}`,
     );
   }
 
@@ -2410,13 +2564,14 @@ Line count: 10 / 1000
 // ==========================================================================
 {
   const key = "deepseek/deepseek-v4-pro";
-  const missing = ["supportsLongCacheRetention", "sendSessionAffinityHeaders"];
-  const slashIdx = key.indexOf("/");
-  const providerLabel = slashIdx > 0 ? key.slice(0, slashIdx) : key;
+  const missing = [
+    "supportsLongCacheRetention",
+    "sendSessionAffinityHeaders",
+    "requiresReasoningContentOnAssistantMessages",
+    "thinkingFormat",
+  ];
   const modelsJsonPath = getModelsJsonDisplayPath();
-  const text =
-    `💡 pi-cache-optimizer: ${key} is DeepSeek-like but merged compat lacks ${missing.join(" and ")}. ` +
-    `Proxies may reduce or hide cache hits. Edit ${modelsJsonPath} -> providers["${providerLabel}"] -> compat (at the same level as baseUrl/api/apiKey/models).`;
+  const text = buildDeepSeekCompatWarningText(key, missing);
 
   expect(
     "deepseek-warning-path.platform-friendly",

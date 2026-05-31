@@ -100,6 +100,7 @@ Notes:
 - `supportsLongCacheRetention: true` is optional. Add it only when the endpoint explicitly supports OpenAI long prompt cache retention.
 - If you see `400 Unsupported parameter: prompt_cache_retention`, remove/avoid `supportsLongCacheRetention` for that channel. Keep `sendSessionAffinityHeaders` if supported.
 - Use `/cache-optimizer compat` or `/cache-optimizer doctor` to see model-specific advice.
+- For DeepSeek models, the Pi Mono guidance expects `compat.requiresReasoningContentOnAssistantMessages: true` and `compat.thinkingFormat: "deepseek"` alongside cache/session-affinity flags when the endpoint supports them.
 - This extension only advises; it does not edit `models.json`.
 
 ## Footer stats

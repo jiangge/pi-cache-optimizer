@@ -191,6 +191,25 @@ may send the parameter when compat says long retention is supported.
 
 This warning is advisory only and MUST NOT mutate the user's `models.json`.
 
+#### DeepSeek Pi Mono compat warning
+
+For DeepSeek-like models using an OpenAI-compatible Pi API
+(`openai-completions` or `openai-responses`), warn once per model when merged
+compat lacks DeepSeek-specific reasoning/cache fields. The missing-list logic is
+adapter-aware and MUST include:
+
+* `supportsLongCacheRetention: true` when absent.
+* `sendSessionAffinityHeaders: true` for `openai-completions` when absent.
+* `sendSessionIdHeader: true` for `openai-responses` when absent.
+* `requiresReasoningContentOnAssistantMessages: true` when absent.
+* `thinkingFormat: "deepseek"` when absent or different.
+
+The copyable DeepSeek JSON suggestion MAY include all missing fields above. This
+is different from the generic third-party OpenAI-compatible proxy advice:
+DeepSeek's Pi Mono guidance explicitly requires the `reasoning_content` replay
+compat and DeepSeek thinking format. The warning remains advisory only and MUST
+NOT mutate `models.json`.
+
 ### Platform-friendly models.json path
 
 The helper `getModelsJsonDisplayPath(platform?)` returns a user-facing path
@@ -358,6 +377,8 @@ and removing `_nosession`.
 | Payload has `prompt_cache_key: undefined`, `null`, `""`, or whitespace | Treat as missing; extension may add the session-id fallback. |
 | Model id/name looks GPT-like or Kimi/Qwen/GLM/MiniMax/Mimo/Hunyuan-like but API is a custom transport (e.g. `kiro-api`) | Do not add OpenAI `prompt_cache_key`; do not assume compat layers reach custom transports. |
 | Third-party `openai-completions` proxy (GPT, Kimi, Qwen, GLM, MiniMax, Mimo, Hunyuan, etc.) missing cache/session-affinity compat | Warn once per model with a copyable `compat` suggestion; do not edit `models.json`. |
+| DeepSeek-like `openai-completions` model missing Pi Mono reasoning compat | Warn once; `/cache-optimizer doctor` and `/cache-optimizer compat` include copyable JSON with `requiresReasoningContentOnAssistantMessages: true` and `thinkingFormat: "deepseek"` plus any missing cache/session-affinity flags; do not edit `models.json`. |
+| DeepSeek-like `openai-responses` model missing response session header compat | Warn once with `sendSessionIdHeader: true` rather than `sendSessionAffinityHeaders: true`, plus DeepSeek reasoning compat when missing. |
 | Old stats path exists, new stats path missing | Read old v1/v2/v3 data, write the new path atomically in v4 shape, best-effort `unlink` old. v2 `statsByProvider` data moves to `legacyFamily`; v3 unscoped model keys are assigned to the current session on restore. |
 | New v2 stats file exists | Load v2 `statsByProvider` into `legacyFamily`; start with empty session stats; next write persists v4. |
 | New v3 stats file has entries for `otokapi/gpt-5.5` and `cafecode/gpt-5.5` | Migrate both unscoped keys into the current session hash; selecting either model displays only that provider/model key's counters, even though both use the OpenAI-family footer label. |
@@ -460,6 +481,10 @@ task-level verification script that asserts:
 * `/cache-optimizer reset` on a model not matching an adapter shows a friendly
   no-op message.
 * Local-day rollover resets both session-scoped stats and `legacyFamily` entries.
+* DeepSeek-like OpenAI-compatible models missing Pi Mono compat report
+  `requiresReasoningContentOnAssistantMessages` and `thinkingFormat` alongside
+  cache/session-affinity flags; doctor/compat output includes copyable JSON and
+  does not expose secrets, prompts, payloads, headers, or model output.
 * Existing validation still passes: unsupported models clear the footer, corrupt
   stats fall back safely, and atomic write / `npm pack --dry-run` / `git diff
   --check` remain green.
@@ -744,6 +769,10 @@ footer status line appends `⚠️ compat`:
 OpenAI cache 0/0 · 0M/0M tok ⚠️ compat
 ```
 
+DeepSeek-like models using Pi Mono guidance may also surface `⚠️ compat` when
+`requiresReasoningContentOnAssistantMessages` or `thinkingFormat: "deepseek"`
+are missing, even when the provider is otherwise not a generic proxy.
+
 Rules:
 
 * The marker is one-shot per model key (provider/id). It shows once and persists
@@ -751,9 +780,11 @@ Rules:
 * When the model is switched or its compat is fixed, the marker clears.
 * The marker coexists with `⚠️ integrity` — both can appear:
   `OpenAI cache 0/0 · 0M/0M tok ⚠️ integrity ⚠️ compat`
-* The marker uses `describeMissingOpenAICompatibleProxyCompat` internally, which
-  does NOT require the model to be GPT-family — it fires for ANY model using
-  `openai-completions` through a non-official base URL.
+* The marker uses adapter-aware `describeMissingCacheCompatForModel` internally.
+  For generic OpenAI-compatible proxies this delegates to
+  `describeMissingOpenAICompatibleProxyCompat`; for DeepSeek-like models it
+  delegates to `describeMissingDeepSeekCompat` and includes Pi Mono reasoning
+  compat fields.
 * Official OpenAI base URLs (`api.openai.com`) never trigger the marker.
 * Custom transports (`kiro-api`, `anthropic-messages`, etc.) never trigger the marker.
 
@@ -952,6 +983,8 @@ compat). It does NOT read or expose:
 | Scenario | Expected behavior |
 |---|---|
 | `/cache-optimizer doctor` with model that has missing compat flags | Output includes `Missing compat flags: supportsLongCacheRetention, sendSessionAffinityHeaders`, a copyable safe JSON suggestion with `sendSessionAffinityHeaders: true`, the `~/.pi/agent/models.json -> providers["<id>"]` path, and optional/risky guidance for `supportsLongCacheRetention` |
+| `/cache-optimizer doctor` with DeepSeek-like Pi Mono model missing reasoning compat | Output includes missing `requiresReasoningContentOnAssistantMessages` and `thinkingFormat`, plus copyable JSON with `requiresReasoningContentOnAssistantMessages: true` and `thinkingFormat: "deepseek"`. |
+| `/cache-optimizer compat` with DeepSeek-like Pi Mono model missing reasoning compat | Shows the same DeepSeek-specific JSON suggestion and edit location; custom transports still show not-applicable. |
 | `/cache-optimizer doctor` without an active model | Notification: "No active model selected" |
 | `/cache-optimizer doctor` with applicable fully-configured model | Shows `✅ Compat fully configured.` (without "(or not applicable)") |
 | `/cache-optimizer doctor` with non-applicable model (official OpenAI, non-openai-completions, custom transport) | Shows `ℹ️ Compat check not applicable for this model.` |
