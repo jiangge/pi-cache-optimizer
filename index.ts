@@ -3411,6 +3411,13 @@ function buildLowHitDiagnosis(
   const hasRouterRisk = routerNotes.length > 0;
   const hasUsageMissing = missingUsageSamples > 0;
 
+  // Today's cached-token ratio is used both inside and outside the recent-sample
+  // branch. Keep it block-external so doctor/stats never throw for low-hit
+  // models that have persisted counters but no recent in-memory samples.
+  const todayHitRatio = todayStats.totalInputTokens > 0
+    ? Math.round((todayStats.cachedInputTokens / todayStats.totalInputTokens) * 100)
+    : 0;
+
   // Determine if there are actual issues worth flagging
   const hasActualIssues = hasMissingCompat || hasUsageMissing ||
     // Low hit trend (today total > 3 and hit ratio < 30%)
@@ -3451,10 +3458,6 @@ function buildLowHitDiagnosis(
   // Priority 4: recent trend low
   if (recent10Total > 0) {
     const hitRatio = recent10Input > 0 ? Math.round((recent10Cached / recent10Input) * 100) : 0;
-    const todayHitRatio = todayStats.totalInputTokens > 0
-      ? Math.round((todayStats.cachedInputTokens / todayStats.totalInputTokens) * 100)
-      : 0;
-
     if (recent10Hits === 0 && todayStats.totalRequests > 3 && todayHitRatio < 30) {
       lines.push(`📉 Cache hit rate is low: ${todayHitRatio}% today (${recent10Total} recent samples).`);
       lines.push("   Likely causes: proxy routing to different backends per request,");

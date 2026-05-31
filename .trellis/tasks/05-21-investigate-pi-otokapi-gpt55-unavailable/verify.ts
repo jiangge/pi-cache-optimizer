@@ -4543,6 +4543,20 @@ Line count: 10 / 1000
 }
 
 {
+  // Fully configured/no-router low-hit model with no recent samples — regression:
+  // buildLowHitDiagnosis used to reference todayHitRatio outside its block and
+  // throw ReferenceError before producing doctor guidance.
+  const model = makeModel({
+    id: "gpt-4o", provider: "openai", api: "openai-completions",
+    baseUrl: "https://api.openai.com/v1",
+  });
+  const adapter = { id: "openai", label: "OpenAI cache", matchesModel: () => true } as any;
+  const stats = { day: "2026-05-24", totalRequests: 5, hitRequests: 0, cachedInputTokens: 0, cacheWriteInputTokens: 0, totalInputTokens: 2000 };
+  const diagnosis = buildLowHitDiagnosis(model, adapter, stats, []);
+  expect("doctor.diagnosis-official-low-hit-no-throw", diagnosis.some(l => l.includes("Compat is configured but cache hit rate remains low")), "expected fully configured low-hit diagnosis without throwing");
+}
+
+{
   // Unsupported model (no adapter) — diagnosis should still report compat issues
   const model = makeModel({ id: "claude-sonnet-4", provider: "anthropic", api: "anthropic-messages", baseUrl: "https://api.anthropic.com/v1" });
   const diagnosis = buildLowHitDiagnosis(model, undefined, undefined, []);
