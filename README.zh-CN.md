@@ -101,6 +101,42 @@ LiteLLM / OneAPI / NewAPI / 类 OpenRouter 渠道等第三方 `openai-completion
 - 对 DeepSeek 模型，Pi Mono 指南期望在支持时同时设置 `compat.requiresReasoningContentOnAssistantMessages: true` 和 `compat.thinkingFormat: "deepseek"`，再配合缓存 / session-affinity 相关 compat。
 - 本扩展只给建议，不会修改 `models.json`。
 
+### 通过 `/login` 认证的渠道
+
+有些 Pi 渠道通过 `/login` 认证；凭据保存在 `~/.pi/agent/auth.json`，`~/.pi/agent/models.json` 里可能还没有对应 provider block。不要编辑 `auth.json`，也不要复制 token/API key。保留 `/login` 认证，只在 `models.json` 里添加缓存 / 路由兼容覆盖。
+
+Provider 级最小 override：
+
+```json
+{
+  "providers": {
+    "your-provider-id": {
+      "compat": {
+        "sendSessionAffinityHeaders": true
+      }
+    }
+  }
+}
+```
+
+如果只想影响单个模型，用 `modelOverrides`：
+
+```json
+{
+  "providers": {
+    "your-provider-id": {
+      "modelOverrides": {
+        "gpt-5.5": {
+          "compat": {
+            "sendSessionAffinityHeaders": true
+          }
+        }
+      }
+    }
+  }
+}
+```
+
 ## Footer 统计
 
 统计是只读本地计数，保存在 `~/.pi/agent/pi-cache-optimizer-stats.json`，按 Pi session + provider/model 隔离。文件只包含日期和数字计数，不包含 API key、prompt、payload、headers、响应或模型输出。

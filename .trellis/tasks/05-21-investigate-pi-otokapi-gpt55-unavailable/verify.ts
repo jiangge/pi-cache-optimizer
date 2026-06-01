@@ -172,6 +172,9 @@ const {
   modelKey,
   buildOpenAIProxyCompatWarningText,
   getModelsJsonDisplayPath,
+  getAuthJsonDisplayPath,
+  buildProviderCompatOverride,
+  buildModelCompatOverride,
   captureCacheRetentionEnv,
   requestLongCacheRetention,
   restoreCacheRetentionEnv,
@@ -1882,6 +1885,45 @@ Line count: 10 / 1000
     /AIza[0-9A-Za-z_-]{35}/.test(bothText) === false,
     "expected warning text to NOT contain Google API key patterns",
   );
+
+  const authJsonPath = getAuthJsonDisplayPath();
+  expect(
+    "warning-v2.login-guidance-auth-path",
+    bothText.includes("/login") && bothText.includes(authJsonPath),
+    `expected warning text to explain /login credentials live in auth.json (${authJsonPath})`,
+  );
+  expect(
+    "warning-v2.login-guidance-do-not-edit-auth",
+    bothText.includes("Do not edit auth.json") && bothText.includes("do not copy tokens/API keys"),
+    "expected warning text to warn against editing auth.json or copying credentials",
+  );
+  expect(
+    "warning-v2.provider-override-example",
+    bothText.includes("Provider-level minimal override") && bothText.includes('\"providers\"') && bothText.includes('\"otokapi\"'),
+    "expected warning text to include provider-level minimal models.json override",
+  );
+  expect(
+    "warning-v2.model-override-example",
+    bothText.includes("Single-model override") && bothText.includes('\"modelOverrides\"') && bothText.includes('\"gpt-5.5\"'),
+    "expected warning text to include modelOverrides example for one-model changes",
+  );
+
+  const safeSuggestion = buildSafeOpenAIProxyCompatSuggestion(bothMissing);
+  const providerOverride = buildProviderCompatOverride("otokapi", safeSuggestion);
+  const modelOverride = buildModelCompatOverride("otokapi", "gpt-5.5", safeSuggestion);
+  expect(
+    "warning-v2.provider-override-safe-only",
+    JSON.stringify(providerOverride).includes("sendSessionAffinityHeaders") &&
+      JSON.stringify(providerOverride).includes("supportsLongCacheRetention") === false,
+    "expected provider override helper to include only the safe session-affinity compat flag",
+  );
+  expect(
+    "warning-v2.model-override-safe-only",
+    JSON.stringify(modelOverride).includes("modelOverrides") &&
+      JSON.stringify(modelOverride).includes("sendSessionAffinityHeaders") &&
+      JSON.stringify(modelOverride).includes("supportsLongCacheRetention") === false,
+    "expected model override helper to include only the safe session-affinity compat flag",
+  );
 }
 
 // ==========================================================================
@@ -2395,6 +2437,16 @@ Line count: 10 / 1000
     doctorOutput4.includes("✅ Compat fully configured.") === false,
     "expected doctor output to NOT show fully configured when flags are missing",
   );
+  expect(
+    "doctor.missing-login-auth-guidance",
+    doctorOutput4.includes("/login") && doctorOutput4.includes(getAuthJsonDisplayPath()) && doctorOutput4.includes("Do not edit auth.json"),
+    "expected doctor missing-compat output to explain /login auth.json vs models.json compat override",
+  );
+  expect(
+    "doctor.missing-model-overrides-guidance",
+    doctorOutput4.includes("Provider-level minimal override") && doctorOutput4.includes("Single-model override") && doctorOutput4.includes('\"modelOverrides\"'),
+    "expected doctor missing-compat output to include provider-level and modelOverrides examples",
+  );
 
   const deepseekMissing = makeModel({
     id: "deepseek-v4-pro",
@@ -2502,6 +2554,16 @@ Line count: 10 / 1000
       "buildCompatDiagnosis.missing-contains-provider",
       compatResult.includes('providers["otokapi"]'),
       'expected compat result to contain providers["otokapi"]',
+    );
+    expect(
+      "buildCompatDiagnosis.missing-login-auth-guidance",
+      compatResult.includes("/login") && compatResult.includes(getAuthJsonDisplayPath()) && compatResult.includes("Do not edit auth.json"),
+      "expected compat result to explain /login auth.json vs models.json compat override",
+    );
+    expect(
+      "buildCompatDiagnosis.missing-model-overrides-guidance",
+      compatResult.includes("Provider-level minimal override") && compatResult.includes("Single-model override") && compatResult.includes('\"modelOverrides\"'),
+      "expected compat result to include provider-level and modelOverrides examples",
     );
   }
 

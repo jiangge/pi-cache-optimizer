@@ -680,6 +680,13 @@ function getModelsJsonDisplayPath(platform: string = process.platform): string {
   return "~/.pi/agent/models.json";
 }
 
+function getAuthJsonDisplayPath(platform: string = process.platform): string {
+  if (platform.startsWith("win")) {
+    return `%USERPROFILE%\\.pi\\agent\\auth.json`;
+  }
+  return "~/.pi/agent/auth.json";
+}
+
 function isEnabledEnv(value: string | undefined): boolean {
   if (!value) return false;
   const normalized = value.trim().toLowerCase();
@@ -1538,7 +1545,60 @@ function getPromptCacheRetentionUnsupportedHint(): string {
   return "If this channel returns `400 Unsupported parameter: prompt_cache_retention`, remove/avoid `supportsLongCacheRetention`; this extension does not write that field directly, but Pi may send it when long retention is requested and compat says the proxy supports it.";
 }
 
-function appendOpenAIProxyCompatAdviceLines(lines: string[], missing: string[], options: { includeJsonIntro?: boolean } = {}): void {
+type CompatAdvicePlacement = {
+  providerLabel?: string;
+  modelId?: string;
+};
+
+function buildProviderCompatOverride(providerLabel: string, compat: Record<string, unknown>): Record<string, unknown> {
+  return {
+    providers: {
+      [providerLabel]: {
+        compat,
+      },
+    },
+  };
+}
+
+function buildModelCompatOverride(providerLabel: string, modelId: string, compat: Record<string, unknown>): Record<string, unknown> {
+  return {
+    providers: {
+      [providerLabel]: {
+        modelOverrides: {
+          [modelId]: {
+            compat,
+          },
+        },
+      },
+    },
+  };
+}
+
+function appendLoginBackedProviderGuidance(lines: string[], placement: CompatAdvicePlacement, compatSuggestion: Record<string, unknown>): void {
+  const providerLabel = placement.providerLabel;
+  if (!providerLabel) return;
+
+  lines.push("");
+  lines.push("If this channel was added via /login and has no models.json entry:");
+  lines.push(`- /login credentials live in ${getAuthJsonDisplayPath()}.`);
+  lines.push("- Do not edit auth.json and do not copy tokens/API keys.");
+  lines.push(`- Keep /login authentication as-is; add only cache/routing compat overrides in ${getModelsJsonDisplayPath()}.`);
+
+  if (Object.keys(compatSuggestion).length === 0) {
+    lines.push("- No safe copyable override is available for the missing flags shown above.");
+    return;
+  }
+
+  lines.push("Provider-level minimal override:");
+  lines.push(JSON.stringify(buildProviderCompatOverride(providerLabel, compatSuggestion), null, 2));
+
+  if (placement.modelId) {
+    lines.push("Single-model override (use this if only this model should change):");
+    lines.push(JSON.stringify(buildModelCompatOverride(providerLabel, placement.modelId, compatSuggestion), null, 2));
+  }
+}
+
+function appendOpenAIProxyCompatAdviceLines(lines: string[], missing: string[], options: { includeJsonIntro?: boolean } & CompatAdvicePlacement = {}): void {
   const suggestion = buildSafeOpenAIProxyCompatSuggestion(missing);
   const hasSafeSuggestion = Object.keys(suggestion).length > 0;
 
@@ -1558,6 +1618,8 @@ function appendOpenAIProxyCompatAdviceLines(lines: string[], missing: string[], 
     lines.push("- supportsLongCacheRetention: optional. Enable only after your endpoint/proxy explicitly supports OpenAI long prompt cache retention.");
     lines.push(`- ${getPromptCacheRetentionUnsupportedHint()}`);
   }
+
+  appendLoginBackedProviderGuidance(lines, options, suggestion);
 }
 
 /**
@@ -1577,6 +1639,7 @@ function buildOpenAIProxyCompatWarningText(key: string, missing: string[]): stri
   // If no slash is found, fall back to the key itself.
   const slashIdx = key.indexOf("/");
   const providerLabel = slashIdx > 0 ? key.slice(0, slashIdx) : key;
+  const modelId = slashIdx > 0 ? key.slice(slashIdx + 1) : undefined;
 
   const modelsJsonPath = getModelsJsonDisplayPath();
   const lines: string[] = [
@@ -1585,7 +1648,7 @@ function buildOpenAIProxyCompatWarningText(key: string, missing: string[]): stri
     ``,
   ];
 
-  appendOpenAIProxyCompatAdviceLines(lines, missing);
+  appendOpenAIProxyCompatAdviceLines(lines, missing, { providerLabel, modelId });
 
   return lines.join("\n");
 }
@@ -1647,7 +1710,7 @@ function buildDeepSeekCompatSuggestion(missing: string[]): Record<string, unknow
   return suggestion;
 }
 
-function appendDeepSeekCompatAdviceLines(lines: string[], missing: string[]): void {
+function appendDeepSeekCompatAdviceLines(lines: string[], missing: string[], placement: CompatAdvicePlacement = {}): void {
   const suggestion = buildDeepSeekCompatSuggestion(missing);
   if (Object.keys(suggestion).length > 0) {
     lines.push("Recommended DeepSeek compat snippet:");
@@ -1669,11 +1732,14 @@ function appendDeepSeekCompatAdviceLines(lines: string[], missing: string[]): vo
   if (missing.includes("supportsLongCacheRetention")) {
     lines.push("- supportsLongCacheRetention: enable for DeepSeek-compatible endpoints that support long cache retention.");
   }
+
+  appendLoginBackedProviderGuidance(lines, placement, suggestion);
 }
 
 function buildDeepSeekCompatWarningText(key: string, missing: string[]): string {
   const slashIdx = key.indexOf("/");
   const providerLabel = slashIdx > 0 ? key.slice(0, slashIdx) : key;
+  const modelId = slashIdx > 0 ? key.slice(slashIdx + 1) : undefined;
   const modelsJsonPath = getModelsJsonDisplayPath();
   const lines: string[] = [
     `💡 pi-cache-optimizer: ${key} is DeepSeek-like but merged compat lacks ${missing.join(" and ")}.`,
@@ -1681,7 +1747,7 @@ function buildDeepSeekCompatWarningText(key: string, missing: string[]): string 
     "",
   ];
 
-  appendDeepSeekCompatAdviceLines(lines, missing);
+  appendDeepSeekCompatAdviceLines(lines, missing, { providerLabel, modelId });
 
   return lines.join("\n");
 }
@@ -3326,9 +3392,9 @@ function buildDoctorDiagnosis(model: PiModel, options: { promptCacheRetention400
     const modelsJsonPath = getModelsJsonDisplayPath();
     lines.push(`Edit ${modelsJsonPath} -> providers["${providerLabel}"] -> compat (same level as baseUrl/api/apiKey/models).`);
     if (deepSeekCompatApplicable) {
-      appendDeepSeekCompatAdviceLines(lines, missing);
+      appendDeepSeekCompatAdviceLines(lines, missing, { providerLabel, modelId: model.id });
     } else {
-      appendOpenAIProxyCompatAdviceLines(lines, missing);
+      appendOpenAIProxyCompatAdviceLines(lines, missing, { providerLabel, modelId: model.id });
     }
   } else if (deepSeekCompatApplicable || isCompatCheckApplicable(model)) {
     lines.push("✅ Compat fully configured.");
@@ -3507,9 +3573,9 @@ function buildCompatDiagnosis(model: PiModel): string | undefined {
     lines.push(`Edit ${modelsJsonPath} -> providers["${providerLabel}"] -> compat`);
     lines.push(`(at the same level as baseUrl/api/apiKey/models).`);
     if (deepSeekCompatApplicable) {
-      appendDeepSeekCompatAdviceLines(lines, missing);
+      appendDeepSeekCompatAdviceLines(lines, missing, { providerLabel, modelId: model.id });
     } else {
-      appendOpenAIProxyCompatAdviceLines(lines, missing);
+      appendOpenAIProxyCompatAdviceLines(lines, missing, { providerLabel, modelId: model.id });
     }
   }
 
@@ -3689,8 +3755,11 @@ export const __internals_for_tests = {
   getAssistantMessageModelTokenValues,
   getCompat,
   modelKey,
-  // Platform-friendly path helper
+  // Platform-friendly path helpers
   getModelsJsonDisplayPath,
+  getAuthJsonDisplayPath,
+  buildProviderCompatOverride,
+  buildModelCompatOverride,
   captureCacheRetentionEnv,
   requestLongCacheRetention,
   restoreCacheRetentionEnv,
