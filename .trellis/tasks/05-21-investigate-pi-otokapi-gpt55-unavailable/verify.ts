@@ -172,7 +172,6 @@ const {
   modelKey,
   buildOpenAIProxyCompatWarningText,
   getModelsJsonDisplayPath,
-  getAuthJsonDisplayPath,
   buildProviderCompatOverride,
   buildModelCompatOverride,
   captureCacheRetentionEnv,
@@ -1886,16 +1885,15 @@ Line count: 10 / 1000
     "expected warning text to NOT contain Google API key patterns",
   );
 
-  const authJsonPath = getAuthJsonDisplayPath();
   expect(
-    "warning-v2.login-guidance-auth-path",
-    bothText.includes("/login") && bothText.includes(authJsonPath),
-    `expected warning text to explain /login credentials live in auth.json (${authJsonPath})`,
+    "warning-v2.credential-guidance-no-provider-entry",
+    bothText.includes("no models.json provider entry yet"),
+    "expected warning text to explain minimal models.json override when no provider entry exists",
   );
   expect(
-    "warning-v2.login-guidance-do-not-edit-auth",
-    bothText.includes("Do not edit auth.json") && bothText.includes("do not copy tokens/API keys"),
-    "expected warning text to warn against editing auth.json or copying credentials",
+    "warning-v2.credential-guidance-do-not-copy-secrets",
+    bothText.includes("Keep existing authentication as-is") && bothText.includes("do not copy credentials, tokens, or API keys"),
+    "expected warning text to warn against copying credentials",
   );
   expect(
     "warning-v2.provider-override-example",
@@ -2438,9 +2436,9 @@ Line count: 10 / 1000
     "expected doctor output to NOT show fully configured when flags are missing",
   );
   expect(
-    "doctor.missing-login-auth-guidance",
-    doctorOutput4.includes("/login") && doctorOutput4.includes(getAuthJsonDisplayPath()) && doctorOutput4.includes("Do not edit auth.json"),
-    "expected doctor missing-compat output to explain /login auth.json vs models.json compat override",
+    "doctor.missing-credential-guidance",
+    doctorOutput4.includes("no models.json provider entry yet") && doctorOutput4.includes("Keep existing authentication as-is"),
+    "expected doctor missing-compat output to explain credential-safe models.json compat override",
   );
   expect(
     "doctor.missing-model-overrides-guidance",
@@ -2556,9 +2554,9 @@ Line count: 10 / 1000
       'expected compat result to contain providers["otokapi"]',
     );
     expect(
-      "buildCompatDiagnosis.missing-login-auth-guidance",
-      compatResult.includes("/login") && compatResult.includes(getAuthJsonDisplayPath()) && compatResult.includes("Do not edit auth.json"),
-      "expected compat result to explain /login auth.json vs models.json compat override",
+      "buildCompatDiagnosis.missing-credential-guidance",
+      compatResult.includes("no models.json provider entry yet") && compatResult.includes("Keep existing authentication as-is"),
+      "expected compat result to explain credential-safe models.json compat override",
     );
     expect(
       "buildCompatDiagnosis.missing-model-overrides-guidance",

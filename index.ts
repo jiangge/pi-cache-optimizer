@@ -680,13 +680,6 @@ function getModelsJsonDisplayPath(platform: string = process.platform): string {
   return "~/.pi/agent/models.json";
 }
 
-function getAuthJsonDisplayPath(platform: string = process.platform): string {
-  if (platform.startsWith("win")) {
-    return `%USERPROFILE%\\.pi\\agent\\auth.json`;
-  }
-  return "~/.pi/agent/auth.json";
-}
-
 function isEnabledEnv(value: string | undefined): boolean {
   if (!value) return false;
   const normalized = value.trim().toLowerCase();
@@ -1574,15 +1567,14 @@ function buildModelCompatOverride(providerLabel: string, modelId: string, compat
   };
 }
 
-function appendLoginBackedProviderGuidance(lines: string[], placement: CompatAdvicePlacement, compatSuggestion: Record<string, unknown>): void {
+function appendCredentialSafeProviderGuidance(lines: string[], placement: CompatAdvicePlacement, compatSuggestion: Record<string, unknown>): void {
   const providerLabel = placement.providerLabel;
   if (!providerLabel) return;
 
   lines.push("");
-  lines.push("If this channel was added via /login and has no models.json entry:");
-  lines.push(`- /login credentials live in ${getAuthJsonDisplayPath()}.`);
-  lines.push("- Do not edit auth.json and do not copy tokens/API keys.");
-  lines.push(`- Keep /login authentication as-is; add only cache/routing compat overrides in ${getModelsJsonDisplayPath()}.`);
+  lines.push("If this channel has no models.json provider entry yet:");
+  lines.push("- Keep existing authentication as-is; do not copy credentials, tokens, or API keys.");
+  lines.push(`- Add only cache/routing compat overrides in ${getModelsJsonDisplayPath()}.`);
 
   if (Object.keys(compatSuggestion).length === 0) {
     lines.push("- No safe copyable override is available for the missing flags shown above.");
@@ -1619,7 +1611,7 @@ function appendOpenAIProxyCompatAdviceLines(lines: string[], missing: string[], 
     lines.push(`- ${getPromptCacheRetentionUnsupportedHint()}`);
   }
 
-  appendLoginBackedProviderGuidance(lines, options, suggestion);
+  appendCredentialSafeProviderGuidance(lines, options, suggestion);
 }
 
 /**
@@ -1733,7 +1725,7 @@ function appendDeepSeekCompatAdviceLines(lines: string[], missing: string[], pla
     lines.push("- supportsLongCacheRetention: enable for DeepSeek-compatible endpoints that support long cache retention.");
   }
 
-  appendLoginBackedProviderGuidance(lines, placement, suggestion);
+  appendCredentialSafeProviderGuidance(lines, placement, suggestion);
 }
 
 function buildDeepSeekCompatWarningText(key: string, missing: string[]): string {
@@ -3757,7 +3749,6 @@ export const __internals_for_tests = {
   modelKey,
   // Platform-friendly path helpers
   getModelsJsonDisplayPath,
-  getAuthJsonDisplayPath,
   buildProviderCompatOverride,
   buildModelCompatOverride,
   captureCacheRetentionEnv,

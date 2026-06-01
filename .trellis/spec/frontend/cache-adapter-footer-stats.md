@@ -820,12 +820,12 @@ If compat flags are missing, includes a copyable safe JSON suggestion and the ed
 location (`~/.pi/agent/models.json -> providers.<id> -> compat`). The JSON only
 includes `sendSessionAffinityHeaders: true` when missing; `supportsLongCacheRetention`
 is explained as optional/risky rather than inserted into the copyable safe snippet.
-For channels authenticated through `/login`, the output MUST explain that
-credentials live in `~/.pi/agent/auth.json`, that users must not edit `auth.json`
-or copy tokens/API keys, and that cache/routing compatibility belongs in a minimal
-`models.json` provider override. When a safe compat suggestion exists, doctor MUST
-show both provider-level `compat` and single-model `modelOverrides` examples using
-only the safe compat keys.
+For channels with no explicit `models.json` provider block yet, the output MUST
+explain that users should keep existing authentication as-is, must not copy
+credentials/tokens/API keys, and should add only cache/routing compatibility in a
+minimal `models.json` provider override. When a safe compat suggestion exists,
+doctor MUST show both provider-level `compat` and single-model `modelOverrides`
+examples using only the safe compat keys.
 
 When the compat check applies (third-party `openai-completions` proxy) and no flags
 are missing, shows `✅ Compat fully configured.`
@@ -880,10 +880,11 @@ samples have been recorded yet in this session, trend shows "no samples yet".
 Shows the compat suggestion for the active model, including the file path,
 provider selector, exact edit location, and the copyable JSON snippet.
 When compat flags are missing, includes the suggestion and appends any applicable
-router/channel diagnostic notes. Like doctor, this command MUST include `/login`
-channel guidance when applicable: `auth.json` is credentials-only and should not
-be edited; `models.json` should carry the minimal provider-level `compat` override
-or single-model `modelOverrides` override.
+router/channel diagnostic notes. Like doctor, this command MUST include guidance
+for channels with no explicit `models.json` provider block yet: keep existing
+authentication as-is, do not copy credentials/tokens/API keys, and place only the
+minimal provider-level `compat` override or single-model `modelOverrides` override
+in `models.json`.
 
 When no compat flags are missing but router/channel diagnostics apply, shows the
 same applicability-respecting status line (`✅ Compat fully configured.` or
@@ -991,7 +992,7 @@ compat). It does NOT read or expose:
 
 | Scenario | Expected behavior |
 |---|---|
-| `/cache-optimizer doctor` with model that has missing compat flags | Output includes `Missing compat flags: supportsLongCacheRetention, sendSessionAffinityHeaders`, a copyable safe JSON suggestion with `sendSessionAffinityHeaders: true`, the `~/.pi/agent/models.json -> providers["<id>"]` path, optional/risky guidance for `supportsLongCacheRetention`, and `/login` guidance that keeps credentials in `auth.json` while placing compat overrides in `models.json` |
+| `/cache-optimizer doctor` with model that has missing compat flags | Output includes `Missing compat flags: supportsLongCacheRetention, sendSessionAffinityHeaders`, a copyable safe JSON suggestion with `sendSessionAffinityHeaders: true`, the `~/.pi/agent/models.json -> providers["<id>"]` path, optional/risky guidance for `supportsLongCacheRetention`, and credential-safe guidance that keeps existing authentication as-is while placing only compat overrides in `models.json` |
 | `/cache-optimizer doctor` with DeepSeek-like Pi Mono model missing reasoning compat | Output includes missing `requiresReasoningContentOnAssistantMessages` and `thinkingFormat`, plus copyable JSON with `requiresReasoningContentOnAssistantMessages: true` and `thinkingFormat: "deepseek"`. |
 | `/cache-optimizer compat` with DeepSeek-like Pi Mono model missing reasoning compat | Shows the same DeepSeek-specific JSON suggestion and edit location; custom transports still show not-applicable. |
 | `/cache-optimizer doctor` without an active model | Notification: "No active model selected" |
@@ -1011,7 +1012,7 @@ compat). It does NOT read or expose:
 | `/cache-optimizer doctor` with LiteLLM/OneAPI/NewAPI/VoAPI model | Output includes `🔀 Router/channel: Self-hosted aggregation proxy detected` with sticky routing and prompt_cache_key guidance |
 | `/cache-optimizer doctor` with generic third-party OpenAI-compatible proxy | Output includes `🔀 Router/channel: Third-party OpenAI-compatible proxy` with general guidance |
 | `/cache-optimizer doctor` with official OpenAI or kiro-api model | Output does NOT include router/channel notes (not applicable) |
-| `/cache-optimizer compat` with missing-compat OpenRouter model | Shows missing flags + safe JSON + OpenRouter channel notes + `/login` auth.json-vs-models.json guidance with provider-level and `modelOverrides` examples |
+| `/cache-optimizer compat` with missing-compat OpenRouter model | Shows missing flags + safe JSON + OpenRouter channel notes + credential-safe `models.json` guidance with provider-level and `modelOverrides` examples |
 | `/cache-optimizer compat` with fully-configured OpenRouter model | Shows `✅ Compat fully configured.` followed by OpenRouter channel notes; if `supportsLongCacheRetention` is enabled, also includes the `prompt_cache_retention` 400 recovery hint |
 | Router/channel diagnostics do not affect adapter selection | An OpenRouter Llama model still selects the Llama adapter, not an "OpenRouter" adapter |
 | Diagnostic text must not expose API keys, prompts, payloads, or model output | All router/channel output uses only provider, api, baseUrl, compat metadata |

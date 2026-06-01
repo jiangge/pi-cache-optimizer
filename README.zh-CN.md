@@ -101,9 +101,9 @@ LiteLLM / OneAPI / NewAPI / 类 OpenRouter 渠道等第三方 `openai-completion
 - 对 DeepSeek 模型，Pi Mono 指南期望在支持时同时设置 `compat.requiresReasoningContentOnAssistantMessages: true` 和 `compat.thinkingFormat: "deepseek"`，再配合缓存 / session-affinity 相关 compat。
 - 本扩展只给建议，不会修改 `models.json`。
 
-### 通过 `/login` 认证的渠道
+### 没有 `models.json` provider entry 的渠道
 
-有些 Pi 渠道通过 `/login` 认证；凭据保存在 `~/.pi/agent/auth.json`，`~/.pi/agent/models.json` 里可能还没有对应 provider block。不要编辑 `auth.json`，也不要复制 token/API key。保留 `/login` 认证，只在 `models.json` 里添加缓存 / 路由兼容覆盖。
+有些 Pi 渠道可用时，`~/.pi/agent/models.json` 里可能还没有对应 provider block。保留现有认证方式，不要复制 credential、token 或 API key。只在 `models.json` 里添加缓存 / 路由兼容覆盖。
 
 Provider 级最小 override：
 

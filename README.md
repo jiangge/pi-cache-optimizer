@@ -101,9 +101,9 @@ Notes:
 - For DeepSeek models, the Pi Mono guidance expects `compat.requiresReasoningContentOnAssistantMessages: true` and `compat.thinkingFormat: "deepseek"` alongside cache/session-affinity flags when the endpoint supports them.
 - This extension only advises; it does not edit `models.json`.
 
-### Channels authenticated with `/login`
+### Channels without a `models.json` provider entry
 
-Some Pi channels are authenticated by `/login`; their credentials live in `~/.pi/agent/auth.json`, and there may be no provider block in `~/.pi/agent/models.json` yet. Do **not** edit `auth.json` or copy tokens/API keys. Keep `/login` authentication as-is and add only cache/routing compatibility overrides in `models.json`.
+Some Pi channels may be available even when there is no provider block in `~/.pi/agent/models.json` yet. Keep existing authentication as-is and do not copy credentials, tokens, or API keys. Add only cache/routing compatibility overrides in `models.json`.
 
 Provider-level minimal override:
 

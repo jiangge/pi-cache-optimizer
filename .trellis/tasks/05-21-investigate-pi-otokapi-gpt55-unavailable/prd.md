@@ -32,7 +32,7 @@
 * 不覆盖 Pi core 或用户 payload 中已有的有效 `prompt_cache_key`。
 * 将 `prompt_cache_key: undefined` / 空字符串视为缺失，允许扩展补 session id。
 * 对第三方 GPT / OpenAI-family `openai-completions` 模型，当缺少 `supportsLongCacheRetention` 或 `sendSessionAffinityHeaders` 时给出一次性 warning 和可复制 compat 建议。
-* 对通过 `/login` 认证、可能只在 `auth.json` 有凭据且 `models.json` 无显式 provider block 的渠道，doctor/compat 需提示：不要编辑 `auth.json` 或复制 token/API key；只在 `models.json` 增加最小 provider-level `compat` 或单模型 `modelOverrides` 覆盖。
+* 对可能没有显式 `models.json` provider block 的渠道，doctor/compat 需提示：保持现有认证方式，不复制 credential/token/API key；只在 `models.json` 增加最小 provider-level `compat` 或单模型 `modelOverrides` 覆盖。
 * 保持官方 OpenAI Responses / Codex bypass，不对其 prompt 做重排。
 * 不将 API key、prompt、headers、payload、模型输出写入日志或持久化。
 * 不创建、备份、写入、重命名或修改 `~/.pi/agent/models.json`；本项目只做缓存优化、compat 提醒和 footer 统计。
@@ -46,7 +46,7 @@
 * [x] Adapter 选择仍只基于模型 id/name，不因 provider/api/baseUrl 改变。
 * [x] 质量检查通过；如代码修改，补充任务级验证脚本。
 * [x] 不再在用户未配置 DeepSeek-like 模型时自动写入 DeepSeek provider；扩展不会修改 `models.json`。
-* [x] doctor/compat 对 `/login` 渠道补充 auth.json-vs-models.json 提示，并给出 provider-level 与 `modelOverrides` 最小配置示例。
+* [x] doctor/compat 对缺少 `models.json` provider block 的渠道补充 credential-safe 提示，并给出 provider-level 与 `modelOverrides` 最小配置示例。
 
 ## Definition of Done
 
@@ -82,7 +82,7 @@
   * DeepSeek auto-seeding / `models.json` mutation was removed to keep the package scoped to cache optimization, compat advice, and footer stats only.
   * Added footer stats adapters for Mistral, Grok/xAI, Llama, Nemotron, Cohere, and Yi model families. Each uses id/name-only detection with OpenAI-compatible usage normalization (`getOpenAIRawUsage` fallback). Detection tokens: `mistral/mixtral/codestral`, `grok` + `xai` pattern, `llama`, `nemotron`, `cohere/command-r`, `yi-` + `01-ai/zero-one` + `yi` pattern. Compat warnings (when applicable) reuse the existing broad `describeMissingOpenAICompatibleProxyCompat` function.
   * The relaxed `before_provider_request` gate (only `isOpenAICompatibleApi` check, no `isOpenAIFamilyModel` requirement) already covers all new model families for session-id prompt_cache_key injection.
-  * Missing-compat warning/doctor/compat output now explains `/login` channels: credentials stay in `auth.json`, users must not edit/copy credentials, and cache/routing compat belongs in minimal `models.json` provider-level `compat` or single-model `modelOverrides` examples. Generic OpenAI proxy examples keep `supportsLongCacheRetention` out of safe JSON by default.
+  * Missing-compat warning/doctor/compat output now explains channels without explicit `models.json` provider blocks: keep existing authentication as-is, do not copy credentials/tokens/API keys, and put cache/routing compat in minimal `models.json` provider-level `compat` or single-model `modelOverrides` examples. Generic OpenAI proxy examples keep `supportsLongCacheRetention` out of safe JSON by default.
 * Validation:
   * `node --experimental-strip-types --no-warnings .trellis/tasks/05-21-investigate-pi-otokapi-gpt55-unavailable/verify.ts`
   * `node --experimental-strip-types --no-warnings .trellis/tasks/05-17-fix-prompt-pollution-bugs-degrading-deepseek-cache-hit-rate/verify.ts`
