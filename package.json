@@ -1,6 +1,6 @@
 {
   "name": "pi-cache-optimizer",
-  "version": "2.5.5",
+  "version": "2.5.6",
   "description": "Improve Pi prompt/KV cache hit rates with stable prompts, OpenAI-compatible cache keys, proxy compat warnings, and footer cache stats.",
   "keywords": [
     "pi-package",
