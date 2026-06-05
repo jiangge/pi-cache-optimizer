@@ -3078,6 +3078,29 @@ async function readPersistedCacheStats(): Promise<CacheStatsState | undefined> {
   return undefined;
 }
 
+function filterRestorableStatsForSession(
+  persisted: CacheStatsState | undefined,
+  currentSessionHash?: string,
+): Record<string, CacheStats> {
+  if (!persisted || !currentSessionHash) return {};
+
+  const prefix = `${currentSessionHash}:`;
+  const filteredModelStats: Record<string, CacheStats> = {};
+  for (const [fullKey, stats] of Object.entries(persisted.statsByModel)) {
+    if (fullKey.startsWith(prefix)) {
+      filteredModelStats[fullKey] = stats;
+    } else if (!fullKey.includes(":")) {
+      // Legacy v3-style key without session hash — migrate to current session.
+      filteredModelStats[`${currentSessionHash}:${fullKey}`] = stats;
+    } else if (fullKey.startsWith("_nosession:")) {
+      // Transitional _nosession bucket — migrate to current session.
+      filteredModelStats[`${currentSessionHash}:${fullKey.slice("_nosession:".length)}`] = stats;
+    }
+  }
+
+  return filteredModelStats;
+}
+
 /**
  * The closure-internal writer. Since the closure has access to currentSessionHash,
  * it passes the hash and statsByModel here. This function wraps them in the v4
@@ -3807,6 +3830,7 @@ export const __internals_for_tests = {
   hashSessionId,
   makeSessionModelKey,
   modelKeyFromSessionKey,
+  filterRestorableStatsForSession,
   // Persistence helpers (for reload/reset tests)
   mergeCacheSessions,
   writePersistedCacheStats,
@@ -3832,6 +3856,15 @@ export default function (pi: ExtensionAPI) {
   const PERSIST_DEBOUNCE_MS = 2000;
   /** In-memory recent usage samples per model key (not persisted, cleared on reload). */
   const recentSamplesByModelKey = new Map<string, CacheUsageSample[]>();
+
+  function syncSessionHash(ctx: Pick<ExtensionContext, "sessionManager">): void {
+    const sid = ctx.sessionManager.getSessionId();
+    if (sid && (sid !== currentSessionId || !currentSessionHashSet)) {
+      currentSessionId = sid;
+      currentSessionHash = hashSessionId(sid);
+      currentSessionHashSet = true;
+    }
+  }
 
   /**
    * Build a session-scoped stats key from the current session hash + model key.
@@ -3989,13 +4022,7 @@ export default function (pi: ExtensionAPI) {
   }
 
   async function restoreCacheStats(reason: string, ctx: ExtensionContext): Promise<void> {
-    // Set session id on first load and on reload (same session).
-    const sid = ctx.sessionManager.getSessionId();
-    if (sid && (sid !== currentSessionId || !currentSessionHashSet)) {
-      currentSessionId = sid;
-      currentSessionHash = hashSessionId(sid);
-      currentSessionHashSet = true;
-    }
+    syncSessionHash(ctx);
 
     if (reason === "reload") {
       // /reload: preserve session-scoped stats (same session hash).
@@ -4007,73 +4034,31 @@ export default function (pi: ExtensionAPI) {
       clearRecentSamples();
 
       const persisted = await readPersistedCacheStats();
-      if (persisted && currentSessionHash) {
-        const prefix = `${currentSessionHash}:`;
-        const filteredModelStats: Record<string, CacheStats> = {};
-        for (const [fullKey, stats] of Object.entries(persisted.statsByModel)) {
-          if (fullKey.startsWith(prefix)) {
-            // Current session's data
-            filteredModelStats[fullKey] = stats;
-          } else if (!fullKey.includes(":")) {
-            // Legacy v3-style key without session hash — migrate to current session
-            filteredModelStats[`${currentSessionHash}:${fullKey}`] = stats;
-          } else if (fullKey.startsWith("_nosession:")) {
-            // _nosession migration remnant from old-path v4 write — migrate to current session
-            filteredModelStats[`${currentSessionHash}:${fullKey.slice("_nosession:".length)}`] = stats;
-          }
-        }
-        cacheStatsByModel = filteredModelStats;
-        cacheStatsLegacyFamily = persisted.legacyFamily;
-      } else if (persisted) {
-        cacheStatsByModel = persisted.statsByModel;
-        cacheStatsLegacyFamily = persisted.legacyFamily;
-      } else {
-        cacheStatsByModel = {};
-        cacheStatsLegacyFamily = emptyAllCacheStats();
-      }
+      cacheStatsByModel = filterRestorableStatsForSession(
+        persisted,
+        currentSessionHashSet ? currentSessionHash : undefined,
+      );
+      cacheStatsLegacyFamily = persisted?.legacyFamily ?? emptyAllCacheStats();
 
       await rollOverStatsIfNeeded(ctx);
       return;
     }
 
     // First load / process start: read persisted stats and filter for
-    // this session's entries. If the session has no persisted data yet,
-    // start fresh.
+    // this session's entries. If the session hash is unavailable, start
+    // fresh instead of loading all persisted session buckets.
     const persisted = await readPersistedCacheStats();
-    if (persisted && currentSessionHash) {
-      const prefix = `${currentSessionHash}:`;
-      const filteredModelStats: Record<string, CacheStats> = {};
-      for (const [fullKey, stats] of Object.entries(persisted.statsByModel)) {
-        if (fullKey.startsWith(prefix)) {
-          // Current session's data — load it.
-          filteredModelStats[fullKey] = stats;
-        } else if (!fullKey.includes(":")) {
-          // Legacy v3-style key without session hash (e.g. "otokapi/gpt-5.5").
-          // Migrate to current session by prefixing with the session hash.
-          filteredModelStats[`${currentSessionHash}:${fullKey}`] = stats;
-        } else if (fullKey.startsWith("_nosession:")) {
-          // _nosession migration remnant from old-path v4 write — migrate to current session
-          filteredModelStats[`${currentSessionHash}:${fullKey.slice("_nosession:".length)}`] = stats;
-        }
-        // Other sessions' entries are preserved in the file but not loaded
-        // into memory; they'll be rewritten on next persist.
-      }
-      cacheStatsByModel = filteredModelStats;
-      cacheStatsLegacyFamily = persisted.legacyFamily;
-    } else if (persisted) {
-      // Persisted data exists but no session hash set yet.
-      // This shouldn't normally happen — use the data as-is.
-      cacheStatsByModel = persisted.statsByModel;
-      cacheStatsLegacyFamily = persisted.legacyFamily;
-    } else {
-      cacheStatsByModel = {};
-      cacheStatsLegacyFamily = emptyAllCacheStats();
-    }
+    cacheStatsByModel = filterRestorableStatsForSession(
+      persisted,
+      currentSessionHashSet ? currentSessionHash : undefined,
+    );
+    cacheStatsLegacyFamily = persisted?.legacyFamily ?? emptyAllCacheStats();
     lastStatusText = undefined;
     await rollOverStatsIfNeeded(ctx);
   }
 
   async function publishStatus(ctx: ExtensionContext, model: PiModel | undefined = ctx.model): Promise<void> {
+    syncSessionHash(ctx);
     await rollOverStatsIfNeeded(ctx);
 
     const adapter = selectAdapterForModel(model);
@@ -4256,6 +4241,7 @@ export default function (pi: ExtensionAPI) {
   });
 
   pi.on("message_end", async (event, ctx) => {
+    syncSessionHash(ctx);
     const adapter = selectAdapterForAssistantMessage(event.message, ctx.model);
     if (!adapter) return;
 
@@ -4302,6 +4288,7 @@ export default function (pi: ExtensionAPI) {
   pi.registerCommand("cache-optimizer", {
     description: "Diagnose Pi cache configuration",
     handler: async (args: string, cmdCtx) => {
+      syncSessionHash(cmdCtx);
       const model = cmdCtx.model;
       const subcommand = args.trim().toLowerCase().split(/\s+/)[0] || "help";
 

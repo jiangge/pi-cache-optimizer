@@ -209,6 +209,7 @@ const {
   hashSessionId,
   makeSessionModelKey,
   modelKeyFromSessionKey,
+  filterRestorableStatsForSession,
   mergeCacheSessions,
 } = __internals_for_tests;
 
@@ -4849,19 +4850,9 @@ function addModelToStats(
 
 function filterStatsForSession(
   state: CacheStatsState,
-  targetHash: string,
+  targetHash?: string,
 ): Record<string, CacheStats> {
-  const prefix = `${targetHash}:`;
-  const filtered: Record<string, CacheStats> = {};
-  for (const [fullKey, stats] of Object.entries(state.statsByModel)) {
-    if (fullKey.startsWith(prefix)) {
-      filtered[fullKey] = stats;
-    } else if (!fullKey.includes(":")) {
-      // Legacy v3 key without hash — migrate to target session
-      filtered[`${targetHash}:${fullKey}`] = stats;
-    }
-  }
-  return filtered;
+  return filterRestorableStatsForSession(state, targetHash);
 }
 
 function removeModelFromState(
@@ -5096,6 +5087,56 @@ function sessionModelKeysForHash(state: CacheStatsState, targetHash: string): st
     "v3-migration.stats-preserved",
     migratedStats?.hitRequests === 3 && migratedStats?.totalRequests === 10,
     `expected migrated stats preserved, got hits=${migratedStats?.hitRequests}, total=${migratedStats?.totalRequests}`,
+  );
+}
+
+// Test: Missing session hash on restore starts fresh instead of loading all sessions
+{
+  const hashA = hashSessionId("no-hash-session-A");
+  const hashB = hashSessionId("no-hash-session-B");
+  const persistedState: CacheStatsState = {
+    statsByModel: {},
+    legacyFamily: buildEmptyLegacyFamily(),
+  };
+  addModelToStats(persistedState.statsByModel, hashA, "otokapi", "gpt-5.5", "2026-05-24", 10, 3);
+  addModelToStats(persistedState.statsByModel, hashB, "cafecode", "gpt-5.5", "2026-05-24", 5, 1);
+
+  const filtered = filterStatsForSession(persistedState, undefined);
+  expect(
+    "restore.no-hash-starts-empty",
+    Object.keys(filtered).length === 0,
+    `expected empty stats when session hash is unavailable, got ${JSON.stringify(Object.keys(filtered))}`,
+  );
+}
+
+// Test: _nosession restore data migrates to current session when hash is known
+{
+  const hashA = hashSessionId("nosession-migration-session");
+  const persistedState: CacheStatsState = {
+    statsByModel: {
+      "_nosession:otokapi/gpt-5.5": {
+        day: "2026-05-24",
+        totalRequests: 7,
+        hitRequests: 2,
+        cachedInputTokens: 2000,
+        cacheWriteInputTokens: 0,
+        totalInputTokens: 7000,
+      },
+    },
+    legacyFamily: buildEmptyLegacyFamily(),
+  };
+
+  const filtered = filterStatsForSession(persistedState, hashA);
+  const keys = Object.keys(filtered);
+  expect(
+    "restore.nosession-migrates.keys",
+    keys.length === 1 && keys[0] === `${hashA}:otokapi/gpt-5.5`,
+    `expected _nosession data to migrate into current session hash, got ${JSON.stringify(keys)}`,
+  );
+  expect(
+    "restore.nosession-migrates.stats",
+    filtered[`${hashA}:otokapi/gpt-5.5`]?.hitRequests === 2,
+    `expected migrated _nosession stats to preserve hit count, got ${filtered[`${hashA}:otokapi/gpt-5.5`]?.hitRequests}`,
   );
 }
 
