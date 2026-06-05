@@ -1476,7 +1476,9 @@ function isNonEmptyString(value: unknown): boolean {
 
 function isOfficialOpenAIBaseUrl(model: PiModel): boolean {
   const value = lower(model.baseUrl).trim();
-  if (!value) return false;
+  if (!value) {
+    return lower(model.provider) === "openai";
+  }
 
   try {
     return new URL(value).hostname === "api.openai.com";
@@ -1536,6 +1538,23 @@ function buildSafeOpenAIProxyCompatSuggestion(missing: string[]): Record<string,
 
 function getPromptCacheRetentionUnsupportedHint(): string {
   return "If this channel returns `400 Unsupported parameter: prompt_cache_retention`, remove/avoid `supportsLongCacheRetention`; this extension does not write that field directly, but Pi may send it when long retention is requested and compat says the proxy supports it.";
+}
+
+function hasPromptCacheRetentionUnsupportedSignal(headers: Record<string, string> | undefined): boolean {
+  if (!headers) return false;
+
+  const normalized = Object.entries(headers)
+    .map(([key, value]) => `${lower(key)}: ${lower(value)}`)
+    .join("\n");
+  if (!normalized.includes("prompt_cache_retention")) return false;
+
+  return [
+    "unsupported parameter",
+    "unsupported_parameter",
+    "unknown parameter",
+    "not supported",
+    "unsupported field",
+  ].some((needle) => normalized.includes(needle));
 }
 
 type CompatAdvicePlacement = {
@@ -3631,6 +3650,7 @@ export const __internals_for_tests = {
   isOfficialOpenAIBaseUrl,
   isCompatCheckApplicable,
   isPromptCacheRetention400Applicable,
+  hasPromptCacheRetentionUnsupportedSignal,
   // Non-GPT OpenAI-compatible model detection
   isKimiLikeModel,
   isKimiLikeAssistantMessage,
@@ -4221,6 +4241,7 @@ export default function (pi: ExtensionAPI) {
     if (!runtimeOptimizerEnabled || !model) return;
     if (event.status !== 400) return;
     if (!isPromptCacheRetention400Applicable(model)) return;
+    if (!hasPromptCacheRetentionUnsupportedSignal(event.headers)) return;
 
     const key = modelKey(model);
     promptCacheRetention400Models.add(key);

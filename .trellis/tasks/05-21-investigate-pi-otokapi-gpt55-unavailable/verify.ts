@@ -52,6 +52,7 @@ const {
   isOfficialOpenAIBaseUrl,
   isCompatCheckApplicable,
   isPromptCacheRetention400Applicable,
+  hasPromptCacheRetentionUnsupportedSignal,
   buildDoctorDiagnosis,
   buildCompatDiagnosis,
   describeRouterChannelDiagnostics,
@@ -596,7 +597,8 @@ Line count: 10 / 1000
   expect("baseUrl.root", isOfficialOpenAIBaseUrl(makeModel({ baseUrl: "https://api.openai.com" })) === true, "expected api.openai.com root to be official");
   expect("baseUrl.bare", isOfficialOpenAIBaseUrl(makeModel({ baseUrl: "api.openai.com/v1" })) === true, "expected bare api.openai.com path to be official");
   expect("baseUrl.proxy", isOfficialOpenAIBaseUrl(makeModel({ baseUrl: "https://otokapi.example.com/v1" })) === false, "expected otokapi to NOT be official");
-  expect("baseUrl.empty", isOfficialOpenAIBaseUrl(makeModel({ baseUrl: "" })) === false, "expected empty baseUrl to NOT be official");
+  expect("baseUrl.empty-openai", isOfficialOpenAIBaseUrl(makeModel({ provider: "openai", baseUrl: "" })) === true, "expected empty baseUrl on official openai provider to be treated as official default routing");
+  expect("baseUrl.empty-proxy", isOfficialOpenAIBaseUrl(makeModel({ provider: "otokapi", baseUrl: "" })) === false, "expected empty baseUrl on custom proxy provider to NOT be treated as official");
   expect("baseUrl.custom", isOfficialOpenAIBaseUrl(makeModel({ baseUrl: "https://my-proxy.local" })) === false, "expected custom proxy to NOT be official");
   expect("baseUrl.spoofed-host", isOfficialOpenAIBaseUrl(makeModel({ baseUrl: "https://api.openai.com.proxy.example/v1" })) === false, "expected spoofed api.openai.com hostname to NOT be official");
   expect("baseUrl.subdomain", isOfficialOpenAIBaseUrl(makeModel({ baseUrl: "https://proxy.api.openai.com/v1" })) === false, "expected api.openai.com subdomain to NOT be official");
@@ -1280,11 +1282,18 @@ Line count: 10 / 1000
     baseUrl: "https://api.openai.com/v1",
     compat: {},
   });
-  const kimiOfficialMissing = describeMissingOpenAICompatibleProxyCompat(kimiOfficial);
+  const officialDefaultModel = makeModel({
+    id: "gpt-4.1",
+    provider: "openai",
+    api: "openai-completions",
+    baseUrl: "",
+    compat: {},
+  });
+  const officialDefaultMissing = describeMissingOpenAICompatibleProxyCompat(officialDefaultModel);
   expect(
-    "broadCompat.kimi-official-skip",
-    kimiOfficialMissing.length === 0,
-    `expected no compat warnings for Kimi model with official baseUrl, got: ${JSON.stringify(kimiOfficialMissing)}`,
+    "broadCompat.official-default-skip",
+    officialDefaultMissing.length === 0,
+    `expected no compat warnings for official OpenAI default baseUrl, got: ${JSON.stringify(officialDefaultMissing)}`,
   );
 
   // GPT-named model with proxy — should still fire (same as old function)
@@ -2362,6 +2371,28 @@ Line count: 10 / 1000
     isPromptCacheRetention400Applicable(officialResponsesLongRetention) === false,
     "expected official OpenAI responses API to skip third-party recovery tracking",
   );
+
+  expect(
+    "promptCacheRetention400.signal-positive",
+    hasPromptCacheRetentionUnsupportedSignal({
+      "x-error-message": "Unsupported parameter: prompt_cache_retention",
+    }) === true,
+    "expected explicit unsupported prompt_cache_retention header text to trigger recovery signal",
+  );
+  expect(
+    "promptCacheRetention400.signal-negative-unrelated-400",
+    hasPromptCacheRetentionUnsupportedSignal({
+      "x-error-message": "Invalid model",
+    }) === false,
+    "expected unrelated 400 header text to NOT trigger recovery signal",
+  );
+  expect(
+    "promptCacheRetention400.signal-negative-missing-retention-name",
+    hasPromptCacheRetentionUnsupportedSignal({
+      "x-error-message": "Unsupported parameter: temperature",
+    }) === false,
+    "expected unsupported non-retention parameter to NOT trigger recovery signal",
+  );
 }
 
 // ==========================================================================
@@ -2400,6 +2431,19 @@ Line count: 10 / 1000
     "doctor.not-applicable-official",
     doctorOutput2.includes("ℹ️ Compat check not applicable for this model."),
     `expected doctor output to contain "ℹ️ Compat check not applicable", got: ${JSON.stringify(doctorOutput2.slice(doctorOutput2.indexOf("✅") !== -1 ? doctorOutput2.indexOf("✅") : doctorOutput2.indexOf("ℹ️") !== -1 ? doctorOutput2.indexOf("ℹ️") : 0))}`,
+  );
+
+  const officialDefaultModel = makeModel({
+    id: "gpt-4.1",
+    provider: "openai",
+    api: "openai-completions",
+    baseUrl: "",
+  });
+  const doctorOutput2b = buildDoctorDiagnosis(officialDefaultModel);
+  expect(
+    "doctor.not-applicable-official-default-baseurl",
+    doctorOutput2b.includes("ℹ️ Compat check not applicable for this model."),
+    `expected doctor output with default official baseUrl to contain not-applicable text, got: ${JSON.stringify(doctorOutput2b)}`,
   );
 
   // Non-openai-completions (kiro-api) → "ℹ️ Compat check not applicable"
@@ -2531,6 +2575,18 @@ Line count: 10 / 1000
     "buildCompatDiagnosis.official-undefined",
     buildCompatDiagnosis(officialModel) === undefined,
     "expected buildCompatDiagnosis to return undefined for official OpenAI",
+  );
+
+  const officialDefaultModel = makeModel({
+    id: "gpt-4.1",
+    provider: "openai",
+    api: "openai-completions",
+    baseUrl: "",
+  });
+  expect(
+    "buildCompatDiagnosis.official-default-undefined",
+    buildCompatDiagnosis(officialDefaultModel) === undefined,
+    "expected buildCompatDiagnosis to return undefined for official OpenAI default baseUrl",
   );
 
   // Missing flags → returns a string with missing info
