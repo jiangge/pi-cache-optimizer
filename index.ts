@@ -775,6 +775,19 @@ function isOpenAICompatibleApi(api: unknown): boolean {
   return value === "openai-completions" || value === "openai-responses";
 }
 
+function isOpenAICompatibleProxyApi(api: unknown): boolean {
+  return lower(api) === "openai-completions";
+}
+
+function isResponsesPromptRewriteBypassApi(api: unknown): boolean {
+  const value = lower(api);
+  return value === "openai-codex-responses" || value === "openai-responses" || value === "azure-openai-responses";
+}
+
+function isMistralConversationsApi(api: unknown): boolean {
+  return lower(api) === "mistral-conversations";
+}
+
 function isOpenAIFamilyToken(token: string): boolean {
   return token.includes("gpt-") || token.includes("chatgpt") || OPENAI_REASONING_MODEL_PATTERN.test(token);
 }
@@ -1492,7 +1505,7 @@ function describeMissingOpenAIFamilyProxyCompat(model: PiModel): string[] {
   const missing: string[] = [];
 
   if (!isOpenAIFamilyModel(model)) return missing;
-  if (lower(model.api) !== "openai-completions") return missing;
+  if (!isOpenAICompatibleProxyApi(model.api)) return missing;
   if (isOfficialOpenAIBaseUrl(model)) return missing;
 
   if (compat.supportsLongCacheRetention !== true) {
@@ -1515,7 +1528,7 @@ function describeMissingOpenAICompatibleProxyCompat(model: PiModel): string[] {
   const compat = getCompat(model);
   const missing: string[] = [];
 
-  if (lower(model.api) !== "openai-completions") return missing;
+  if (!isOpenAICompatibleProxyApi(model.api)) return missing;
   if (isOfficialOpenAIBaseUrl(model)) return missing;
 
   if (compat.supportsLongCacheRetention !== true) {
@@ -3228,7 +3241,7 @@ async function writePersistedCacheStats(state: CacheStatsState, currentSessionHa
 
 
 function isCompatCheckApplicable(model: PiModel): boolean {
-  return lower(model.api) === "openai-completions" && !isOfficialOpenAIBaseUrl(model);
+  return isOpenAICompatibleProxyApi(model.api) && !isOfficialOpenAIBaseUrl(model);
 }
 
 function isPromptCacheRetention400Applicable(model: PiModel): boolean {
@@ -3263,10 +3276,10 @@ function describeRouterChannelDiagnostics(model: PiModel): string[] {
   const baseUrl = lower(model.baseUrl || "");
   const provider = lower(model.provider);
 
-  // Only OpenAI-compatible APIs are applicable for router/channel diagnostics.
-  // Custom transports like kiro-api, anthropic-messages, bedrock-converse-stream
-  // or non-OpenAI APIs are excluded.
-  if (api !== "openai-completions" && api !== "openai-responses") {
+  // Router/channel diagnostics only apply to OpenAI-compatible proxy APIs.
+  // Native APIs like mistral-conversations, azure-openai-responses,
+  // anthropic-messages, or bedrock-converse-stream are intentionally excluded.
+  if (api === "azure-openai-responses" || isMistralConversationsApi(api) || !isOpenAICompatibleApi(api)) {
     return notes;
   }
 
@@ -3405,6 +3418,33 @@ function describeRouterChannelDiagnostics(model: PiModel): string[] {
   return notes;
 }
 
+function getCompatCheckNotApplicableLines(model: PiModel): string[] {
+  const api = lower(model.api);
+
+  if (isMistralConversationsApi(api)) {
+    return [
+      "ℹ️ Compat check not applicable for this model.",
+      "   Native Mistral `mistral-conversations` uses provider-native transport; OpenAI-compatible proxy compat flags do not apply.",
+    ];
+  }
+
+  if (api === "azure-openai-responses") {
+    return [
+      "ℹ️ Compat check not applicable for this model.",
+      "   Native Azure OpenAI Responses uses the Responses transport; OpenAI-compatible proxy compat flags do not apply.",
+    ];
+  }
+
+  if (api === "openai-codex-responses" || (api === "openai-responses" && isOfficialOpenAIBaseUrl(model))) {
+    return [
+      "ℹ️ Compat check not applicable for this model.",
+      "   Native Responses transports already use Pi core request handling; OpenAI-compatible proxy compat flags do not apply.",
+    ];
+  }
+
+  return ["ℹ️ Compat check not applicable for this model."];
+}
+
 function buildDoctorDiagnosis(model: PiModel, options: { promptCacheRetention400?: boolean } = {}): string {
   const lines: string[] = [];
   lines.push(`Provider: ${model.provider}`);
@@ -3433,7 +3473,7 @@ function buildDoctorDiagnosis(model: PiModel, options: { promptCacheRetention400
   } else if (deepSeekCompatApplicable || isCompatCheckApplicable(model)) {
     lines.push("✅ Compat fully configured.");
   } else {
-    lines.push("ℹ️ Compat check not applicable for this model.");
+    lines.push(...getCompatCheckNotApplicableLines(model));
   }
 
   if (isPromptCacheRetention400Applicable(model)) {
@@ -3621,7 +3661,7 @@ function buildCompatDiagnosis(model: PiModel): string | undefined {
         lines.push(getPromptCacheRetentionUnsupportedHint());
       }
     } else {
-      lines.push("ℹ️ Compat check not applicable for this model.");
+      lines.push(...getCompatCheckNotApplicableLines(model));
     }
     lines.push("");
   }
@@ -3658,6 +3698,9 @@ export const __internals_for_tests = {
   isNonEmptyString,
   shouldInjectOpenAIPromptCacheKey,
   isOpenAICompatibleApi,
+  isOpenAICompatibleProxyApi,
+  isResponsesPromptRewriteBypassApi,
+  isMistralConversationsApi,
   isOpenAIFamilyModel,
   isOpenAIFamilyAssistantMessage,
   isOpenAIFamilyToken,
@@ -4130,7 +4173,7 @@ export default function (pi: ExtensionAPI) {
 
   pi.on("before_agent_start", async (event, _ctx) => {
     // ────────────────────────────────────────────────────────────────
-    // OpenAI Responses API bypass (codex-responses + responses)
+    // OpenAI Responses-family bypass (codex-responses + responses + azure responses)
     //
     // OpenAI's Responses API endpoints — both the Codex backend
     // (openai-codex-responses, chatgpt.com) and the public
@@ -4156,11 +4199,8 @@ export default function (pi: ExtensionAPI) {
     // that use openai-completions are unaffected.
     // ────────────────────────────────────────────────────────────────
     const model = _ctx.model;
-    if (model) {
-      const api = lower(model.api);
-      if (api === "openai-codex-responses" || api === "openai-responses") {
-        return {};
-      }
+    if (model && isResponsesPromptRewriteBypassApi(model.api)) {
+      return {};
     }
 
     if (!runtimeOptimizerEnabled) return {};
@@ -4342,7 +4382,7 @@ export default function (pi: ExtensionAPI) {
           cmdCtx.ui.notify(
             isDeepSeekCompatCheckApplicable(model) || isCompatCheckApplicable(model)
               ? "✅ Compat fully configured."
-              : "ℹ️ Compat check not applicable for this model.",
+              : getCompatCheckNotApplicableLines(model).join("\n"),
             "info",
           );
         }
@@ -4440,7 +4480,7 @@ export default function (pi: ExtensionAPI) {
                 cmdCtx.ui.notify(
                   isDeepSeekCompatCheckApplicable(model) || isCompatCheckApplicable(model)
                     ? "✅ Compat fully configured."
-                    : "ℹ️ Compat check not applicable for this model.",
+                    : getCompatCheckNotApplicableLines(model).join("\n"),
                   "info",
                 );
               }
@@ -4493,6 +4533,8 @@ export default function (pi: ExtensionAPI) {
             diagnosis.push(`✅ Active model "${displayKey}": compat fully configured.`);
           } else {
             diagnosis.push(`ℹ️ Active model "${displayKey}": compat check not applicable.`);
+            const detailLines = getCompatCheckNotApplicableLines(model).slice(1);
+            for (const line of detailLines) diagnosis.push(line);
           }
         } else {
           diagnosis.push("No active model selected.");

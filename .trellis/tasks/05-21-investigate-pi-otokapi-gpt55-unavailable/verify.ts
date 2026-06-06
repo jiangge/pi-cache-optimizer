@@ -57,6 +57,9 @@ const {
   buildCompatDiagnosis,
   describeRouterChannelDiagnostics,
   isOpenAICompatibleApi,
+  isOpenAICompatibleProxyApi,
+  isResponsesPromptRewriteBypassApi,
+  isMistralConversationsApi,
   getModelIdNameTokenValues,
   getAssistantMessageModelTokenValues,
   // Non-GPT OpenAI-compatible model detection
@@ -867,11 +870,31 @@ Line count: 10 / 1000
   expect("api.openai-completions", isOpenAICompatibleApi("openai-completions") === true, "expected openai-completions to match");
   expect("api.openai-responses", isOpenAICompatibleApi("openai-responses") === true, "expected openai-responses to match");
   expect("api.OPENAI-COMPLETIONS", isOpenAICompatibleApi("OPENAI-COMPLETIONS") === true, "expected OPENAI-COMPLETIONS (upper) to match");
+  expect("api.azure-openai-responses", isOpenAICompatibleApi("azure-openai-responses") === false, "expected azure-openai-responses to NOT be treated as OpenAI-compatible proxy API");
   expect("api.kiro-api", isOpenAICompatibleApi("kiro-api") === false, "expected kiro-api to NOT match");
   expect("api.custom", isOpenAICompatibleApi("custom-provider") === false, "expected custom provider to NOT match");
   expect("api.undefined", isOpenAICompatibleApi(undefined) === false, "expected undefined to NOT match");
   expect("api.null", isOpenAICompatibleApi(null) === false, "expected null to NOT match");
   expect("api.empty", isOpenAICompatibleApi("") === false, "expected empty string to NOT match");
+}
+
+// ==========================================================================
+// Test 13b: API helpers for proxy compat vs Responses-family bypass
+// ==========================================================================
+{
+  expect("apiProxy.openai-completions", isOpenAICompatibleProxyApi("openai-completions") === true, "expected openai-completions to be proxy-compat applicable");
+  expect("apiProxy.openai-responses", isOpenAICompatibleProxyApi("openai-responses") === false, "expected openai-responses to NOT be proxy-compat applicable");
+  expect("apiProxy.azure-openai-responses", isOpenAICompatibleProxyApi("azure-openai-responses") === false, "expected azure-openai-responses to NOT be proxy-compat applicable");
+  expect("apiProxy.mistral-conversations", isOpenAICompatibleProxyApi("mistral-conversations") === false, "expected mistral-conversations to NOT be proxy-compat applicable");
+
+  expect("responsesBypass.codex", isResponsesPromptRewriteBypassApi("openai-codex-responses") === true, "expected codex responses to bypass prompt rewrite");
+  expect("responsesBypass.openai", isResponsesPromptRewriteBypassApi("openai-responses") === true, "expected openai responses to bypass prompt rewrite");
+  expect("responsesBypass.azure", isResponsesPromptRewriteBypassApi("azure-openai-responses") === true, "expected azure responses to bypass prompt rewrite");
+  expect("responsesBypass.completions", isResponsesPromptRewriteBypassApi("openai-completions") === false, "expected openai-completions to NOT bypass prompt rewrite");
+  expect("responsesBypass.mistral", isResponsesPromptRewriteBypassApi("mistral-conversations") === false, "expected mistral-conversations to NOT use Responses-family bypass helper");
+
+  expect("mistralApi.native", isMistralConversationsApi("mistral-conversations") === true, "expected mistral-conversations helper to match native Mistral API");
+  expect("mistralApi.openai", isMistralConversationsApi("openai-completions") === false, "expected openai-completions to NOT match native Mistral API helper");
 }
 
 // ==========================================================================
@@ -2321,7 +2344,7 @@ Line count: 10 / 1000
     "expected false for kiro-api (non-openai-completions)",
   );
 
-  // openai-responses API → not applicable (only completions check)
+  // openai-responses API → not applicable (only completions proxy check)
   const responsesModel = makeModel({
     id: "gpt-5.5",
     provider: "otokapi",
@@ -2332,6 +2355,31 @@ Line count: 10 / 1000
     "isCompatCheckApplicable.responses",
     isCompatCheckApplicable(responsesModel) === false,
     "expected false for openai-responses API",
+  );
+
+  const azureResponsesModel = makeModel({
+    id: "gpt-4.1",
+    provider: "azure-openai-responses",
+    api: "azure-openai-responses",
+    baseUrl: "https://my-resource.openai.azure.com/openai/v1",
+  });
+  expect(
+    "isCompatCheckApplicable.azure-responses",
+    isCompatCheckApplicable(azureResponsesModel) === false,
+    "expected false for native azure-openai-responses API",
+  );
+
+  const mistralNativeModel = makeModel({
+    id: "mistral-medium-latest",
+    name: "Mistral Medium",
+    provider: "mistral",
+    api: "mistral-conversations",
+    baseUrl: "https://api.mistral.ai/v1",
+  });
+  expect(
+    "isCompatCheckApplicable.mistral-native",
+    isCompatCheckApplicable(mistralNativeModel) === false,
+    "expected false for native mistral-conversations API",
   );
 
   const responsesLongRetention = makeModel({
@@ -2461,6 +2509,33 @@ Line count: 10 / 1000
     `expected doctor output to contain "ℹ️ Compat check not applicable", got: ${JSON.stringify(doctorOutput3.slice(Math.max(0, doctorOutput3.length - 100)))}`,
   );
 
+  const azureResponsesModel = makeModel({
+    id: "gpt-4.1",
+    provider: "azure-openai-responses",
+    api: "azure-openai-responses",
+    baseUrl: "https://my-resource.openai.azure.com/openai/v1",
+  });
+  const doctorOutput3b = buildDoctorDiagnosis(azureResponsesModel);
+  expect(
+    "doctor.not-applicable-azure-responses",
+    doctorOutput3b.includes("Native Azure OpenAI Responses uses the Responses transport"),
+    `expected doctor output to explain azure-openai-responses as not applicable, got: ${JSON.stringify(doctorOutput3b)}`,
+  );
+
+  const mistralNativeModel = makeModel({
+    id: "mistral-medium-latest",
+    name: "Mistral Medium",
+    provider: "mistral",
+    api: "mistral-conversations",
+    baseUrl: "https://api.mistral.ai/v1",
+  });
+  const doctorOutput3c = buildDoctorDiagnosis(mistralNativeModel);
+  expect(
+    "doctor.not-applicable-mistral-native",
+    doctorOutput3c.includes("Native Mistral `mistral-conversations` uses provider-native transport"),
+    `expected doctor output to explain mistral-conversations as not applicable, got: ${JSON.stringify(doctorOutput3c)}`,
+  );
+
   // Compat check applicable with missing flags → still shows missing, not "fully configured" or "not applicable"
   const proxyMissing = makeModel({
     id: "gpt-5.5",
@@ -2533,10 +2608,10 @@ Line count: 10 / 1000
 // ==========================================================================
 // Test 44: buildCompatDiagnosis output
 // ==========================================================================
-// Note: describeRouterChannelDiagnostics fires for any openai-completions model
+// Note: describeRouterChannelDiagnostics fires for openai-completions models
 // with a non-official base URL (generic proxy profile), so even fully-configured
-// proxies return router channel notes. Only official OpenAI and custom transports
-// return undefined.
+// proxies return router channel notes. Official OpenAI, native Azure Responses,
+// native Mistral conversations, and custom transports return undefined.
 {
   // Applicable model with all flags → returns string with router notes + "✅ Compat fully configured."
   const proxyConfigured = makeModel({
@@ -2588,6 +2663,31 @@ Line count: 10 / 1000
     "buildCompatDiagnosis.official-default-undefined",
     buildCompatDiagnosis(officialDefaultModel) === undefined,
     "expected buildCompatDiagnosis to return undefined for official OpenAI default baseUrl",
+  );
+
+  const azureResponsesModel = makeModel({
+    id: "gpt-4.1",
+    provider: "azure-openai-responses",
+    api: "azure-openai-responses",
+    baseUrl: "https://my-resource.openai.azure.com/openai/v1",
+  });
+  expect(
+    "buildCompatDiagnosis.azure-responses-undefined",
+    buildCompatDiagnosis(azureResponsesModel) === undefined,
+    "expected buildCompatDiagnosis to return undefined for native azure-openai-responses",
+  );
+
+  const mistralNativeModel = makeModel({
+    id: "mistral-medium-latest",
+    name: "Mistral Medium",
+    provider: "mistral",
+    api: "mistral-conversations",
+    baseUrl: "https://api.mistral.ai/v1",
+  });
+  expect(
+    "buildCompatDiagnosis.mistral-native-undefined",
+    buildCompatDiagnosis(mistralNativeModel) === undefined,
+    "expected buildCompatDiagnosis to return undefined for native mistral-conversations",
   );
 
   // Missing flags → returns a string with missing info
@@ -4450,6 +4550,31 @@ Line count: 10 / 1000
     "router.anthropic-messages-empty",
     describeRouterChannelDiagnostics(anthropicMsg).length === 0,
     "expected no router notes for anthropic-messages",
+  );
+
+  const azureResponses = makeModel({
+    id: "gpt-4.1",
+    provider: "azure-openai-responses",
+    api: "azure-openai-responses",
+    baseUrl: "https://my-resource.openai.azure.com/openai/v1",
+  });
+  expect(
+    "router.azure-responses-empty",
+    describeRouterChannelDiagnostics(azureResponses).length === 0,
+    "expected no router notes for native azure-openai-responses",
+  );
+
+  const mistralNative = makeModel({
+    id: "mistral-medium-latest",
+    name: "Mistral Medium",
+    provider: "mistral",
+    api: "mistral-conversations",
+    baseUrl: "https://api.mistral.ai/v1",
+  });
+  expect(
+    "router.mistral-native-empty",
+    describeRouterChannelDiagnostics(mistralNative).length === 0,
+    "expected no router notes for native mistral-conversations",
   );
 }
 
