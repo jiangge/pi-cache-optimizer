@@ -1,0 +1,5 @@
+{"file":".trellis/spec/frontend/cache-adapter-footer-stats.md","reason":"Binding contracts for adapter detection, cache-key behavior, footer stats, persisted state, and DeepSeek/session-affinity compat warnings."}
+{"file":".trellis/spec/frontend/quality-guidelines.md","reason":"Quality and validation expectations for cache stats and OpenAI cache-key injection changes."}
+{"file":".trellis/spec/frontend/type-safety.md","reason":"Type-safety expectations for small helper changes in the TypeScript extension."}
+{"file":".trellis/spec/guides/index.md","reason":"Shared thinking guide index and pre-modification rule."}
+{"file":".trellis/spec/guides/code-reuse-thinking-guide.md","reason":"Required guide when adding helpers/constants and reusing existing cache-key utilities."}

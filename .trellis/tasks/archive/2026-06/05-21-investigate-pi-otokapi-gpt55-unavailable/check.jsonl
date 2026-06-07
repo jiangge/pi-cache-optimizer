@@ -1,0 +1,4 @@
+{"file":".trellis/spec/frontend/cache-adapter-footer-stats.md","reason":"Verify adapter detection remains id/name-only, stats schema unchanged, no sensitive data persisted/logged, and cache-key warning behavior is conservative."}
+{"file":".trellis/spec/frontend/quality-guidelines.md","reason":"Run required checks for cache-key injection changes and validate unsupported/proxy behavior."}
+{"file":".trellis/spec/frontend/type-safety.md","reason":"Review helper typing and record/payload handling for undefined/missing cache-key cases."}
+{"file":".trellis/spec/guides/index.md","reason":"Shared review checklist and thinking triggers."}
