@@ -770,6 +770,32 @@ function isDeepSeekLikeAssistantMessage(message: unknown, model: PiModel | undef
   return modelOrAssistantMessageHas(message, model, ["deepseek"]);
 }
 
+function isAutoRouterModel(model: PiModel | undefined): boolean {
+  return model?.provider === "auto-router";
+}
+
+/** Resolve the underlying provider for routing extensions that register
+ *  via `globalThis.__piCacheOptimizerRouter`. Returns undefined when no
+ *  router is present or no route decision has been made yet. */
+function getRoutedProvider(modelId: string | undefined): { provider: string; modelId: string } | undefined {
+  if (!modelId) return undefined;
+  const router = (globalThis as Record<string, unknown>).__piCacheOptimizerRouter as
+    { getRoutedModel?: (routeId: string) => { provider: string; modelId: string } | undefined } | undefined;
+  return router?.getRoutedModel?.(modelId);
+}
+
+/** Return the model that should be used for cache-adapter selection.
+ *  For routing extensions (e.g. auto-router) this resolves to the
+ *  underlying provider/model; for all other models it returns the model
+ *  unchanged. */
+function resolveEffectiveModel(model: PiModel | undefined): PiModel | undefined {
+  if (!model) return undefined;
+  if (!isAutoRouterModel(model)) return model;
+  const routed = getRoutedProvider(model.id);
+  if (!routed) return model;
+  return { ...model, provider: routed.provider, id: routed.modelId };
+}
+
 function isOpenAICompatibleApi(api: unknown): boolean {
   const value = lower(api);
   return value === "openai-completions" || value === "openai-responses";
@@ -3906,6 +3932,12 @@ export default function (pi: ExtensionAPI) {
       currentSessionId = sid;
       currentSessionHash = hashSessionId(sid);
       currentSessionHashSet = true;
+      // Expose the session cache key for routing extensions so they can
+      // forward it to the underlying provider for cache-locality hints.
+      if (typeof globalThis !== "undefined") {
+        (globalThis as Record<string, unknown>).__piCacheOptimizerCacheKey__ =
+          clampPromptCacheKey(sid);
+      }
     }
   }
 
@@ -4104,13 +4136,14 @@ export default function (pi: ExtensionAPI) {
     syncSessionHash(ctx);
     await rollOverStatsIfNeeded(ctx);
 
-    const adapter = selectAdapterForModel(model);
+    const effectiveModel = resolveEffectiveModel(model);
+    const adapter = selectAdapterForModel(effectiveModel);
     let statusText: string | undefined;
     if (adapter) {
       // Display session-scoped stats. A model that has never been used
       // in this session shows 0/0. The message_end hook populates
       // cacheStatsByModel[sessionModelKey(model)] on first use.
-      const sk = model ? sessionModelKey(model) : undefined;
+      const sk = effectiveModel ? sessionModelKey(effectiveModel) : undefined;
       const stats = sk ? cacheStatsByModel[sk] : undefined;
       const statsText = formatCacheStats(adapter, stats ?? emptyCacheStats());
       statusText = runtimeOptimizerEnabled ? statsText : `Cache Optimizer disabled · ${statsText}`;
@@ -4147,8 +4180,23 @@ export default function (pi: ExtensionAPI) {
     // Re-evaluated on every status update so the marker persists through stats
     // changes and day rollovers. Redundant setStatus calls are blocked by the
     // `lastStatusText` early return above.
-    if (runtimeOptimizerEnabled && statusText !== undefined && model) {
-      const compatMissing = describeMissingCacheCompatForModel(model);
+    //
+    // When the active model is a routing extension, resolve the underlying
+    // provider from the model registry so the compat check runs against the
+    // real model (with its actual api/baseUrl/compat fields).
+    let compatModel = effectiveModel;
+    if (effectiveModel && isAutoRouterModel(model)) {
+      const routed = getRoutedProvider(model.id);
+      if (routed) {
+        const registry = (ctx as Record<string, unknown>).modelRegistry as
+          { getAvailable?: () => Array<{ provider: string; id: string } & Record<string, unknown>> } | undefined;
+        const available = typeof registry?.getAvailable === "function" ? registry.getAvailable() : [];
+        const match = available.find((m) => m.provider === routed.provider && m.id === routed.modelId);
+        if (match) compatModel = match as PiModel;
+      }
+    }
+    if (runtimeOptimizerEnabled && statusText !== undefined && compatModel) {
+      const compatMissing = describeMissingCacheCompatForModel(compatModel);
       if (compatMissing.length > 0) {
         statusText = statusText + " ⚠️ compat";
       }
@@ -4162,12 +4210,12 @@ export default function (pi: ExtensionAPI) {
 
   pi.on("session_start", async (event, ctx) => {
     await restoreCacheStats(event.reason, ctx);
-    if (runtimeOptimizerEnabled) notifyCacheCompatIfNeeded(ctx.model, ctx, warnedModels);
+    if (runtimeOptimizerEnabled) notifyCacheCompatIfNeeded(resolveEffectiveModel(ctx.model), ctx, warnedModels);
     await publishStatus(ctx);
   });
 
   pi.on("model_select", async (event, ctx) => {
-    if (runtimeOptimizerEnabled) notifyCacheCompatIfNeeded(event.model, ctx, warnedModels);
+    if (runtimeOptimizerEnabled) notifyCacheCompatIfNeeded(resolveEffectiveModel(event.model), ctx, warnedModels);
     await publishStatus(ctx, event.model);
   });
 
@@ -4236,6 +4284,17 @@ export default function (pi: ExtensionAPI) {
     // ships to the provider.
     const optimized = optimizeSystemPrompt(compressedPrompt, event.systemPromptOptions);
 
+    // Expose the cache-optimized prompt for routing extensions (e.g.
+    // auto-router) so they can forward the stable-prefix prompt through
+    // to the provider they ultimately route to internally.
+    if (isAutoRouterModel(model) && typeof globalThis !== "undefined") {
+      const passthrough = optimized.changed ? optimized.systemPrompt
+        : compressedPrompt !== strippedPrompt ? compressedPrompt
+        : strippedPrompt !== event.systemPrompt ? strippedPrompt
+        : event.systemPrompt;
+      (globalThis as Record<string, unknown>).__piCacheOptimizerPrompt__ = passthrough;
+    }
+
     if (optimized.changed && optimized.systemPrompt.trim().length > 0) {
       return { systemPrompt: optimized.systemPrompt };
     }
@@ -4282,14 +4341,15 @@ export default function (pi: ExtensionAPI) {
 
   pi.on("message_end", async (event, ctx) => {
     syncSessionHash(ctx);
-    const adapter = selectAdapterForAssistantMessage(event.message, ctx.model);
+    const effectiveModel = resolveEffectiveModel(ctx.model);
+    const adapter = selectAdapterForAssistantMessage(event.message, effectiveModel);
     if (!adapter) return;
 
     const usage = adapter.normalizeUsage(event.message);
 
     // Record recent sample (even when usage is missing, for trend diagnosis)
-    if (ctx.model) {
-      const sk = sessionModelKey(ctx.model);
+    if (effectiveModel) {
+      const sk = sessionModelKey(effectiveModel);
       const missingFields = usage === undefined || (usage.cacheRead === 0 && usage.cacheWrite === 0 && usage.totalInput === 0)
         ? true
         : hasMissingUsageFields(event.message, adapter);
@@ -4301,9 +4361,9 @@ export default function (pi: ExtensionAPI) {
     await rollOverStatsIfNeeded(ctx);
 
     // Update stats scoped to current session + active model.
-    // Falls back to legacy family when ctx.model is undefined.
-    if (ctx.model) {
-      const sk = sessionModelKey(ctx.model);
+    // Falls back to legacy family when effectiveModel is undefined.
+    if (effectiveModel) {
+      const sk = sessionModelKey(effectiveModel);
       addUsageToCacheStats(getOrCreateStatsByModelKey(sk), usage);
     } else {
       addUsageToCacheStats(getStatsForModel(undefined, adapter), usage);
@@ -4330,6 +4390,18 @@ export default function (pi: ExtensionAPI) {
     handler: async (args: string, cmdCtx) => {
       syncSessionHash(cmdCtx);
       const model = cmdCtx.model;
+      const effectiveModel = resolveEffectiveModel(model);
+
+      /** Try to look up the full PiModel (with api/baseUrl/compat) for a routed
+       *  provider/modelId from pi's model registry. Returns undefined if not found. */
+      const resolveRealModel = (routed: { provider: string; modelId: string }): PiModel | undefined => {
+        const registry = (cmdCtx as Record<string, unknown>).modelRegistry as
+          { getAvailable?: () => Array<{ provider: string; id: string } & Record<string, unknown>> } | undefined;
+        const available = typeof registry?.getAvailable === "function" ? registry.getAvailable() : [];
+        const match = available.find((m) => m.provider === routed.provider && m.id === routed.modelId);
+        return match as PiModel | undefined;
+      };
+
       const subcommand = args.trim().toLowerCase().split(/\s+/)[0] || "help";
 
       if (subcommand === "enable") {
@@ -4349,12 +4421,15 @@ export default function (pi: ExtensionAPI) {
           cmdCtx.ui.notify("No active model selected. Select a model first with /model or pi --model.", "warning");
           return;
         }
-        const diagnosis = buildDoctorDiagnosis(model, { promptCacheRetention400: promptCacheRetention400Models.has(modelKey(model)) });
-        const adapter = selectAdapterForModel(model);
-        const sk = model ? sessionModelKey(model) : undefined;
+        // Try to get the underlying provider's full PiModel for accurate diagnostics
+        const routed = isAutoRouterModel(model) ? getRoutedProvider(model.id) : undefined;
+        const diagnosticModel = routed ? (resolveRealModel(routed) ?? model) : model;
+        const diagnosis = buildDoctorDiagnosis(diagnosticModel, { promptCacheRetention400: promptCacheRetention400Models.has(modelKey(diagnosticModel)) });
+        const adapter = selectAdapterForModel(effectiveModel);
+        const sk = effectiveModel ? sessionModelKey(effectiveModel) : undefined;
         const statsState = sk ? cacheStatsByModel[sk] : undefined;
         const samples = sk ? getRecentSamples(sk) : [];
-        const lowHitLines = buildLowHitDiagnosis(model, adapter, statsState, samples);
+        const lowHitLines = buildLowHitDiagnosis(diagnosticModel, adapter, statsState, samples);
         const fullDiagnosis = lowHitLines.length > 0
           ? diagnosis + "\n" + lowHitLines.join("\n")
           : diagnosis;
@@ -4364,25 +4439,28 @@ export default function (pi: ExtensionAPI) {
           cmdCtx.ui.notify("No active model selected. Select a model first with /model or pi --model.", "warning");
           return;
         }
-        const adapter = selectAdapterForModel(model);
-        const sk = model ? sessionModelKey(model) : undefined;
+        const adapter = selectAdapterForModel(effectiveModel);
+        const sk = effectiveModel ? sessionModelKey(effectiveModel) : undefined;
         const statsState = sk ? cacheStatsByModel[sk] : undefined;
         const samples = sk ? getRecentSamples(sk) : [];
-        const output = buildStatsOutput(model, adapter, statsState, samples);
+        const output = buildStatsOutput(effectiveModel ?? model, adapter, statsState, samples);
         cmdCtx.ui.notify(output, "info");
       } else if (subcommand === "compat") {
         if (!model) {
           cmdCtx.ui.notify("No active model selected. Select a model first with /model or pi --model.", "warning");
           return;
         }
-        const compatResult = buildCompatDiagnosis(model);
+        // Try to get the underlying provider's full PiModel for accurate compat diagnostics
+        const routed = isAutoRouterModel(model) ? getRoutedProvider(model.id) : undefined;
+        const diagnosticModel = routed ? (resolveRealModel(routed) ?? model) : model;
+        const compatResult = buildCompatDiagnosis(diagnosticModel);
         if (compatResult) {
           cmdCtx.ui.notify(compatResult, "warning");
         } else {
           cmdCtx.ui.notify(
-            isDeepSeekCompatCheckApplicable(model) || isCompatCheckApplicable(model)
+            isDeepSeekCompatCheckApplicable(diagnosticModel) || isCompatCheckApplicable(diagnosticModel)
               ? "✅ Compat fully configured."
-              : getCompatCheckNotApplicableLines(model).join("\n"),
+              : getCompatCheckNotApplicableLines(diagnosticModel).join("\n"),
             "info",
           );
         }
@@ -4391,14 +4469,14 @@ export default function (pi: ExtensionAPI) {
           cmdCtx.ui.notify("No active model selected. Select a model first with /model or pi --model.", "warning");
           return;
         }
-        const adapter = selectAdapterForModel(model);
+        const adapter = selectAdapterForModel(effectiveModel);
         if (!adapter) {
           cmdCtx.ui.notify("ℹ️ Active model does not match a cache adapter. No stats to reset.", "info");
           return;
         }
 
-        const sk = sessionModelKey(model);
-        const displayKey = modelKey(model);
+        const sk = sessionModelKey(effectiveModel);
+        const displayKey = modelKey(effectiveModel);
 
         // Reset session-scoped stats for the active model.
         delete cacheStatsByModel[sk];
@@ -4447,12 +4525,15 @@ export default function (pi: ExtensionAPI) {
             if (!model) {
               cmdCtx.ui.notify("No active model selected. Select a model first with /model or pi --model.", "warning");
             } else {
-              const diagnosis = buildDoctorDiagnosis(model, { promptCacheRetention400: promptCacheRetention400Models.has(modelKey(model)) });
-              const adapter = selectAdapterForModel(model);
-              const sk = model ? sessionModelKey(model) : undefined;
+              // Try to get the underlying provider's full PiModel for accurate diagnostics
+              const routed = isAutoRouterModel(model) ? getRoutedProvider(model.id) : undefined;
+              const diagnosticModel = routed ? (resolveRealModel(routed) ?? model) : model;
+              const diagnosis = buildDoctorDiagnosis(diagnosticModel, { promptCacheRetention400: promptCacheRetention400Models.has(modelKey(diagnosticModel)) });
+              const adapter = selectAdapterForModel(effectiveModel);
+              const sk = effectiveModel ? sessionModelKey(effectiveModel) : undefined;
               const statsState = sk ? cacheStatsByModel[sk] : undefined;
               const samples = sk ? getRecentSamples(sk) : [];
-              const lowHitLines = buildLowHitDiagnosis(model, adapter, statsState, samples);
+              const lowHitLines = buildLowHitDiagnosis(diagnosticModel, adapter, statsState, samples);
               const fullDiagnosis = lowHitLines.length > 0
                 ? diagnosis + "\n" + lowHitLines.join("\n")
                 : diagnosis;
@@ -4462,25 +4543,28 @@ export default function (pi: ExtensionAPI) {
             if (!model) {
               cmdCtx.ui.notify("No active model selected. Select a model first with /model or pi --model.", "warning");
             } else {
-              const adapter = selectAdapterForModel(model);
-              const sk = model ? sessionModelKey(model) : undefined;
+              const adapter = selectAdapterForModel(effectiveModel);
+              const sk = effectiveModel ? sessionModelKey(effectiveModel) : undefined;
               const statsState = sk ? cacheStatsByModel[sk] : undefined;
               const samples = sk ? getRecentSamples(sk) : [];
-              const output = buildStatsOutput(model, adapter, statsState, samples);
+              const output = buildStatsOutput(effectiveModel ?? model, adapter, statsState, samples);
               cmdCtx.ui.notify(output, "info");
             }
           } else if (choice === menuOptions[4]) {
             if (!model) {
               cmdCtx.ui.notify("No active model selected. Select a model first with /model or pi --model.", "warning");
             } else {
-              const compatResult = buildCompatDiagnosis(model);
+              // Try to get the underlying provider's full PiModel for accurate compat diagnostics
+              const routed = isAutoRouterModel(model) ? getRoutedProvider(model.id) : undefined;
+              const diagnosticModel = routed ? (resolveRealModel(routed) ?? model) : model;
+              const compatResult = buildCompatDiagnosis(diagnosticModel);
               if (compatResult) {
                 cmdCtx.ui.notify(compatResult, "warning");
               } else {
                 cmdCtx.ui.notify(
-                  isDeepSeekCompatCheckApplicable(model) || isCompatCheckApplicable(model)
+                  isDeepSeekCompatCheckApplicable(diagnosticModel) || isCompatCheckApplicable(diagnosticModel)
                     ? "✅ Compat fully configured."
-                    : getCompatCheckNotApplicableLines(model).join("\n"),
+                    : getCompatCheckNotApplicableLines(diagnosticModel).join("\n"),
                   "info",
                 );
               }
@@ -4489,12 +4573,12 @@ export default function (pi: ExtensionAPI) {
             if (!model) {
               cmdCtx.ui.notify("No active model selected. Select a model first with /model or pi --model.", "warning");
             } else {
-              const adapter = selectAdapterForModel(model);
+              const adapter = selectAdapterForModel(effectiveModel);
               if (!adapter) {
                 cmdCtx.ui.notify("ℹ️ Active model does not match a cache adapter. No stats to reset.", "info");
               } else {
-                const sk = sessionModelKey(model);
-                const displayKey = modelKey(model);
+                const sk = sessionModelKey(effectiveModel);
+                const displayKey = modelKey(effectiveModel);
                 delete cacheStatsByModel[sk];
                 recentSamplesByModelKey.delete(sk);
                 await flushPersistCacheStats(cmdCtx as unknown as ExtensionContext);
