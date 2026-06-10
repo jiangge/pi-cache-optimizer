@@ -4180,8 +4180,23 @@ export default function (pi: ExtensionAPI) {
     // Re-evaluated on every status update so the marker persists through stats
     // changes and day rollovers. Redundant setStatus calls are blocked by the
     // `lastStatusText` early return above.
-    if (runtimeOptimizerEnabled && statusText !== undefined && effectiveModel) {
-      const compatMissing = describeMissingCacheCompatForModel(effectiveModel);
+    //
+    // When the active model is a routing extension, resolve the underlying
+    // provider from the model registry so the compat check runs against the
+    // real model (with its actual api/baseUrl/compat fields).
+    let compatModel = effectiveModel;
+    if (effectiveModel && isAutoRouterModel(model)) {
+      const routed = getRoutedProvider(model.id);
+      if (routed) {
+        const registry = (ctx as Record<string, unknown>).modelRegistry as
+          { getAvailable?: () => Array<{ provider: string; id: string } & Record<string, unknown>> } | undefined;
+        const available = typeof registry?.getAvailable === "function" ? registry.getAvailable() : [];
+        const match = available.find((m) => m.provider === routed.provider && m.id === routed.modelId);
+        if (match) compatModel = match as PiModel;
+      }
+    }
+    if (runtimeOptimizerEnabled && statusText !== undefined && compatModel) {
+      const compatMissing = describeMissingCacheCompatForModel(compatModel);
       if (compatMissing.length > 0) {
         statusText = statusText + " ⚠️ compat";
       }
