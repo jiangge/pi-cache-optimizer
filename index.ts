@@ -4327,38 +4327,44 @@ function composeFixInsertion(
   location: ModelNodeLocation,
   compatKeys: Record<string, unknown>,
 ): string {
-  // Format the new keys as indented lines (without outer braces)
-  const keysFormatted = Object.entries(compatKeys)
-    .map(([k, v]) => {
-      const val = typeof v === 'string' ? `"${v}"` : String(v);
-      return `${location.indent}${JSON.stringify(k)}: ${val}`;
-    })
-    .join(',\n');
-
   if (location.compatKeyStart >= 0) {
-    // Existing compat — replace the interior between `{` and `}`.
-    // Find the indentation of the compat closing `}` from the original text.
-    let compatCloseLineStart = original.lastIndexOf('\n', location.compatObjectEnd);
-    if (compatCloseLineStart < 0) compatCloseLineStart = 0;
-    const compatCloseLine = original.slice(compatCloseLineStart, location.compatObjectEnd);
-    const compatCloseIndentMatch = compatCloseLine.match(/^(\s*)/);
-    const compatCloseIndent = compatCloseIndentMatch ? compatCloseIndentMatch[1] : '';
-
-    // The interior of the compat `{...}`:
+    // Existing compat — insert at the beginning of the compat object
     const interiorStart = location.compatObjectBrace + 1;
     const interiorEnd = location.compatObjectEnd;
     const interior = original.slice(interiorStart, interiorEnd);
     const existingInner = interior.trim();
 
-    // Build the new interior:
-    //   \n<indent>key1: val1,
-    //   \n<indent>key2: val2
-    // followed by existing content (if any) or a newline before the closing `}`
+    // Detect indentation from existing compat content or derive from location
+    let detectedIndent = location.indent;
+    if (existingInner) {
+      const firstLineMatch = existingInner.match(/^(\s*)/);
+      if (firstLineMatch && firstLineMatch[1]) {
+        detectedIndent = firstLineMatch[1];
+      }
+    }
+
+    // Format new keys with detected indentation, sorted alphabetically for consistency
+    const keysFormatted = Object.entries(compatKeys)
+      .sort(([a], [b]) => a.localeCompare(b))
+      .map(([k, v]) => {
+        const val = typeof v === 'string' ? `"${v}"` : JSON.stringify(v);
+        return `${detectedIndent}${JSON.stringify(k)}: ${val}`;
+      })
+      .join(',\n');
+
+    // Build the new interior preserving existing content
     let newInterior: string;
     if (existingInner) {
-      newInterior = `\n${keysFormatted},\n${existingInner}`;
+      // Check if existing content needs reformatting for alignment
+      const existingLines = interior.split('\n').filter(l => l.trim());
+      const reformattedExisting = existingLines.map(line => {
+        const trimmed = line.trim();
+        if (!trimmed) return '';
+        return `${detectedIndent}${trimmed}`;
+      }).join('\n');
+      newInterior = `\n${keysFormatted},\n${reformattedExisting}\n${detectedIndent.slice(0, -2)}`;
     } else {
-      newInterior = `\n${keysFormatted}\n`;
+      newInterior = `\n${keysFormatted}\n${detectedIndent.slice(0, -2)}`;
     }
 
     return original.slice(0, interiorStart) + newInterior + original.slice(interiorEnd);
@@ -4371,23 +4377,35 @@ function composeFixInsertion(
   const modelLine = original.slice(modelLineStart, location.modelObjectBrace);
   const modelIndentMatch = modelLine.match(/^(\s*)/);
   const modelIndent = modelIndentMatch ? modelIndentMatch[1] : '';
-  const indent = modelIndent + '  '; // one level deeper
-
-  // After the model `{`, find where to insert (skip whitespace/newline)
+  
+  // Detect indentation style (spaces vs tabs, width) from surrounding content
   const afterBrace = location.modelObjectBrace + 1;
+  const nextContent = original.slice(afterBrace, afterBrace + 200);
+  const indentMatch = nextContent.match(/\n(\s+)\S/);
+  let indent = modelIndent + '  '; // default: 2 spaces
+  if (indentMatch && indentMatch[1]) {
+    const detectedIndent = indentMatch[1];
+    // Use detected indent width
+    indent = detectedIndent.startsWith('\t') ? modelIndent + '\t' : detectedIndent;
+  }
+
+  // Find insertion point, preserving any existing newline/whitespace structure
   const afterContent = original.slice(afterBrace).trimStart();
   const skipWs = original.length - afterBrace - afterContent.length;
   const insertionPoint = afterBrace + skipWs;
 
   const prefix = original.slice(0, insertionPoint);
   const suffix = original.slice(insertionPoint);
+  
+  // Format compat keys, sorted alphabetically for consistency
   const compatJson = Object.entries(compatKeys)
+    .sort(([a], [b]) => a.localeCompare(b))
     .map(([k, v]) => {
-      const val = typeof v === 'string' ? `"${v}"` : String(v);
+      const val = typeof v === 'string' ? `"${v}"` : JSON.stringify(v);
       return `${indent}${JSON.stringify(k)}: ${val}`;
     })
     .join(',\n');
-  const compatBlock = `\n${indent}"compat": {\n${compatJson}\n${modelIndent}},\n`;
+  const compatBlock = `\n${modelIndent}"compat": {\n${compatJson}\n${modelIndent}},\n`;
 
   return prefix + compatBlock + suffix;
 }
@@ -4406,54 +4424,61 @@ function selfCheckFix(
   compatKeys: Record<string, unknown>,
 ): string | null {
   try {
+    // Step 1: Parse both versions (this validates JSON syntax)
     const origParsed = JSON.parse(stripJsoncComments(original));
     const modParsed = JSON.parse(stripJsoncComments(modified));
 
-    // Check that target flags exist at the right path
+    // Step 2: Validate modified file has correct structure
     const providers = modParsed?.providers;
     if (!providers || typeof providers !== 'object') {
-      return "providers object missing or not an object in modified file";
+      return "Modified file: providers object missing or invalid";
     }
     const provider = providers[providerLabel];
     if (!provider || typeof provider !== 'object') {
-      return `provider "${providerLabel}" not found in modified file`;
+      return `Modified file: provider "${providerLabel}" not found`;
     }
 
-    // Check model-level compat
+    // Step 3: Validate models array structure
     const models = provider.models;
     if (!Array.isArray(models)) {
-      return `provider "${providerLabel}".models is not an array`;
+      return `Modified file: provider "${providerLabel}".models is not an array`;
     }
+    if (models.length === 0) {
+      return `Modified file: provider "${providerLabel}".models is empty`;
+    }
+    
+    // Step 4: Find and validate target model
     const targetModel = models.find((m: Record<string, unknown>) => m.id === modelId);
     if (!targetModel || typeof targetModel !== 'object') {
-      return `model "${modelId}" not found in modified provider`;
+      return `Modified file: model "${modelId}" not found in provider`;
     }
+    
+    // Step 5: Validate compat object exists and is correct type
     const modCompat = targetModel.compat;
-    if (!modCompat || typeof modCompat !== 'object') {
-      return `compat object missing or not an object for model "${modelId}"`;
+    if (!modCompat || typeof modCompat !== 'object' || Array.isArray(modCompat)) {
+      return `Modified file: model "${modelId}" compat is missing or not an object`;
     }
 
-    // Assert each key from compatKeys is present with correct value
+    // Step 6: Validate all inserted keys are present with correct values
     for (const [k, v] of Object.entries(compatKeys)) {
+      if (!(k in modCompat)) {
+        return `Modified file: compat.${k} not found (insertion failed)`;
+      }
       if (modCompat[k] !== v) {
-        return `compat.${k} expected ${JSON.stringify(v)}, got ${JSON.stringify(modCompat[k])}`;
+        return `Modified file: compat.${k} has wrong value: expected ${JSON.stringify(v)}, got ${JSON.stringify(modCompat[k])}`;
       }
     }
+    
+    // Step 7: Validate original structure is preserved (no accidental deletions/changes)
 
-    // Check that the original structure is a subset of the modified structure.
-    // We do this by stripping the known inserted keys from the modified and
-    // comparing deep-equal with the original.
-    // Check that the original is a subset of the modified.
-    // Walk the original tree; every value in original must match in modified
-    // except that `compat` objects may have extra keys (the inserted ones).
-    function isSubset(origVal: unknown, modVal: unknown): boolean {
+    function isSubset(origVal: unknown, modVal: unknown, path = ''): boolean {
       if (origVal === modVal) return true;
       if (typeof origVal !== typeof modVal) return false;
       if (typeof origVal !== 'object' || origVal === null || modVal === null) return false;
       if (Array.isArray(origVal) !== Array.isArray(modVal)) return false;
       if (Array.isArray(origVal) && Array.isArray(modVal)) {
         if (origVal.length !== modVal.length) return false;
-        return origVal.every((_, i) => isSubset(origVal[i], modVal[i]));
+        return origVal.every((_, i) => isSubset(origVal[i], modVal[i], `${path}[${i}]`));
       }
       // Both objects: check that every key in orig is in mod with same value
       const origObj = origVal as Record<string, unknown>;
@@ -4472,7 +4497,7 @@ function selfCheckFix(
               if (origCompat[ck] !== modCompat[ck]) return false;
             }
           }
-        } else if (!isSubset(origObj[key], modObj[key])) {
+        } else if (!isSubset(origObj[key], modObj[key], `${path}.${key}`)) {
           return false;
         }
       }
@@ -4480,7 +4505,19 @@ function selfCheckFix(
     }
 
     if (!isSubset(origParsed, modParsed)) {
-      return "Structure changed beyond inserted keys";
+      return "Modified file: original structure was altered (data loss detected)";
+    }
+    
+    // Step 8: Basic format sanity checks
+    if (modified.length < original.length) {
+      return "Modified file: content is shorter than original (possible truncation)";
+    }
+    
+    // Step 9: Validate no syntax issues by checking brackets balance
+    const openBraces = (modified.match(/{/g) || []).length;
+    const closeBraces = (modified.match(/}/g) || []).length;
+    if (openBraces !== closeBraces) {
+      return `Modified file: bracket mismatch (${openBraces} open, ${closeBraces} close)`;
     }
 
     return null;
