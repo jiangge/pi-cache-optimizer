@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { mkdir, readFile, rename, unlink, writeFile } from "node:fs/promises";
+import { copyFile, mkdir, readFile, rename, unlink, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import type { BuildSystemPromptOptions, ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
@@ -144,6 +144,7 @@ type CacheCompat = {
   thinkingFormat?: string;
   requiresReasoningContentOnAssistantMessages?: boolean;
   cacheControlFormat?: string;
+  forceAdaptiveThinking?: boolean;
 };
 
 type CacheStats = {
@@ -814,6 +815,78 @@ function isGeminiLikeModel(model: PiModel | undefined): boolean {
 
 function isGeminiLikeAssistantMessage(message: unknown, model: PiModel | undefined): boolean {
   return modelOrAssistantMessageHas(message, model, ["gemini", "vertex"]);
+}
+
+// ── Adaptive generation model detection ────────────────────────────
+
+/**
+ * Check whether the model id uses Anthropic's adaptive generation (thinking)
+ * that requires `forceAdaptiveThinking: true` in compat.
+ *
+ * Adaptive-generation models (from pi-ai built-in catalog) include:
+ *   claude-opus-4-6, claude-opus-4-7, claude-opus-4-8 (also dotted 4.6/4.7/4.8)
+ *   claude-sonnet-4-6
+ *   claude-fable-5
+ *
+ * We match broadly: opus >= 4-6, sonnet >= 4-6, fable >= 5.
+ * Ids may carry date-stamp or size suffixes like "[1M]".
+ */
+const ADAPTIVE_OPUS_PATTERN = /(^|[\/\s:_-])(opus-4[.-][6-9]|opus-4-[1-9][0-9])($|[-_.:\/\s\[])/i;
+const ADAPTIVE_SONNET_PATTERN = /(^|[\/\s:_-])(sonnet-4[.-][6-9]|sonnet-4-[1-9][0-9])($|[-_.:\/\s\[])/i;
+const ADAPTIVE_FABLE_PATTERN = /(^|[\/\s:_-])fable-([5-9]|[1-9][0-9])($|[-_.:\/\s\[])/i;
+
+function isAdaptiveGenerationModel(model: PiModel | undefined): boolean {
+  if (!model) return false;
+  const tokens = getModelIdNameTokenValues(model);
+  return tokens.some((t) => ADAPTIVE_OPUS_PATTERN.test(t) || ADAPTIVE_SONNET_PATTERN.test(t) || ADAPTIVE_FABLE_PATTERN.test(t));
+}
+
+function isAdaptiveThinkingCompatApplicable(model: PiModel): boolean {
+  return lower(model.api) === "anthropic-messages" && isAdaptiveGenerationModel(model);
+}
+
+function describeMissingAdaptiveThinkingCompat(model: PiModel): string[] {
+  const compat = getCompat(model);
+  const missing: string[] = [];
+  if (compat.forceAdaptiveThinking !== true) {
+    missing.push("forceAdaptiveThinking");
+  }
+  return missing;
+}
+
+function buildAdaptiveThinkingCompatSuggestion(missing: string[]): Record<string, unknown> {
+  const suggestion: Record<string, unknown> = {};
+  if (missing.includes("forceAdaptiveThinking")) {
+    suggestion.forceAdaptiveThinking = true;
+  }
+  return suggestion;
+}
+
+function appendAdaptiveThinkingCompatAdviceLines(lines: string[], missing: string[], placement: CompatAdvicePlacement = {}): void {
+  const suggestion = buildAdaptiveThinkingCompatSuggestion(missing);
+  if (Object.keys(suggestion).length > 0) {
+    lines.push("Suggested fix:");
+    lines.push(JSON.stringify(suggestion, null, 2));
+  }
+  lines.push("- forceAdaptiveThinking: true tells Pi to use adaptive thinking format");
+  lines.push("  (thinking: {type: 'adaptive'}) instead of legacy budget tokens format.");
+  lines.push("  Without this flag, Pi sends legacy thinking which adaptive-only upstreams reject.");
+  appendCredentialSafeProviderGuidance(lines, placement, suggestion);
+}
+
+function buildAdaptiveThinkingCompatWarningText(key: string, missing: string[]): string {
+  const slashIdx = key.indexOf("/");
+  const providerLabel = slashIdx > 0 ? key.slice(0, slashIdx) : key;
+  const modelId = slashIdx > 0 ? key.slice(slashIdx + 1) : undefined;
+  const modelsJsonPath = getModelsJsonDisplayPath();
+  const lines: string[] = [
+    `💡 pi-cache-optimizer: ${key} is an adaptive-generation Claude model but merged compat lacks ${missing.join(" and ")}.`,
+    `Without this flag, Pi sends legacy thinking format that may be rejected by the upstream.`,
+    `Edit ${modelsJsonPath} -> providers["${providerLabel}"] -> compat (at the same level as baseUrl/api/apiKey/models).`,
+    "",
+  ];
+  appendAdaptiveThinkingCompatAdviceLines(lines, missing, { providerLabel, modelId });
+  return lines.join("\n");
 }
 
 // ── Non-GPT OpenAI-compatible model detection ──────────────────────
@@ -1706,6 +1779,9 @@ function isDeepSeekCompatCheckApplicable(model: PiModel): boolean {
 }
 
 function describeMissingCacheCompatForModel(model: PiModel): string[] {
+  if (isAdaptiveThinkingCompatApplicable(model)) {
+    return describeMissingAdaptiveThinkingCompat(model);
+  }
   if (isDeepSeekCompatCheckApplicable(model)) {
     return describeMissingDeepSeekCompat(model);
   }
@@ -2755,6 +2831,22 @@ function notifyCacheCompatIfNeeded(
 ): void {
   if (!model) return;
 
+  // Native anthropic-messages adaptive thinking compat check.
+  // The Claude adapter's warningText only fires for OpenAI-compatible APIs,
+  // so native anthropic-messages models need a separate check.
+  if (lower(model.api) === "anthropic-messages" && isAdaptiveGenerationModel(model)) {
+    const compat = getCompat(model);
+    if (compat.forceAdaptiveThinking !== true) {
+      const key = `adaptive-thinking:${modelKey(model)}`;
+      if (!warnedModels.has(key)) {
+        warnedModels.add(key);
+        const missing = describeMissingAdaptiveThinkingCompat(model);
+        ctx.ui.notify(buildAdaptiveThinkingCompatWarningText(modelKey(model), missing), "warning");
+      }
+    }
+    // Still check adapter warnings for other compat issues.
+  }
+
   const adapter = selectAdapterForModel(model);
   const text = adapter?.warningText?.(model);
   if (!adapter || !text) return;
@@ -3456,6 +3548,7 @@ function buildDoctorDiagnosis(model: PiModel, options: { promptCacheRetention400
   const compat = getCompat(model);
   lines.push(`Compat:   ${JSON.stringify(compat)}`);
 
+  const adaptiveThinkingApplicable = isAdaptiveThinkingCompatApplicable(model);
   const deepSeekCompatApplicable = isDeepSeekCompatCheckApplicable(model);
   const missing = describeMissingCacheCompatForModel(model);
   if (missing.length > 0) {
@@ -3465,12 +3558,14 @@ function buildDoctorDiagnosis(model: PiModel, options: { promptCacheRetention400
     const providerLabel = slashIdx > 0 ? key.slice(0, slashIdx) : key;
     const modelsJsonPath = getModelsJsonDisplayPath();
     lines.push(`Edit ${modelsJsonPath} -> providers["${providerLabel}"] -> compat (same level as baseUrl/api/apiKey/models).`);
-    if (deepSeekCompatApplicable) {
+    if (adaptiveThinkingApplicable) {
+      appendAdaptiveThinkingCompatAdviceLines(lines, missing, { providerLabel, modelId: model.id });
+    } else if (deepSeekCompatApplicable) {
       appendDeepSeekCompatAdviceLines(lines, missing, { providerLabel, modelId: model.id });
     } else {
       appendOpenAIProxyCompatAdviceLines(lines, missing, { providerLabel, modelId: model.id });
     }
-  } else if (deepSeekCompatApplicable || isCompatCheckApplicable(model)) {
+  } else if (adaptiveThinkingApplicable || deepSeekCompatApplicable || isCompatCheckApplicable(model)) {
     lines.push("✅ Compat fully configured.");
   } else {
     lines.push(...getCompatCheckNotApplicableLines(model));
@@ -3629,6 +3724,7 @@ function buildLowHitDiagnosis(
 
 function buildCompatDiagnosis(model: PiModel): string | undefined {
   const missing = describeMissingCacheCompatForModel(model);
+  const adaptiveThinkingApplicable = isAdaptiveThinkingCompatApplicable(model);
   const deepSeekCompatApplicable = isDeepSeekCompatCheckApplicable(model);
   const routerNotes = describeRouterChannelDiagnostics(model);
 
@@ -3646,7 +3742,9 @@ function buildCompatDiagnosis(model: PiModel): string | undefined {
     lines.push("");
     lines.push(`Edit ${modelsJsonPath} -> providers["${providerLabel}"] -> compat`);
     lines.push(`(at the same level as baseUrl/api/apiKey/models).`);
-    if (deepSeekCompatApplicable) {
+    if (adaptiveThinkingApplicable) {
+      appendAdaptiveThinkingCompatAdviceLines(lines, missing, { providerLabel, modelId: model.id });
+    } else if (deepSeekCompatApplicable) {
       appendDeepSeekCompatAdviceLines(lines, missing, { providerLabel, modelId: model.id });
     } else {
       appendOpenAIProxyCompatAdviceLines(lines, missing, { providerLabel, modelId: model.id });
@@ -3655,7 +3753,7 @@ function buildCompatDiagnosis(model: PiModel): string | undefined {
 
   // When compat is fully configured but router notes exist, prefix the status.
   if (routerNotes.length > 0 && missing.length === 0) {
-    if (deepSeekCompatApplicable || isCompatCheckApplicable(model)) {
+    if (adaptiveThinkingApplicable || deepSeekCompatApplicable || isCompatCheckApplicable(model)) {
       lines.push("✅ Compat fully configured.");
       if (isPromptCacheRetention400Applicable(model)) {
         lines.push(getPromptCacheRetentionUnsupportedHint());
@@ -3674,6 +3772,749 @@ function buildCompatDiagnosis(model: PiModel): string | undefined {
   }
 
   return lines.join("\n");
+}
+
+// ============================================================
+// JSONC comment-preserving surgical edit helpers for /cache-optimizer fix
+// ============================================================
+
+/** The real models.json path used for I/O. */
+const MODELS_JSON_PATH = join(STATE_DIR, "models.json");
+
+// ── String-aware JSONC scanning primitives ─────────────────────────
+//
+// These operate on comment-stripped text produced by stripJsoncComments()
+// (which preserves byte offsets), so every offset they return is also valid
+// in the original text. All scanning skips string literals, so braces or
+// brackets inside string values (e.g. apiKeyCommand shell snippets) cannot
+// corrupt depth tracking.
+
+function isJsonWhitespace(ch: string): boolean {
+  return ch === " " || ch === "\n" || ch === "\r" || ch === "\t";
+}
+
+function skipJsonWhitespace(text: string, pos: number): number {
+  while (pos < text.length && isJsonWhitespace(text[pos])) pos++;
+  return pos;
+}
+
+/**
+ * Read a JSON string literal starting at `pos` (which must be `"`).
+ * Returns the decoded value and the offset just past the closing quote,
+ * or undefined when the literal is unterminated/malformed.
+ */
+function readJsonStringLiteral(text: string, pos: number): { value: string; end: number } | undefined {
+  if (text[pos] !== '"') return undefined;
+  let i = pos + 1;
+  let value = "";
+  while (i < text.length) {
+    const ch = text[i];
+    if (ch === "\\") {
+      const next = text[i + 1];
+      if (next === undefined) return undefined;
+      if (next === "u") {
+        const hex = text.slice(i + 2, i + 6);
+        if (!/^[0-9a-fA-F]{4}$/.test(hex)) return undefined;
+        value += String.fromCharCode(parseInt(hex, 16));
+        i += 6;
+      } else {
+        if (next === "n") value += "\n";
+        else if (next === "t") value += "\t";
+        else if (next === "r") value += "\r";
+        else if (next === "b") value += "\b";
+        else if (next === "f") value += "\f";
+        else value += next; // ", \\, / and lenient passthrough
+        i += 2;
+      }
+      continue;
+    }
+    if (ch === '"') return { value, end: i + 1 };
+    value += ch;
+    i++;
+  }
+  return undefined;
+}
+
+/**
+ * Find the offset of the `}` / `]` matching the opener at `openPos`,
+ * skipping string literals. Returns undefined on imbalance.
+ */
+function findMatchingBracket(text: string, openPos: number): number | undefined {
+  const open = text[openPos];
+  if (open !== "{" && open !== "[") return undefined;
+  let depth = 0;
+  let i = openPos;
+  while (i < text.length) {
+    const ch = text[i];
+    if (ch === '"') {
+      const str = readJsonStringLiteral(text, i);
+      if (!str) return undefined;
+      i = str.end;
+      continue;
+    }
+    if (ch === "{" || ch === "[") depth++;
+    else if (ch === "}" || ch === "]") {
+      depth--;
+      if (depth === 0) return i;
+    }
+    i++;
+  }
+  return undefined;
+}
+
+/** Skip one JSON value starting at/after `pos`; returns the offset just past it. */
+function skipJsonValue(text: string, pos: number): number | undefined {
+  pos = skipJsonWhitespace(text, pos);
+  const ch = text[pos];
+  if (ch === '"') {
+    const str = readJsonStringLiteral(text, pos);
+    return str?.end;
+  }
+  if (ch === "{" || ch === "[") {
+    const end = findMatchingBracket(text, pos);
+    return end === undefined ? undefined : end + 1;
+  }
+  let i = pos;
+  while (i < text.length && !",}]".includes(text[i]) && !isJsonWhitespace(text[i])) i++;
+  return i > pos ? i : undefined;
+}
+
+/**
+ * Find a top-level key in the object whose `{` is at `openBracePos`.
+ * Only direct children are considered (nested values are skipped whole).
+ * Returns the key's opening-quote offset and its value's start offset,
+ * or undefined when the key is absent or the object is malformed.
+ */
+function findJsonObjectKey(
+  text: string,
+  openBracePos: number,
+  targetKey: string,
+): { keyStart: number; valueStart: number } | undefined {
+  if (text[openBracePos] !== "{") return undefined;
+  let i = openBracePos + 1;
+  while (i < text.length) {
+    i = skipJsonWhitespace(text, i);
+    if (i >= text.length || text[i] === "}") return undefined;
+    if (text[i] === ",") {
+      i++;
+      continue;
+    }
+    if (text[i] !== '"') return undefined; // unexpected token — refuse to guess
+    const keyStart = i;
+    const key = readJsonStringLiteral(text, i);
+    if (!key) return undefined;
+    i = skipJsonWhitespace(text, key.end);
+    if (text[i] !== ":") return undefined;
+    i = skipJsonWhitespace(text, i + 1);
+    if (key.value === targetKey) return { keyStart, valueStart: i };
+    const after = skipJsonValue(text, i);
+    if (after === undefined) return undefined;
+    i = after;
+  }
+  return undefined;
+}
+
+/** Leading whitespace of the line containing offset `pos` (up to `pos`). */
+function lineIndentOf(text: string, pos: number): string {
+  let lineStart = text.lastIndexOf("\n", pos - 1);
+  lineStart = lineStart < 0 ? 0 : lineStart + 1;
+  const m = text.slice(lineStart, pos).match(/^[ \t]*/);
+  return m ? m[0] : "";
+}
+
+/**
+ * Indentation used by the first line inside the object spanning
+ * `openBrace`..`closeBrace` in the ORIGINAL text. Falls back to the
+ * opener's line indent plus two spaces for single-line objects.
+ */
+function deriveInnerIndent(text: string, openBrace: number, closeBrace: number): string {
+  const nl = text.indexOf("\n", openBrace + 1);
+  if (nl >= 0 && nl < closeBrace) {
+    let i = nl + 1;
+    let ws = "";
+    while (i < text.length && (text[i] === " " || text[i] === "\t")) {
+      ws += text[i];
+      i++;
+    }
+    if (ws.length > 0) return ws;
+  }
+  return lineIndentOf(text, openBrace) + "  ";
+}
+
+interface FixSuggestion {
+  providerLabel: string;
+  modelId: string;
+  compatKeys: Record<string, unknown>;
+}
+
+/**
+ * Build the fix suggestion for the current active model.
+ * Returns undefined if there is nothing to fix.
+ */
+function buildFixSuggestion(model: PiModel): FixSuggestion | undefined {
+  const missing = describeMissingCacheCompatForModel(model);
+  if (missing.length === 0) return undefined;
+
+  let compatKeys: Record<string, unknown> = {};
+
+  if (isAdaptiveThinkingCompatApplicable(model)) {
+    compatKeys = buildAdaptiveThinkingCompatSuggestion(missing);
+  } else if (isDeepSeekCompatCheckApplicable(model)) {
+    compatKeys = buildDeepSeekCompatSuggestion(missing);
+  } else {
+    compatKeys = buildSafeOpenAIProxyCompatSuggestion(missing);
+  }
+
+  if (Object.keys(compatKeys).length === 0) return undefined;
+
+  const key = modelKey(model);
+  const slashIdx = key.indexOf("/");
+  const providerLabel = slashIdx > 0 ? key.slice(0, slashIdx) : key;
+
+  return {
+    providerLabel,
+    modelId: model.id,
+    compatKeys,
+  };
+}
+
+/**
+ * Strip JSONC comments from text, replacing them with spaces.
+ * Handles string literals, escaped quotes, // line comments, /* block comments *\/.
+ * Returns the cleaned text with same line/column positions.
+ */
+function stripJsoncComments(text: string): string {
+  const out: string[] = [];
+  let i = 0;
+  while (i < text.length) {
+    const ch = text[i];
+    if (ch === '"') {
+      // String literal — copy until closing quote (handle escapes)
+      out.push(ch);
+      i++;
+      while (i < text.length) {
+        const sc = text[i];
+        out.push(sc);
+        i++;
+        if (sc === '\\' && i < text.length) {
+          out.push(text[i]);
+          i++;
+        } else if (sc === '"') {
+          break;
+        }
+      }
+    } else if (ch === '/' && i + 1 < text.length && text[i + 1] === '/') {
+      // Line comment — replace with spaces until newline
+      out.push(' ');
+      i++;
+      while (i < text.length && text[i] !== '\n') {
+        out.push(' ');
+        i++;
+      }
+    } else if (ch === '/' && i + 1 < text.length && text[i + 1] === '*') {
+      // Block comment — replace with spaces (preserve newlines)
+      out.push(' ');
+      i++;
+      while (i + 1 < text.length) {
+        if (text[i] === '*' && text[i + 1] === '/') {
+          out.push(' ');
+          i += 2;
+          break;
+        }
+        if (text[i] === '\n') {
+          out.push('\n');
+        } else {
+          out.push(' ');
+        }
+        i++;
+      }
+    } else {
+      out.push(ch);
+      i++;
+    }
+  }
+  return out.join('');
+}
+
+/**
+ * JSONC scanner: locate the provider block and model entry in models.json text.
+ * Returns the byte offsets for surgical insertion, or undefined if ambiguous.
+ */
+interface ModelNodeLocation {
+  /** Offset of the model object's opening `{` */
+  modelObjectBrace: number;
+  /** Offset of the model object's closing `}` */
+  modelObjectEnd: number;
+  /** Offset of the "compat" key start (the `"`), or -1 if compat doesn't exist */
+  compatKeyStart: number;
+  /** Offset of the compat object's opening `{`, or -1 if compat doesn't exist */
+  compatObjectBrace: number;
+  /** Offset of the compat object's closing `}`, or -1 */
+  compatObjectEnd: number;
+  /** Indentation string to use for inserted lines (derived from surrounding context) */
+  indent: string;
+}
+
+/**
+ * Locate the provider + model entry in raw JSONC text.
+ * Returns the positions needed for surgical insertion, or undefined on failure.
+ *
+ * This is a scan-only pass — no AST build, no regex reliance.
+ */
+function locateModelInJsonc(
+  text: string,
+  providerLabel: string,
+  modelId: string,
+): ModelNodeLocation | undefined {
+  // Clean text of comments first for reliable structural scanning
+  const clean = stripJsoncComments(text);
+
+  // Strategy: find `"providers"` key in the root object, then find the
+  // provider key under it, then the `"models"` array, then the array
+  // element whose `"id"` matches. We map via the stripped text (comment
+  // removal replaces comment chars with spaces, preserving offsets).
+
+  const pos = clean.indexOf('"providers"');
+  if (pos < 0) return undefined;
+
+  // Scan from `"providers"` to find the `{` of the provider block
+  let cur = pos + '"providers"'.length;
+  // Skip `:`, whitespace, etc.
+  while (cur < clean.length && clean[cur] !== '{') cur++;
+  if (cur >= clean.length) return undefined;
+  cur++; // Skip `{`
+
+  // Now scan key-value pairs in the providers object to find the matching providerLabel
+  const providerLabelJson = JSON.stringify(providerLabel);
+  let providerBrace = -1;
+  let providerEndBrace = -1;
+
+  while (cur < clean.length) {
+    // Skip whitespace/comments
+    while (cur < clean.length && (clean[cur] === ' ' || clean[cur] === '\n' || clean[cur] === '\r' || clean[cur] === '\t')) cur++;
+    if (cur >= clean.length) break;
+    if (clean[cur] === '}') break; // End of providers
+
+    // Try to read a string key
+    if (clean[cur] !== '"') { cur++; continue; }
+    const keyEnd = clean.indexOf('"', cur + 1);
+    if (keyEnd < 0) return undefined;
+    const key = clean.slice(cur + 1, keyEnd);
+    cur = keyEnd + 1;
+
+    // Skip `:`
+    while (cur < clean.length && clean[cur] !== ':') cur++;
+    if (cur >= clean.length) return undefined;
+    cur++; // Skip `:`
+    while (cur < clean.length && (clean[cur] === ' ' || clean[cur] === '\n' || clean[cur] === '\r' || clean[cur] === '\t')) cur++;
+
+    if (key === providerLabel) {
+      // Found — expect `{` starting the provider object
+      if (clean[cur] !== '{') return undefined;
+      providerBrace = cur;
+      // Find matching closing `}` for the provider object (track depth)
+      let depth = 1;
+      let scan = cur + 1;
+      while (scan < clean.length && depth > 0) {
+        if (clean[scan] === '{') depth++;
+        else if (clean[scan] === '}') depth--;
+        if (depth > 0) scan++;
+      }
+      providerEndBrace = scan;
+      break;
+    }
+
+    // Skip the value
+    if (clean[cur] === '{') {
+      let depth = 1;
+      cur++;
+      while (cur < clean.length && depth > 0) {
+        if (clean[cur] === '{') depth++;
+        else if (clean[cur] === '}') depth--;
+        cur++;
+      }
+    } else if (clean[cur] === '[') {
+      let depth = 1;
+      cur++;
+      while (cur < clean.length && depth > 0) {
+        if (clean[cur] === '[') depth++;
+        else if (clean[cur] === ']') depth--;
+        cur++;
+      }
+    } else if (clean[cur] === '"') {
+      const strEnd = clean.indexOf('"', cur + 1);
+      if (strEnd < 0) return undefined;
+      cur = strEnd + 1;
+    } else {
+      // Number, boolean, etc.
+      while (cur < clean.length && clean[cur] !== ',' && clean[cur] !== '}' && clean[cur] !== '\n') cur++;
+    }
+    // Skip comma
+    if (cur < clean.length && clean[cur] === ',') cur++;
+  }
+
+  if (providerBrace < 0 || providerEndBrace < 0) return undefined;
+
+  // Now find the `"models"` array within the provider
+  const providerContent = clean.slice(providerBrace + 1, providerEndBrace);
+  const modelsIdx = providerContent.indexOf('"models"');
+  if (modelsIdx < 0) return undefined;
+
+  // Find the `[` of the models array
+  let modelsScan = providerBrace + 1 + modelsIdx + '"models"'.length;
+  while (modelsScan < clean.length && clean[modelsScan] !== '[') modelsScan++;
+  if (modelsScan >= clean.length) return undefined;
+  modelsScan++; // Skip `[`
+
+  // Scan array elements to find the one with matching `"id"`
+  const modelIdJson = JSON.stringify(modelId);
+  let modelElementStart = -1;
+  let modelBrace = -1;
+  let modelEndBrace = -1;
+  let compatKeyStartClean = -1;
+  let compatBrace = -1;
+  let compatEndBrace = -1;
+
+  while (modelsScan < clean.length) {
+    // Skip whitespace/comma
+    while (modelsScan < clean.length && (clean[modelsScan] === ' ' || clean[modelsScan] === '\n' || clean[modelsScan] === '\r' || clean[modelsScan] === '\t' || clean[modelsScan] === ',')) modelsScan++;
+    if (modelsScan >= clean.length) break;
+    if (clean[modelsScan] === ']') break; // End of array
+
+    if (clean[modelsScan] !== '{') { modelsScan++; continue; }
+
+    // Found a model object `{`
+    modelElementStart = modelsScan;
+    modelBrace = modelsScan;
+
+    // Find the matching closing `}` and look for `"id"` inside
+    let depth = 1;
+    let scan = modelsScan + 1;
+    let foundId = false;
+    let localCompatBrace = -1;
+    let localCompatEndBrace = -1;
+
+    while (scan < clean.length && depth > 0) {
+      if (clean[scan] === '{') {
+        depth++;
+        if (depth === 2 && localCompatBrace < 0) {
+          // Nested object — could be the compat object. Save tentatively.
+          localCompatBrace = scan;
+        }
+      } else if (clean[scan] === '}') {
+        depth--;
+        if (depth === 1 && localCompatBrace >= 0 && localCompatEndBrace < 0) {
+          localCompatEndBrace = scan;
+        }
+      } else if (depth === 1 && !foundId) {
+        // Look for `"id":` at depth 1, then find the id value
+        if (clean[scan] === '"' && clean.slice(scan, scan + 4) === '"id"') {
+          // Found "id" key — find the colon and the value
+          let afterKey = scan + 4;
+          while (afterKey < clean.length && clean[afterKey] !== ':') afterKey++;
+          if (afterKey < clean.length) {
+            afterKey++; // skip ':'
+            // skip whitespace
+            while (afterKey < clean.length && (clean[afterKey] === ' ' || clean[afterKey] === '\n' || clean[afterKey] === '\r' || clean[afterKey] === '\t')) afterKey++;
+            if (afterKey < clean.length && clean[afterKey] === '"') {
+              const idStart = afterKey + 1;
+              const idEnd = clean.indexOf('"', idStart);
+              if (idEnd > idStart && clean.slice(idStart, idEnd) === modelId) {
+                foundId = true;
+              }
+            }
+          }
+        }
+      }
+      scan++;
+    }
+
+    if (foundId) {
+      modelEndBrace = scan - 1; // The `}` that closed depth to 0 (scan was incremented after it)
+      // Re-scan for compat more precisely
+      const modelContent = clean.slice(modelBrace + 1, modelEndBrace);
+      const compatIdx = modelContent.indexOf('"compat"');
+      if (compatIdx >= 0) {
+        // compatKeyStart in the CLEAN text is at modelBrace + 1 + compatIdx
+        compatKeyStartClean = modelBrace + 1 + compatIdx;
+        // Find the `:` after "compat"
+        let compatScan = compatKeyStartClean + '"compat"'.length;
+        while (compatScan < clean.length && clean[compatScan] !== ':') compatScan++;
+        compatScan++;
+        while (compatScan < clean.length && (clean[compatScan] === ' ' || clean[compatScan] === '\n' || clean[compatScan] === '\r' || clean[compatScan] === '\t')) compatScan++;
+        if (compatScan < clean.length && clean[compatScan] === '{') {
+          compatBrace = compatScan;
+          let cdepth = 1;
+          let cscan = compatScan + 1;
+          while (cscan < clean.length && cdepth > 0) {
+            if (clean[cscan] === '{') cdepth++;
+            else if (clean[cscan] === '}') cdepth--;
+            if (cdepth > 0) cscan++;
+          }
+          compatEndBrace = cscan;
+        }
+      }
+      break;
+    }
+
+    modelsScan = scan;
+  }
+
+  if (modelBrace < 0 || modelEndBrace < 0) return undefined;
+
+  // Derive indentation from the model object's opening `{` line in original text
+  // Look backwards to find the line start
+  let lineStart = text.lastIndexOf('\n', modelBrace);
+  if (lineStart < 0) lineStart = 0;
+  const lineBefore = text.slice(lineStart, modelBrace);
+  const indentMatch = lineBefore.match(/^(\s*)/);
+  const baseIndent = indentMatch ? indentMatch[1] : '  ';
+  const indent = baseIndent + '  '; // +2 for one level deeper
+
+  return {
+    modelObjectBrace: modelBrace,
+    modelObjectEnd: modelEndBrace,
+    compatKeyStart: compatKeyStartClean >= 0 ? compatKeyStartClean : -1,
+    compatObjectBrace: compatBrace,
+    compatObjectEnd: compatEndBrace,
+    indent,
+  };
+}
+
+/**
+ * Deep-equal comparison of two values, used for post-write self-check.
+ * Compares all keys recursively, allowing `extraKeys` to be present in `a` but not in `b`.
+ */
+function deepEqualIgnoringKeys(a: unknown, b: unknown, extraKeys: string[]): boolean {
+  if (a === b) return true;
+  if (typeof a !== typeof b) return false;
+  if (Array.isArray(a) && Array.isArray(b)) {
+    if (a.length !== b.length) return false;
+    for (let i = 0; i < a.length; i++) {
+      if (!deepEqualIgnoringKeys(a[i], b[i], extraKeys)) return false;
+    }
+    return true;
+  }
+  if (typeof a === 'object' && a !== null && typeof b === 'object' && b !== null) {
+    const aKeys = Object.keys(a as Record<string, unknown>).filter(k => !extraKeys.includes(k));
+    const bKeys = Object.keys(b as Record<string, unknown>);
+    if (aKeys.length !== bKeys.length) return false;
+    for (const k of aKeys) {
+      if (!(k in (b as Record<string, unknown>))) return false;
+      if (!deepEqualIgnoringKeys(
+        (a as Record<string, unknown>)[k],
+        (b as Record<string, unknown>)[k],
+        extraKeys,
+      )) return false;
+    }
+    return true;
+  }
+  return false;
+}
+
+/**
+ * Compose the fix: produce the modified text with compat keys inserted.
+ *
+ * Strategy:
+ * - If compat object exists: replace its interior (between `{` and `}`)
+ *   with new keys + existing content, preserving surrounding bytes.
+ * - If compat doesn't exist: insert `"compat": { keys }` after model `{`.
+ *
+ * Uses the raw original text; only the inserted/compat region changes.
+ */
+function composeFixInsertion(
+  original: string,
+  location: ModelNodeLocation,
+  compatKeys: Record<string, unknown>,
+): string {
+  // Format the new keys as indented lines (without outer braces)
+  const keysFormatted = Object.entries(compatKeys)
+    .map(([k, v]) => {
+      const val = typeof v === 'string' ? `"${v}"` : String(v);
+      return `${location.indent}${JSON.stringify(k)}: ${val}`;
+    })
+    .join(',\n');
+
+  if (location.compatKeyStart >= 0) {
+    // Existing compat — replace the interior between `{` and `}`.
+    // Find the indentation of the compat closing `}` from the original text.
+    let compatCloseLineStart = original.lastIndexOf('\n', location.compatObjectEnd);
+    if (compatCloseLineStart < 0) compatCloseLineStart = 0;
+    const compatCloseLine = original.slice(compatCloseLineStart, location.compatObjectEnd);
+    const compatCloseIndentMatch = compatCloseLine.match(/^(\s*)/);
+    const compatCloseIndent = compatCloseIndentMatch ? compatCloseIndentMatch[1] : '';
+
+    // The interior of the compat `{...}`:
+    const interiorStart = location.compatObjectBrace + 1;
+    const interiorEnd = location.compatObjectEnd;
+    const interior = original.slice(interiorStart, interiorEnd);
+    const existingInner = interior.trim();
+
+    // Build the new interior:
+    //   \n<indent>key1: val1,
+    //   \n<indent>key2: val2
+    // followed by existing content (if any) or a newline before the closing `}`
+    let newInterior: string;
+    if (existingInner) {
+      newInterior = `\n${keysFormatted},\n${existingInner}`;
+    } else {
+      newInterior = `\n${keysFormatted}\n`;
+    }
+
+    return original.slice(0, interiorStart) + newInterior + original.slice(interiorEnd);
+  }
+
+  // No existing compat — insert after model `{`, before any existing content.
+  // Derive the model-level indentation from the original model `{` line.
+  let modelLineStart = original.lastIndexOf('\n', location.modelObjectBrace);
+  if (modelLineStart < 0) modelLineStart = 0;
+  const modelLine = original.slice(modelLineStart, location.modelObjectBrace);
+  const modelIndentMatch = modelLine.match(/^(\s*)/);
+  const modelIndent = modelIndentMatch ? modelIndentMatch[1] : '';
+  const indent = modelIndent + '  '; // one level deeper
+
+  // After the model `{`, find where to insert (skip whitespace/newline)
+  const afterBrace = location.modelObjectBrace + 1;
+  const afterContent = original.slice(afterBrace).trimStart();
+  const skipWs = original.length - afterBrace - afterContent.length;
+  const insertionPoint = afterBrace + skipWs;
+
+  const prefix = original.slice(0, insertionPoint);
+  const suffix = original.slice(insertionPoint);
+  const compatJson = Object.entries(compatKeys)
+    .map(([k, v]) => {
+      const val = typeof v === 'string' ? `"${v}"` : String(v);
+      return `${indent}${JSON.stringify(k)}: ${val}`;
+    })
+    .join(',\n');
+  const compatBlock = `\n${indent}"compat": {\n${compatJson}\n${modelIndent}},\n`;
+
+  return prefix + compatBlock + suffix;
+}
+
+/**
+ * Self-check after compose: parse original and modified via stripJsoncComments,
+ * assert target compat flags exist in the right path, and remaining structure
+ * is deep-equal (ignoring the inserted keys).
+ * Returns null on success, error message on failure.
+ */
+function selfCheckFix(
+  original: string,
+  modified: string,
+  providerLabel: string,
+  modelId: string,
+  compatKeys: Record<string, unknown>,
+): string | null {
+  try {
+    const origParsed = JSON.parse(stripJsoncComments(original));
+    const modParsed = JSON.parse(stripJsoncComments(modified));
+
+    // Check that target flags exist at the right path
+    const providers = modParsed?.providers;
+    if (!providers || typeof providers !== 'object') {
+      return "providers object missing or not an object in modified file";
+    }
+    const provider = providers[providerLabel];
+    if (!provider || typeof provider !== 'object') {
+      return `provider "${providerLabel}" not found in modified file`;
+    }
+
+    // Check model-level compat
+    const models = provider.models;
+    if (!Array.isArray(models)) {
+      return `provider "${providerLabel}".models is not an array`;
+    }
+    const targetModel = models.find((m: Record<string, unknown>) => m.id === modelId);
+    if (!targetModel || typeof targetModel !== 'object') {
+      return `model "${modelId}" not found in modified provider`;
+    }
+    const modCompat = targetModel.compat;
+    if (!modCompat || typeof modCompat !== 'object') {
+      return `compat object missing or not an object for model "${modelId}"`;
+    }
+
+    // Assert each key from compatKeys is present with correct value
+    for (const [k, v] of Object.entries(compatKeys)) {
+      if (modCompat[k] !== v) {
+        return `compat.${k} expected ${JSON.stringify(v)}, got ${JSON.stringify(modCompat[k])}`;
+      }
+    }
+
+    // Check that the original structure is a subset of the modified structure.
+    // We do this by stripping the known inserted keys from the modified and
+    // comparing deep-equal with the original.
+    // Check that the original is a subset of the modified.
+    // Walk the original tree; every value in original must match in modified
+    // except that `compat` objects may have extra keys (the inserted ones).
+    function isSubset(origVal: unknown, modVal: unknown): boolean {
+      if (origVal === modVal) return true;
+      if (typeof origVal !== typeof modVal) return false;
+      if (typeof origVal !== 'object' || origVal === null || modVal === null) return false;
+      if (Array.isArray(origVal) !== Array.isArray(modVal)) return false;
+      if (Array.isArray(origVal) && Array.isArray(modVal)) {
+        if (origVal.length !== modVal.length) return false;
+        return origVal.every((_, i) => isSubset(origVal[i], modVal[i]));
+      }
+      // Both objects: check that every key in orig is in mod with same value
+      const origObj = origVal as Record<string, unknown>;
+      const modObj = modVal as Record<string, unknown>;
+      for (const key of Object.keys(origObj)) {
+        if (!(key in modObj)) return false;
+        if (key === 'compat') {
+          // For compat, allow extra keys in modified (the inserted ones)
+          if (typeof origObj[key] !== 'object' || typeof modObj[key] !== 'object') {
+            if (origObj[key] !== modObj[key]) return false;
+          } else {
+            // Check all original compat keys are present and equal
+            const origCompat = origObj[key] as Record<string, unknown>;
+            const modCompat = modObj[key] as Record<string, unknown>;
+            for (const ck of Object.keys(origCompat)) {
+              if (origCompat[ck] !== modCompat[ck]) return false;
+            }
+          }
+        } else if (!isSubset(origObj[key], modObj[key])) {
+          return false;
+        }
+      }
+      return true;
+    }
+
+    if (!isSubset(origParsed, modParsed)) {
+      return "Structure changed beyond inserted keys";
+    }
+
+    return null;
+  } catch (e) {
+    return `Self-check error: ${e instanceof Error ? e.message : String(e)}`;
+  }
+}
+
+/**
+ * Serialize a compat suggestion to the JSON text that will be inserted.
+ * Returns the exact key-value pairs as a formatted JSON string without outer braces.
+ */
+function formatCompatKeysForInsertion(compatKeys: Record<string, unknown>): string {
+  return Object.entries(compatKeys)
+    .map(([k, v]) => {
+      const val = typeof v === 'string' ? `"${v}"` : String(v);
+      return `  ${JSON.stringify(k)}: ${val}`;
+    })
+    .join(',\n');
+}
+
+/**
+ * Generate the timestamp string for backup filename.
+ * Format: YYYYMMDDTHHMMSSZ (UTC)
+ */
+function backupTimestamp(): string {
+  const now = new Date();
+  const y = now.getUTCFullYear();
+  const m = String(now.getUTCMonth() + 1).padStart(2, '0');
+  const d = String(now.getUTCDate()).padStart(2, '0');
+  const h = String(now.getUTCHours()).padStart(2, '0');
+  const min = String(now.getUTCMinutes()).padStart(2, '0');
+  const s = String(now.getUTCSeconds()).padStart(2, '0');
+  return `${y}${m}${d}T${h}${min}${s}Z`;
 }
 
 // Internal helpers exported only so the task verification script
@@ -3849,7 +4690,6 @@ export const __internals_for_tests = {
   // Integrity diagnostics
   getLastPromptIntegrityWarningAt,
   // Diagnostic command helpers
-  isCompatCheckApplicable,
   buildDoctorDiagnosis,
   buildCompatDiagnosis,
   describeRouterChannelDiagnostics,
@@ -3881,6 +4721,24 @@ export const __internals_for_tests = {
   STATE_FILE_PATH,
   LEGACY_STATE_FILE_PATH,
   STATE_DIR,
+  // JSONC surgical edit helpers
+  MODELS_JSON_PATH,
+  stripJsoncComments,
+  locateModelInJsonc,
+  composeFixInsertion,
+  selfCheckFix,
+  deepEqualIgnoringKeys,
+  formatCompatKeysForInsertion,
+  backupTimestamp,
+  // Fix suggestion builder
+  buildFixSuggestion,
+  // Adaptive thinking compat helpers
+  isAdaptiveGenerationModel,
+  isAdaptiveThinkingCompatApplicable,
+  describeMissingAdaptiveThinkingCompat,
+  buildAdaptiveThinkingCompatSuggestion,
+  buildAdaptiveThinkingCompatWarningText,
+  appendAdaptiveThinkingCompatAdviceLines,
 };
 
 export default function (pi: ExtensionAPI) {
@@ -4322,6 +5180,7 @@ export default function (pi: ExtensionAPI) {
   //             with low-hit diagnosis
   //   stats   — show active model stats bucket, recent trend, usage
   //   compat  — show compat suggestion with file path
+  //   fix     — auto-fix compat issues (writes models.json, requires UI)
   //   reset   — reset current session model stats bucket (local only)
   //   (no args) — interactive menu (with UI) or help summary
   // ────────────────────────────────────────────────────────────────
@@ -4380,7 +5239,7 @@ export default function (pi: ExtensionAPI) {
           cmdCtx.ui.notify(compatResult, "warning");
         } else {
           cmdCtx.ui.notify(
-            isDeepSeekCompatCheckApplicable(model) || isCompatCheckApplicable(model)
+            isAdaptiveThinkingCompatApplicable(model) || isDeepSeekCompatCheckApplicable(model) || isCompatCheckApplicable(model)
               ? "✅ Compat fully configured."
               : getCompatCheckNotApplicableLines(model).join("\n"),
             "info",
@@ -4418,6 +5277,150 @@ export default function (pi: ExtensionAPI) {
           "New requests will start a fresh stats bucket for this Pi session.",
           "info",
         );
+      } else if (subcommand === "fix") {
+        if (!model) {
+          cmdCtx.ui.notify("No active model selected. Select a model first with /model or pi --model.", "warning");
+          return;
+        }
+
+        const suggestion = buildFixSuggestion(model);
+        if (!suggestion) {
+          const key = modelKey(model);
+          cmdCtx.ui.notify(`✅ Nothing to fix for "${key}". Compat already configured.`, "info");
+          return;
+        }
+
+        if (!cmdCtx.hasUI) {
+          // No UI — refuse to write, show manual guidance instead.
+          const compatResult = buildCompatDiagnosis(model);
+          if (compatResult) {
+            cmdCtx.ui.notify(
+              `❌ Non-interactive terminal detected. Auto-fix requires UI confirmation.\n\n` +
+              `Manual steps:\n` +
+              `1. Open ${getModelsJsonDisplayPath()} in your editor.\n` +
+              `2. Go to providers["${suggestion.providerLabel}"] -> models -> entry with id "${suggestion.modelId}" -> compat.\n` +
+              `3. Add the missing keys:\n${formatCompatKeysForInsertion(suggestion.compatKeys)}\n` +
+              `4. Save and run /reload.\n\n` +
+              compatResult,
+              "warning",
+            );
+          } else {
+            cmdCtx.ui.notify(
+              `❌ Non-interactive terminal detected. Auto-fix requires UI confirmation.\n` +
+              `Edit ${getModelsJsonDisplayPath()} manually and run /reload.`,
+              "warning",
+            );
+          }
+          return;
+        }
+
+        // Read the models.json file
+        let originalText: string;
+        try {
+          originalText = await readFile(MODELS_JSON_PATH, "utf8");
+        } catch {
+          cmdCtx.ui.notify(`❌ Could not read ${MODELS_JSON_PATH}. File may not exist.`, "error");
+          return;
+        }
+
+        // Locate the model entry
+        const location = locateModelInJsonc(originalText, suggestion.providerLabel, suggestion.modelId);
+        if (!location) {
+          cmdCtx.ui.notify(
+            `❌ Could not locate model "${suggestion.modelId}" in ${getModelsJsonDisplayPath()}.\n` +
+            `The JSONC scanner could not confidently find the target entry.\n` +
+            `Manual edit required: open the file, find providers["${suggestion.providerLabel}"] -> models, and add:\n` +
+            `${formatCompatKeysForInsertion(suggestion.compatKeys)}\n` +
+            `Then run /reload.`,
+            "warning",
+          );
+          return;
+        }
+
+        // Compose the modified text
+        const modifiedText = composeFixInsertion(originalText, location, suggestion.compatKeys);
+
+        // Self-check
+        const checkError = selfCheckFix(originalText, modifiedText, suggestion.providerLabel, suggestion.modelId, suggestion.compatKeys);
+        if (checkError !== null) {
+          cmdCtx.ui.notify(
+            `❌ Self-check failed before write: ${checkError}\n` +
+            `No changes were made. Manual edit required.`,
+            "error",
+          );
+          return;
+        }
+
+        // Build preview snippet
+        const keysPreview = Object.entries(suggestion.compatKeys)
+          .map(([k, v]) => `    ${k}: ${JSON.stringify(v)}`)
+          .join("\n");
+        const placementDesc = location.compatObjectBrace >= 0
+          ? `existing "compat" object for ${suggestion.providerLabel}/${suggestion.modelId}`
+          : `new "compat" object in ${suggestion.providerLabel}/${suggestion.modelId}`;
+
+        const ts = backupTimestamp();
+        const backupPath = `${MODELS_JSON_PATH}.backup-cache-optimizer-${ts}`;
+
+        const previewLines = [
+          `📝 Preview of changes to ${getModelsJsonDisplayPath()}:`,
+          ``,
+          `Location: providers["${suggestion.providerLabel}"] -> models -> "${suggestion.modelId}" -> ${placementDesc}`,
+          `Keys to insert:`, 
+          keysPreview,
+          ``, 
+          `⚠️  Risk notice:`,
+          `  1. This change affects ALL sessions using the "${suggestion.providerLabel}" provider/channel.`,
+          `  2. A timestamped backup will be written to: ${backupPath}`,
+          `  3. You must restart Pi / run /reload for the change to take effect.`,
+          `  4. If the file contains comments or unusual formatting, please verify the result after write.`,
+          ``, 
+          `Apply these changes?`,
+        ];
+
+        const confirmed = await cmdCtx.ui.confirm("Cache Optimizer — Fix", previewLines.join("\n"));
+        if (!confirmed) {
+          cmdCtx.ui.notify("No changes were made. Canceled by user.", "info");
+          return;
+        }
+
+        // Write: backup → temp + rename → self-check again
+        try {
+          // Backup
+          await copyFile(MODELS_JSON_PATH, backupPath);
+
+          // Atomic write
+          const tempPath = `${MODELS_JSON_PATH}.${process.pid}.${Date.now()}.fix.tmp`;
+          await writeFile(tempPath, modifiedText, "utf8");
+          await rename(tempPath, MODELS_JSON_PATH);
+
+          // Post-write self-check (read back)
+          const writtenText = await readFile(MODELS_JSON_PATH, "utf8");
+          const postCheckError = selfCheckFix(originalText, writtenText, suggestion.providerLabel, suggestion.modelId, suggestion.compatKeys);
+          if (postCheckError !== null) {
+            // Restore from backup
+            await copyFile(backupPath, MODELS_JSON_PATH);
+            cmdCtx.ui.notify(
+              `❌ Post-write self-check failed: ${postCheckError}\n` +
+              `The backup at ${backupPath} has been restored. No changes applied.`,
+              "error",
+            );
+            return;
+          }
+
+          cmdCtx.ui.notify(
+            `✅ Fix applied to ${getModelsJsonDisplayPath()}.\n` +
+            `Backup saved to: ${backupPath}\n` +
+            `Run /reload or restart Pi for the change to take effect.`,
+            "info",
+          );
+        } catch (writeError) {
+          cmdCtx.ui.notify(
+            `❌ Write failed: ${writeError instanceof Error ? writeError.message : String(writeError)}\n` +
+            `Backup may be at: ${backupPath}`,
+            "error",
+          );
+        }
       } else {
         // Try interactive selection menu when UI supports it
         if (cmdCtx.hasUI) {
@@ -4427,6 +5430,7 @@ export default function (pi: ExtensionAPI) {
             "Doctor — Show cache configuration",
             "Stats — Show cache stats and trend",
             "Compat — Show compat suggestion",
+            "Fix — Auto-fix compat issues (writes models.json)",
             "Reset — Reset local session stats",
             "Cancel",
           ];
@@ -4478,7 +5482,7 @@ export default function (pi: ExtensionAPI) {
                 cmdCtx.ui.notify(compatResult, "warning");
               } else {
                 cmdCtx.ui.notify(
-                  isDeepSeekCompatCheckApplicable(model) || isCompatCheckApplicable(model)
+                  isAdaptiveThinkingCompatApplicable(model) || isDeepSeekCompatCheckApplicable(model) || isCompatCheckApplicable(model)
                     ? "✅ Compat fully configured."
                     : getCompatCheckNotApplicableLines(model).join("\n"),
                   "info",
@@ -4486,6 +5490,100 @@ export default function (pi: ExtensionAPI) {
               }
             }
           } else if (choice === menuOptions[5]) {
+            // Fix — auto-fix compat issues
+            if (!model) {
+              cmdCtx.ui.notify("No active model selected. Select a model first with /model or pi --model.", "warning");
+              return;
+            }
+            const suggestion = buildFixSuggestion(model);
+            if (!suggestion) {
+              const key = modelKey(model);
+              cmdCtx.ui.notify(`✅ Nothing to fix for "${key}". Compat already configured.`, "info");
+              return;
+            }
+
+            // Read models.json
+            let originalText: string;
+            try {
+              originalText = await readFile(MODELS_JSON_PATH, "utf8");
+            } catch {
+              cmdCtx.ui.notify(`❌ Could not read ${MODELS_JSON_PATH}. File may not exist.`, "error");
+              return;
+            }
+
+            const location = locateModelInJsonc(originalText, suggestion.providerLabel, suggestion.modelId);
+            if (!location) {
+              cmdCtx.ui.notify(
+                `❌ Could not locate model "${suggestion.modelId}" in ${getModelsJsonDisplayPath()}.\n` +
+                `Manual edit required: open the file and add:\n` +
+                `${formatCompatKeysForInsertion(suggestion.compatKeys)}\n` +
+                `Then run /reload.`,
+                "warning",
+              );
+              return;
+            }
+
+            const modifiedText = composeFixInsertion(originalText, location, suggestion.compatKeys);
+            const checkError = selfCheckFix(originalText, modifiedText, suggestion.providerLabel, suggestion.modelId, suggestion.compatKeys);
+            if (checkError !== null) {
+              cmdCtx.ui.notify(`❌ Self-check failed: ${checkError}\nNo changes made.`, "error");
+              return;
+            }
+
+            const keysPreview = Object.entries(suggestion.compatKeys)
+              .map(([k, v]) => `    ${k}: ${JSON.stringify(v)}`)
+              .join("\n");
+            const ts = backupTimestamp();
+            const backupPath = `${MODELS_JSON_PATH}.backup-cache-optimizer-${ts}`;
+
+            const previewLines = [
+              `📝 Preview of changes to ${getModelsJsonDisplayPath()}:`,
+              `Location: providers["${suggestion.providerLabel}"] -> models -> "${suggestion.modelId}"`, 
+              `Keys to insert:`, 
+              keysPreview,
+              ``, 
+              `⚠️  Risk notice:`,
+              `  1. This change affects ALL sessions using the "${suggestion.providerLabel}" provider/channel.`,
+              `  2. A timestamped backup will be written to: ${backupPath}`,
+              `  3. You must restart Pi / run /reload for the change to take effect.`,
+              `  4. If the file contains comments, verify the result after write.`,
+              ``, 
+              `Apply these changes?`,
+            ];
+
+            const confirmed = await cmdCtx.ui.confirm("Cache Optimizer — Fix", previewLines.join("\n"));
+            if (!confirmed) {
+              cmdCtx.ui.notify("No changes were made. Canceled by user.", "info");
+              return;
+            }
+
+            try {
+              await copyFile(MODELS_JSON_PATH, backupPath);
+              const tempPath = `${MODELS_JSON_PATH}.${process.pid}.${Date.now()}.fix.tmp`;
+              await writeFile(tempPath, modifiedText, "utf8");
+              await rename(tempPath, MODELS_JSON_PATH);
+
+              const writtenText = await readFile(MODELS_JSON_PATH, "utf8");
+              const postCheck = selfCheckFix(originalText, writtenText, suggestion.providerLabel, suggestion.modelId, suggestion.compatKeys);
+              if (postCheck !== null) {
+                await copyFile(backupPath, MODELS_JSON_PATH);
+                cmdCtx.ui.notify(`❌ Post-write check failed: ${postCheck}\nBackup restored.`, "error");
+                return;
+              }
+
+              cmdCtx.ui.notify(
+                `✅ Fix applied to ${getModelsJsonDisplayPath()}.` +
+                `\nBackup: ${backupPath}` +
+                `\nRun /reload or restart Pi for the change to take effect.`,
+                "info",
+              );
+            } catch (writeError) {
+              cmdCtx.ui.notify(
+                `❌ Write failed: ${writeError instanceof Error ? writeError.message : String(writeError)}`,
+                "error",
+              );
+            }
+          } else if (choice === menuOptions[6]) {
             if (!model) {
               cmdCtx.ui.notify("No active model selected. Select a model first with /model or pi --model.", "warning");
             } else {
@@ -4519,6 +5617,7 @@ export default function (pi: ExtensionAPI) {
         diagnosis.push("  doctor  — Show current model/provider/api/baseUrl/compat and low-hit diagnosis");
         diagnosis.push("  stats   — Show active model stats bucket and recent trend");
         diagnosis.push("  compat  — Show compat suggestion with edit location");
+        diagnosis.push("  fix     — Auto-fix compat issues (writes models.json, requires UI)");
         diagnosis.push("  reset   — Reset local session stats for current model (does not affect upstream)");
         diagnosis.push("");
         diagnosis.push(formatOptimizerRuntimeMode());
@@ -4529,7 +5628,7 @@ export default function (pi: ExtensionAPI) {
           if (missing.length > 0) {
             diagnosis.push(`⚠️  Active model "${displayKey}" missing compat: ${missing.join(", ")}`);
             diagnosis.push('Run "/cache-optimizer compat" for edit instructions.');
-          } else if (isDeepSeekCompatCheckApplicable(model) || isCompatCheckApplicable(model)) {
+          } else if (isAdaptiveThinkingCompatApplicable(model) || isDeepSeekCompatCheckApplicable(model) || isCompatCheckApplicable(model)) {
             diagnosis.push(`✅ Active model "${displayKey}": compat fully configured.`);
           } else {
             diagnosis.push(`ℹ️ Active model "${displayKey}": compat check not applicable.`);
