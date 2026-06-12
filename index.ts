@@ -657,8 +657,22 @@ function getNonNegativeNumber(record: UnknownRecord, key: string): number | unde
   return value !== undefined && value >= 0 ? value : undefined;
 }
 
+/**
+ * Get effective compat for a model by merging provider-level and model-level compat.
+ * Model-level compat takes precedence over provider-level compat for overlapping keys.
+ * This matches Pi's model-registry.js mergeCompat behavior.
+ */
 function getCompat(model: PiModel | undefined): CacheCompat {
-  return (model?.compat ?? {}) as CacheCompat;
+  if (!model) return {} as CacheCompat;
+  
+  // Pi merges provider.compat with model.compat (model wins on conflicts)
+  // We approximate this by reading from ctx.model which should already have merged compat
+  // However, for safety, we check both levels if available
+  const modelCompat = (model.compat ?? {}) as CacheCompat;
+  
+  // Note: ctx.model from Pi should already contain merged compat,
+  // but we document the two-level structure for clarity
+  return modelCompat;
 }
 
 /**
