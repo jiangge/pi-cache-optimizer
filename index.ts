@@ -4067,6 +4067,16 @@ interface ModelNodeLocation {
   compatObjectEnd: number;
   /** Indentation string to use for inserted lines (derived from surrounding context) */
   indent: string;
+  /** Offset of the provider object's opening `{` */
+  providerObjectBrace: number;
+  /** Offset of the provider object's closing `}` */
+  providerObjectEnd: number;
+  /** Offset of the provider-level compat object's opening `{`, or -1 if absent */
+  providerCompatBrace: number;
+  /** Offset of the provider-level compat object's closing `}`, or -1 if absent */
+  providerCompatEnd: number;
+  /** All model ids found in this provider's models array (for placement safety analysis) */
+  allModelIds: string[];
 }
 
 /**
@@ -4169,6 +4179,58 @@ function locateModelInJsonc(
 
   if (providerBrace < 0 || providerEndBrace < 0) return undefined;
 
+  // Scan provider object at depth 1 for a provider-level "compat" object.
+  // Depth-aware + string-aware so nested model compat objects are not confused
+  // with the provider-level one.
+  let providerCompatBrace = -1;
+  let providerCompatEnd = -1;
+  {
+    let pScan = providerBrace + 1;
+    let pDepth = 1;
+    while (pScan < providerEndBrace && pDepth > 0) {
+      const ch = clean[pScan];
+      if (ch === '"') {
+        // Read the string (key or value) fully
+        const strEnd = clean.indexOf('"', pScan + 1);
+        if (strEnd < 0) break;
+        const str = clean.slice(pScan + 1, strEnd);
+        if (pDepth === 1 && str === 'compat') {
+          // Confirm it's a key: next non-ws char must be ':'
+          let after = strEnd + 1;
+          while (after < providerEndBrace && (clean[after] === ' ' || clean[after] === '\n' || clean[after] === '\r' || clean[after] === '\t')) after++;
+          if (clean[after] === ':') {
+            after++;
+            while (after < providerEndBrace && (clean[after] === ' ' || clean[after] === '\n' || clean[after] === '\r' || clean[after] === '\t')) after++;
+            if (clean[after] === '{') {
+              providerCompatBrace = after;
+              let d = 1;
+              let s = after + 1;
+              while (s < clean.length && d > 0) {
+                if (clean[s] === '"') {
+                  const e = clean.indexOf('"', s + 1);
+                  if (e < 0) break;
+                  s = e + 1;
+                  continue;
+                }
+                if (clean[s] === '{') d++;
+                else if (clean[s] === '}') d--;
+                if (d > 0) s++;
+              }
+              providerCompatEnd = s;
+              pScan = s + 1;
+              continue;
+            }
+          }
+        }
+        pScan = strEnd + 1;
+        continue;
+      }
+      if (ch === '{' || ch === '[') pDepth++;
+      else if (ch === '}' || ch === ']') pDepth--;
+      pScan++;
+    }
+  }
+
   // Now find the `"models"` array within the provider
   const providerContent = clean.slice(providerBrace + 1, providerEndBrace);
   const modelsIdx = providerContent.indexOf('"models"');
@@ -4180,9 +4242,8 @@ function locateModelInJsonc(
   if (modelsScan >= clean.length) return undefined;
   modelsScan++; // Skip `[`
 
-  // Scan array elements to find the one with matching `"id"`
-  const modelIdJson = JSON.stringify(modelId);
-  let modelElementStart = -1;
+  // Scan ALL array elements: collect every model id, and record the target's position
+  const allModelIds: string[] = [];
   let modelBrace = -1;
   let modelEndBrace = -1;
   let compatKeyStartClean = -1;
@@ -4198,60 +4259,55 @@ function locateModelInJsonc(
     if (clean[modelsScan] !== '{') { modelsScan++; continue; }
 
     // Found a model object `{`
-    modelElementStart = modelsScan;
-    modelBrace = modelsScan;
+    const elementBrace = modelsScan;
 
-    // Find the matching closing `}` and look for `"id"` inside
+    // Find the matching closing `}` and extract this element's `"id"` at depth 1
     let depth = 1;
     let scan = modelsScan + 1;
-    let foundId = false;
-    let localCompatBrace = -1;
-    let localCompatEndBrace = -1;
+    let elementId: string | undefined;
 
     while (scan < clean.length && depth > 0) {
-      if (clean[scan] === '{') {
-        depth++;
-        if (depth === 2 && localCompatBrace < 0) {
-          // Nested object — could be the compat object. Save tentatively.
-          localCompatBrace = scan;
-        }
-      } else if (clean[scan] === '}') {
-        depth--;
-        if (depth === 1 && localCompatBrace >= 0 && localCompatEndBrace < 0) {
-          localCompatEndBrace = scan;
-        }
-      } else if (depth === 1 && !foundId) {
-        // Look for `"id":` at depth 1, then find the id value
-        if (clean[scan] === '"' && clean.slice(scan, scan + 4) === '"id"') {
+      if (clean[scan] === '"') {
+        const strEnd = clean.indexOf('"', scan + 1);
+        if (strEnd < 0) break;
+        if (depth === 1 && elementId === undefined && clean.slice(scan, scan + 4) === '"id"') {
           // Found "id" key — find the colon and the value
           let afterKey = scan + 4;
           while (afterKey < clean.length && clean[afterKey] !== ':') afterKey++;
           if (afterKey < clean.length) {
             afterKey++; // skip ':'
-            // skip whitespace
             while (afterKey < clean.length && (clean[afterKey] === ' ' || clean[afterKey] === '\n' || clean[afterKey] === '\r' || clean[afterKey] === '\t')) afterKey++;
             if (afterKey < clean.length && clean[afterKey] === '"') {
               const idStart = afterKey + 1;
               const idEnd = clean.indexOf('"', idStart);
-              if (idEnd > idStart && clean.slice(idStart, idEnd) === modelId) {
-                foundId = true;
+              if (idEnd > idStart) {
+                elementId = clean.slice(idStart, idEnd);
               }
             }
           }
         }
+        scan = strEnd + 1;
+        continue;
       }
+      if (clean[scan] === '{') depth++;
+      else if (clean[scan] === '}') depth--;
       scan++;
     }
 
-    if (foundId) {
-      modelEndBrace = scan - 1; // The `}` that closed depth to 0 (scan was incremented after it)
-      // Re-scan for compat more precisely
+    const elementEnd = scan - 1; // The `}` that closed this element
+
+    if (elementId !== undefined) {
+      allModelIds.push(elementId);
+    }
+
+    if (elementId === modelId && modelBrace < 0) {
+      // This is the target model — record its position and find its compat
+      modelBrace = elementBrace;
+      modelEndBrace = elementEnd;
       const modelContent = clean.slice(modelBrace + 1, modelEndBrace);
       const compatIdx = modelContent.indexOf('"compat"');
       if (compatIdx >= 0) {
-        // compatKeyStart in the CLEAN text is at modelBrace + 1 + compatIdx
         compatKeyStartClean = modelBrace + 1 + compatIdx;
-        // Find the `:` after "compat"
         let compatScan = compatKeyStartClean + '"compat"'.length;
         while (compatScan < clean.length && clean[compatScan] !== ':') compatScan++;
         compatScan++;
@@ -4268,7 +4324,6 @@ function locateModelInJsonc(
           compatEndBrace = cscan;
         }
       }
-      break;
     }
 
     modelsScan = scan;
@@ -4292,6 +4347,11 @@ function locateModelInJsonc(
     compatObjectBrace: compatBrace,
     compatObjectEnd: compatEndBrace,
     indent,
+    providerObjectBrace: providerBrace,
+    providerObjectEnd: providerEndBrace,
+    providerCompatBrace,
+    providerCompatEnd,
+    allModelIds,
   };
 }
 
@@ -4336,92 +4396,149 @@ function deepEqualIgnoringKeys(a: unknown, b: unknown, extraKeys: string[]): boo
  *
  * Uses the raw original text; only the inserted/compat region changes.
  */
+/**
+ * Compat keys that describe CHANNEL capabilities (routing, endpoint features).
+ * These are always safe at the provider level because they do not change
+ * per-model request semantics.
+ */
+const PROVIDER_LEVEL_SAFE_COMPAT_KEYS = new Set<string>([
+  "sendSessionAffinityHeaders",
+  "sendSessionIdHeader",
+  "supportsLongCacheRetention",
+]);
+
+function syntheticModelForId(providerLabel: string, id: string): PiModel {
+  return { provider: providerLabel, id, name: id } as PiModel;
+}
+
+/**
+ * Decide whether the fix should write provider-level or model-level compat.
+ *
+ * Strategy (auto-detect, prefer provider level when safe):
+ * - Channel-capability keys (session affinity / long retention) are always
+ *   provider-safe.
+ * - Model-behavior keys (forceAdaptiveThinking, thinkingFormat, ...) are
+ *   provider-safe ONLY when every sibling model in the provider also matches
+ *   the same detection (all adaptive-generation / all DeepSeek-like).
+ * - Single-model providers: provider level is equivalent — prefer it.
+ * - Any unsafe key → fall back to model level (single write, smallest blast radius).
+ */
+function decideFixPlacement(
+  compatKeys: Record<string, unknown>,
+  providerLabel: string,
+  allModelIds: string[],
+): { placement: "provider" | "model"; reason: string } {
+  const siblings = allModelIds.filter(Boolean);
+
+  if (siblings.length <= 1) {
+    return {
+      placement: "provider",
+      reason: "this provider has only one model — provider-level compat is equivalent and easier to maintain",
+    };
+  }
+
+  const unsafeKeys: string[] = [];
+  for (const key of Object.keys(compatKeys)) {
+    if (PROVIDER_LEVEL_SAFE_COMPAT_KEYS.has(key)) continue;
+
+    if (key === "forceAdaptiveThinking") {
+      const allAdaptive = siblings.every((id) => isAdaptiveGenerationModel(syntheticModelForId(providerLabel, id)));
+      if (!allAdaptive) unsafeKeys.push(key);
+      continue;
+    }
+    if (key === "thinkingFormat" || key === "requiresReasoningContentOnAssistantMessages") {
+      const allDeepSeek = siblings.every((id) => isDeepSeekLikeModel(syntheticModelForId(providerLabel, id)));
+      if (!allDeepSeek) unsafeKeys.push(key);
+      continue;
+    }
+    // Unknown model-behavior key — be conservative, keep it model-scoped.
+    unsafeKeys.push(key);
+  }
+
+  if (unsafeKeys.length === 0) {
+    return {
+      placement: "provider",
+      reason: `all ${siblings.length} models in this provider are compatible with these flags`,
+    };
+  }
+  return {
+    placement: "model",
+    reason: `${unsafeKeys.join(", ")} could break sibling models in this provider (${siblings.length} models total) — scoping to this model only`,
+  };
+}
+
 function composeFixInsertion(
   original: string,
   location: ModelNodeLocation,
   compatKeys: Record<string, unknown>,
+  placement: "provider" | "model" = "model",
 ): string {
-  if (location.compatKeyStart >= 0) {
-    // Existing compat — insert at the beginning of the compat object
-    const interiorStart = location.compatObjectBrace + 1;
-    const interiorEnd = location.compatObjectEnd;
-    const interior = original.slice(interiorStart, interiorEnd);
-    const existingInner = interior.trim();
+  // Resolve the target compat object and its container based on placement.
+  const targetCompatBrace = placement === "provider" ? location.providerCompatBrace : location.compatObjectBrace;
+  const targetCompatEnd = placement === "provider" ? location.providerCompatEnd : location.compatObjectEnd;
+  const containerBrace = placement === "provider" ? location.providerObjectBrace : location.modelObjectBrace;
 
-    // Detect indentation from existing compat content or derive from location
-    let detectedIndent = location.indent;
-    if (existingInner) {
-      const firstLineMatch = existingInner.match(/^(\s*)/);
-      if (firstLineMatch && firstLineMatch[1]) {
-        detectedIndent = firstLineMatch[1];
-      }
-    }
-
-    // Format new keys with detected indentation, sorted alphabetically for consistency
-    const keysFormatted = Object.entries(compatKeys)
+  // Helper: format the new keys as lines with the given indent, alphabetically sorted.
+  const formatKeys = (indent: string): string =>
+    Object.entries(compatKeys)
       .sort(([a], [b]) => a.localeCompare(b))
       .map(([k, v]) => {
         const val = typeof v === 'string' ? `"${v}"` : JSON.stringify(v);
-        return `${detectedIndent}${JSON.stringify(k)}: ${val}`;
+        return `${indent}${JSON.stringify(k)}: ${val}`;
       })
       .join(',\n');
 
-    // Build the new interior preserving existing content
-    let newInterior: string;
-    if (existingInner) {
-      // Check if existing content needs reformatting for alignment
-      const existingLines = interior.split('\n').filter(l => l.trim());
-      const reformattedExisting = existingLines.map(line => {
-        const trimmed = line.trim();
-        if (!trimmed) return '';
-        return `${detectedIndent}${trimmed}`;
-      }).join('\n');
-      newInterior = `\n${keysFormatted},\n${reformattedExisting}\n${detectedIndent.slice(0, -2)}`;
-    } else {
-      newInterior = `\n${keysFormatted}\n${detectedIndent.slice(0, -2)}`;
+  // Helper: line-start indentation of the line containing `offset` in `original`.
+  const lineIndentAt = (offset: number): string => {
+    let ls = original.lastIndexOf('\n', offset);
+    if (ls < 0) ls = -1;
+    const line = original.slice(ls + 1, offset);
+    const m = line.match(/^(\s*)/);
+    return m ? m[1] : '';
+  };
+
+  if (targetCompatBrace >= 0 && targetCompatEnd > targetCompatBrace) {
+    // ── Existing compat object: insert new key lines right after `{`. ──
+    // The existing interior is preserved BYTE-FOR-BYTE (no reflow, no re-indent).
+    const interiorStart = targetCompatBrace + 1;
+    const interior = original.slice(interiorStart, targetCompatEnd);
+    const hasContent = interior.trim().length > 0;
+
+    // Indent for the new key lines: copy the first existing key line's indent,
+    // else derive one level deeper than the compat brace's own line.
+    const braceLineIndent = lineIndentAt(targetCompatBrace);
+    const innerMatch = interior.match(/\r?\n([ \t]+)\S/);
+    const innerIndent = innerMatch ? innerMatch[1] : braceLineIndent + '  ';
+    const keysFormatted = formatKeys(innerIndent);
+
+    if (hasContent) {
+      // `{` + "\n<new keys>," + <original interior untouched> + `}`
+      return original.slice(0, interiorStart) + `\n${keysFormatted},` + original.slice(interiorStart);
     }
-
-    return original.slice(0, interiorStart) + newInterior + original.slice(interiorEnd);
+    // Empty compat `{}` (or whitespace only): write keys + put `}` back on its own line.
+    return original.slice(0, interiorStart) + `\n${keysFormatted}\n${braceLineIndent}` + original.slice(targetCompatEnd);
   }
 
-  // No existing compat — insert after model `{`, before any existing content.
-  // Derive the model-level indentation from the original model `{` line.
-  let modelLineStart = original.lastIndexOf('\n', location.modelObjectBrace);
-  if (modelLineStart < 0) modelLineStart = 0;
-  const modelLine = original.slice(modelLineStart, location.modelObjectBrace);
-  const modelIndentMatch = modelLine.match(/^(\s*)/);
-  const modelIndent = modelIndentMatch ? modelIndentMatch[1] : '';
-  
-  // Detect indentation style (spaces vs tabs, width) from surrounding content
-  const afterBrace = location.modelObjectBrace + 1;
-  const nextContent = original.slice(afterBrace, afterBrace + 200);
-  const indentMatch = nextContent.match(/\n(\s+)\S/);
-  let indent = modelIndent + '  '; // default: 2 spaces
-  if (indentMatch && indentMatch[1]) {
-    const detectedIndent = indentMatch[1];
-    // Use detected indent width
-    indent = detectedIndent.startsWith('\t') ? modelIndent + '\t' : detectedIndent;
-  }
+  // ── No compat object yet: create one right after the container `{`. ──
+  // Everything after the brace (including the next line's indentation) is
+  // preserved byte-for-byte; we only prepend a complete `"compat": {...},` block.
+  const afterBrace = containerBrace + 1;
+  const suffix = original.slice(afterBrace);
 
-  // Find insertion point, preserving any existing newline/whitespace structure
-  const afterContent = original.slice(afterBrace).trimStart();
-  const skipWs = original.length - afterBrace - afterContent.length;
-  const insertionPoint = afterBrace + skipWs;
+  // Key indent: copy the first sibling key line's indent from the suffix,
+  // else one level deeper than the container brace's line.
+  const containerLineIndent = lineIndentAt(containerBrace);
+  const siblingMatch = suffix.match(/^\r?\n([ \t]+)\S/);
+  const keyIndent = siblingMatch ? siblingMatch[1] : containerLineIndent + '  ';
 
-  const prefix = original.slice(0, insertionPoint);
-  const suffix = original.slice(insertionPoint);
-  
-  // Format compat keys, sorted alphabetically for consistency
-  const compatJson = Object.entries(compatKeys)
-    .sort(([a], [b]) => a.localeCompare(b))
-    .map(([k, v]) => {
-      const val = typeof v === 'string' ? `"${v}"` : JSON.stringify(v);
-      return `${indent}${JSON.stringify(k)}: ${val}`;
-    })
-    .join(',\n');
-  const compatBlock = `\n${modelIndent}"compat": {\n${compatJson}\n${modelIndent}},\n`;
+  // One more level for keys inside compat: reuse the file's own indent unit.
+  const unit = keyIndent.startsWith(containerLineIndent) && keyIndent.length > containerLineIndent.length
+    ? keyIndent.slice(containerLineIndent.length)
+    : '  ';
+  const innerIndent = keyIndent + unit;
 
-  return prefix + compatBlock + suffix;
+  const compatBlock = `\n${keyIndent}"compat": {\n${formatKeys(innerIndent)}\n${keyIndent}},`;
+  return original.slice(0, afterBrace) + compatBlock + suffix;
 }
 
 /**
@@ -4467,19 +4584,27 @@ function selfCheckFix(
       return `Modified file: model "${modelId}" not found in provider`;
     }
     
-    // Step 5: Validate compat object exists and is correct type
-    const modCompat = targetModel.compat;
-    if (!modCompat || typeof modCompat !== 'object' || Array.isArray(modCompat)) {
-      return `Modified file: model "${modelId}" compat is missing or not an object`;
+    // Step 5: Compute the EFFECTIVE merged compat (provider-level + model-level),
+    // mirroring Pi's mergeCompat behavior (model wins on conflicts). The fix may
+    // have written either level, so validation must check the merged result.
+    const provCompatRaw = (provider as Record<string, unknown>).compat;
+    const provCompat = (provCompatRaw && typeof provCompatRaw === 'object' && !Array.isArray(provCompatRaw))
+      ? provCompatRaw as Record<string, unknown>
+      : {};
+    const modelCompatRaw = (targetModel as Record<string, unknown>).compat;
+    if (modelCompatRaw !== undefined && (typeof modelCompatRaw !== 'object' || modelCompatRaw === null || Array.isArray(modelCompatRaw))) {
+      return `Modified file: model "${modelId}" compat is not an object`;
     }
+    const mdlCompat = (modelCompatRaw ?? {}) as Record<string, unknown>;
+    const mergedCompat: Record<string, unknown> = { ...provCompat, ...mdlCompat };
 
-    // Step 6: Validate all inserted keys are present with correct values
+    // Step 6: Validate all inserted keys are effective in the merged compat
     for (const [k, v] of Object.entries(compatKeys)) {
-      if (!(k in modCompat)) {
-        return `Modified file: compat.${k} not found (insertion failed)`;
+      if (!(k in mergedCompat)) {
+        return `Modified file: compat.${k} not found at provider or model level (insertion failed)`;
       }
-      if (modCompat[k] !== v) {
-        return `Modified file: compat.${k} has wrong value: expected ${JSON.stringify(v)}, got ${JSON.stringify(modCompat[k])}`;
+      if (mergedCompat[k] !== v) {
+        return `Modified file: effective compat.${k} has wrong value: expected ${JSON.stringify(v)}, got ${JSON.stringify(mergedCompat[k])}`;
       }
     }
     
@@ -4778,6 +4903,7 @@ export const __internals_for_tests = {
   locateModelInJsonc,
   composeFixInsertion,
   selfCheckFix,
+  decideFixPlacement,
   deepEqualIgnoringKeys,
   formatCompatKeysForInsertion,
   backupTimestamp,
@@ -5388,8 +5514,10 @@ export default function (pi: ExtensionAPI) {
           return;
         }
 
-        // Compose the modified text
-        const modifiedText = composeFixInsertion(originalText, location, suggestion.compatKeys);
+        // Compose the modified text — auto-detect the best placement level:
+        // provider level (channel-wide) when safe for all sibling models, else model level.
+        const decision = decideFixPlacement(suggestion.compatKeys, suggestion.providerLabel, location.allModelIds);
+        const modifiedText = composeFixInsertion(originalText, location, suggestion.compatKeys, decision.placement);
 
         // Self-check
         const checkError = selfCheckFix(originalText, modifiedText, suggestion.providerLabel, suggestion.modelId, suggestion.compatKeys);
@@ -5406,22 +5534,29 @@ export default function (pi: ExtensionAPI) {
         const keysPreview = Object.entries(suggestion.compatKeys)
           .map(([k, v]) => `    ${k}: ${JSON.stringify(v)}`)
           .join("\n");
-        const placementDesc = location.compatObjectBrace >= 0
-          ? `existing "compat" object for ${suggestion.providerLabel}/${suggestion.modelId}`
-          : `new "compat" object in ${suggestion.providerLabel}/${suggestion.modelId}`;
+        const targetHasCompat = decision.placement === "provider" ? location.providerCompatBrace >= 0 : location.compatObjectBrace >= 0;
+        const placementDesc = targetHasCompat ? `existing "compat" object` : `new "compat" object`;
+        const locationDesc = decision.placement === "provider"
+          ? `providers["${suggestion.providerLabel}"] -> compat (provider level, ${placementDesc})`
+          : `providers["${suggestion.providerLabel}"] -> models -> "${suggestion.modelId}" -> compat (model level, ${placementDesc})`;
 
         const ts = backupTimestamp();
         const backupPath = `${MODELS_JSON_PATH}.backup-cache-optimizer-${ts}`;
 
+        const scopeRiskLine = decision.placement === "provider"
+          ? `  1. This change applies to ALL ${location.allModelIds.length || 1} model(s) in the "${suggestion.providerLabel}" provider, across all sessions.`
+          : `  1. This change affects ALL sessions using the "${suggestion.providerLabel}" provider/channel (scoped to model "${suggestion.modelId}").`;
+
         const previewLines = [
           `📝 Preview of changes to ${getModelsJsonDisplayPath()}:`,
           ``,
-          `Location: providers["${suggestion.providerLabel}"] -> models -> "${suggestion.modelId}" -> ${placementDesc}`,
+          `Location: ${locationDesc}`,
+          `Placement: ${decision.placement} level — ${decision.reason}`,
           `Keys to insert:`, 
           keysPreview,
           ``, 
           `⚠️  Risk notice:`,
-          `  1. This change affects ALL sessions using the "${suggestion.providerLabel}" provider/channel.`,
+          scopeRiskLine,
           `  2. A timestamped backup will be written to: ${backupPath}`,
           `  3. You must restart Pi / run /reload for the change to take effect.`,
           `  4. If the file contains comments or unusual formatting, please verify the result after write.`,
@@ -5574,7 +5709,8 @@ export default function (pi: ExtensionAPI) {
               return;
             }
 
-            const modifiedText = composeFixInsertion(originalText, location, suggestion.compatKeys);
+            const menuDecision = decideFixPlacement(suggestion.compatKeys, suggestion.providerLabel, location.allModelIds);
+            const modifiedText = composeFixInsertion(originalText, location, suggestion.compatKeys, menuDecision.placement);
             const checkError = selfCheckFix(originalText, modifiedText, suggestion.providerLabel, suggestion.modelId, suggestion.compatKeys);
             if (checkError !== null) {
               cmdCtx.ui.notify(`❌ Self-check failed: ${checkError}\nNo changes made.`, "error");
@@ -5587,14 +5723,22 @@ export default function (pi: ExtensionAPI) {
             const ts = backupTimestamp();
             const backupPath = `${MODELS_JSON_PATH}.backup-cache-optimizer-${ts}`;
 
+            const menuLocationDesc = menuDecision.placement === "provider"
+              ? `providers["${suggestion.providerLabel}"] -> compat (provider level)`
+              : `providers["${suggestion.providerLabel}"] -> models -> "${suggestion.modelId}" -> compat (model level)`;
+            const menuScopeRiskLine = menuDecision.placement === "provider"
+              ? `  1. This change applies to ALL ${location.allModelIds.length || 1} model(s) in the "${suggestion.providerLabel}" provider, across all sessions.`
+              : `  1. This change affects ALL sessions using the "${suggestion.providerLabel}" provider/channel (scoped to model "${suggestion.modelId}").`;
+
             const previewLines = [
               `📝 Preview of changes to ${getModelsJsonDisplayPath()}:`,
-              `Location: providers["${suggestion.providerLabel}"] -> models -> "${suggestion.modelId}"`, 
+              `Location: ${menuLocationDesc}`,
+              `Placement: ${menuDecision.placement} level — ${menuDecision.reason}`,
               `Keys to insert:`, 
               keysPreview,
               ``, 
               `⚠️  Risk notice:`,
-              `  1. This change affects ALL sessions using the "${suggestion.providerLabel}" provider/channel.`,
+              menuScopeRiskLine,
               `  2. A timestamped backup will be written to: ${backupPath}`,
               `  3. You must restart Pi / run /reload for the change to take effect.`,
               `  4. If the file contains comments, verify the result after write.`,
