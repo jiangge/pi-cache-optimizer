@@ -29,6 +29,7 @@
 - 在 Pi / provider compat 支持时请求长缓存保留。
 - 对 `openai-completions` / `openai-responses` 请求，在没有有效 key 时使用 Pi session id 补 `prompt_cache_key`。
 - 对缺少缓存 / session-affinity compat 的第三方 OpenAI-compatible 代理给出一次性提醒。
+- 检测 Anthropic adaptive thinking 模型（opus-4.6+、sonnet-4.6+、fable-5+）是否缺少 `forceAdaptiveThinking: true` compat。
 - 为支持的模型家族显示按 session 隔离的底部缓存统计。
 
 缓存是 provider 侧的 best-effort 行为。第三方代理仍可能隐藏缓存 usage、拒绝不支持的参数，或把请求路由到多个上游。
@@ -58,6 +59,7 @@ pi remove npm:pi-deepseek-cache-optimizer && pi install npm:pi-cache-optimizer
 | `/cache-optimizer compat` | 对当前模型显示可复制的 compat 建议（如适用）。 |
 | `/cache-optimizer stats` | 显示当前模型今天的 session-scoped 统计和近期趋势。 |
 | `/cache-optimizer reset` | 只重置当前 session + 当前模型的本地统计；不会修改上游 provider 缓存。 |
+| `/cache-optimizer fix` | 为当前模型自动修复安全的 compat 问题（adaptive thinking、DeepSeek reasoning、OpenAI proxy session affinity）。展示预览 + 风险提示，需要用户确认。**仅在用户明确批准后才修改 `models.json`。** |
 
 `enable` / `disable` 是当前进程内开关。若要持久关闭某些能力，请使用下面的环境变量。
 
@@ -99,7 +101,74 @@ LiteLLM / OneAPI / NewAPI / 类 OpenRouter 渠道等第三方 `openai-completion
 - 如果出现 `400 Unsupported parameter: prompt_cache_retention`，请为该渠道移除 / 避免 `supportsLongCacheRetention`；如支持，可保留 `sendSessionAffinityHeaders`。
 - 使用 `/cache-optimizer compat` 或 `/cache-optimizer doctor` 查看当前模型的具体建议。
 - 对 DeepSeek 模型，Pi Mono 指南期望在支持时同时设置 `compat.requiresReasoningContentOnAssistantMessages: true` 和 `compat.thinkingFormat: "deepseek"`，再配合缓存 / session-affinity 相关 compat。
-- 本扩展只给建议，不会修改 `models.json`。
+- 本扩展的 `doctor` 和 `compat` 命令只给建议，不会修改 `models.json`。
+
+## Anthropic adaptive thinking 模型
+
+Claude 从 opus-4.6 / sonnet-4.6 / fable-5 开始需要在 compat 中设置 `forceAdaptiveThinking: true`。缺少此 flag 时，Pi 会发送旧版 thinking 格式，Anthropic 会拒绝请求。
+
+Pi 内置 catalog 已为官方模型设置此 flag。`models.json` 中覆盖这些模型的自定义渠道必须包含该 flag：
+
+```json
+{
+  "providers": {
+    "your-claude-channel": {
+      "api": "anthropic-messages",
+      "baseUrl": "https://...",
+      "apiKey": "env:YOUR_KEY",
+      "compat": {
+        "forceAdaptiveThinking": true
+      },
+      "models": [
+        { "id": "claude-opus-4-8", "name": "Claude Opus 4.8" }
+      ]
+    }
+  }
+}
+```
+
+或使用模型级 override：
+
+```json
+{
+  "providers": {
+    "your-claude-channel": {
+      "modelOverrides": {
+        "claude-opus-4-8": {
+          "compat": {
+            "forceAdaptiveThinking": true
+          }
+        }
+      }
+    }
+  }
+}
+```
+
+`/cache-optimizer doctor` 和 `/cache-optimizer compat` 会检测缺失的 flag 并显示可复制的 JSON。
+
+## 使用 `/cache-optimizer fix` 自动修复
+
+**v2.6.0+** 新增 `fix` 子命令，可自动修复安全的 compat 问题：
+
+- Anthropic adaptive thinking（`forceAdaptiveThinking: true`）
+- DeepSeek Pi Mono reasoning compat（`thinkingFormat: "deepseek"`、`requiresReasoningContentOnAssistantMessages: true`）
+- OpenAI-compatible proxy session affinity（`openai-completions` 用 `sendSessionAffinityHeaders: true`，`openai-responses` 用 `sendSessionIdHeader: true`）
+
+**范围：** 仅当前 active model。其他渠道需切换模型后再次运行 `fix`。
+
+**安全机制：**
+
+1. 显示完整变更预览（文件路径、编辑位置、要写入的 JSON、风险说明）
+2. 警告：① 修改影响使用该渠道的所有 session，② 自动备份到 `models.json.backup-cache-optimizer-<timestamp>`，③ 需重启 Pi 或 reload
+3. 使用保留注释的精确编辑器 —— 现有注释、缩进、key 顺序全部保留
+4. 需要用户明确确认（交互式提示或 `ui.select`）
+5. 原子写入（temp + rename）；写入后自我验证
+6. 如果 JSONC 扫描器无法置信定位目标，回退到手动修改指引
+
+**非交互模式：** 拒绝写入，显示手动编辑指引。
+
+**运行：** 当 active model 检测到 compat 问题时执行 `/cache-optimizer fix`。compat 已完整时，命令显示"无需修复"。
 
 ### 没有 `models.json` provider entry 的渠道
 
