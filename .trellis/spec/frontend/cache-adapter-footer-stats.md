@@ -612,7 +612,7 @@ to a control run with the noise pre-filtered).
 
 ## Forbidden patterns
 
-* Creating, backing up, overwriting, or deleting provider/model entries in `models.json`. This extension may mention `models.json` only in advisory compat text.
+* Writing `models.json` outside `/cache-optimizer fix`'s explicit preview + confirmation flow. The fix flow may create a timestamped backup and atomically replace `models.json`, but only to insert/repair safe `compat` keys or a missing `compat` object under an existing provider/model. It MUST NOT create/delete provider entries, model entries, API keys, credentials, or router slugs.
 * Reading or logging the value of `DEEPSEEK_API_KEY` (or any other API key env var).
 * Storing prompts, request payloads, response bodies, or HTTP headers in any
   on-disk file produced by this extension.
@@ -800,6 +800,9 @@ OpenAI cache 0/0 · 0M/0M tok ⚠️ compat
 DeepSeek-like models using Pi Mono guidance may also surface `⚠️ compat` when
 `requiresReasoningContentOnAssistantMessages` or `thinkingFormat: "deepseek"`
 are missing, even when the provider is otherwise not a generic proxy.
+Native Anthropic `anthropic-messages` adaptive-generation models (opus-4.6+,
+sonnet-4.6+, fable-5+) may also surface `⚠️ compat` when merged compat lacks
+`forceAdaptiveThinking: true`.
 
 Rules:
 
@@ -812,15 +815,18 @@ Rules:
   For generic OpenAI-compatible proxies this delegates to
   `describeMissingOpenAICompatibleProxyCompat`; for DeepSeek-like models it
   delegates to `describeMissingDeepSeekCompat` and includes Pi Mono reasoning
-  compat fields.
+  compat fields; for native Anthropic adaptive-generation models it delegates to
+  `describeMissingAdaptiveThinkingCompat` and includes `forceAdaptiveThinking`.
 * Official OpenAI base URLs (`api.openai.com`) never trigger the marker.
-* Custom transports (`kiro-api`, `anthropic-messages`, etc.) never trigger the marker.
+* Custom transports (`kiro-api`, `bedrock-converse-stream`, etc.) never trigger the marker.
+  `anthropic-messages` is the narrow exception above, only for adaptive-generation
+  thinking-format compatibility.
 
 ---
 
 ## Diagnostic command (`/cache-optimizer`)
 
-The extension registers a Pi command `/cache-optimizer` with six subcommands.
+The extension registers a Pi command `/cache-optimizer` with seven subcommands.
 
 ### `/cache-optimizer enable` / `/cache-optimizer disable`
 
@@ -921,6 +927,41 @@ same applicability-respecting status line (`✅ Compat fully configured.` or
 When neither compat flags are missing nor router/channel diagnostics apply, shows
 only the status line as before.
 
+### `/cache-optimizer fix`
+
+Auto-repairs safe compat issues detected for the **current active model only**.
+It covers the same safe defaults shown by doctor/compat:
+
+* Anthropic adaptive thinking: `forceAdaptiveThinking: true` for native
+  `anthropic-messages` opus-4.6+/sonnet-4.6+/fable-5+ models.
+* DeepSeek Pi Mono compat: `thinkingFormat: "deepseek"`,
+  `requiresReasoningContentOnAssistantMessages: true`, plus cache/session-affinity
+  flags that are part of the DeepSeek safe suggestion.
+* Generic OpenAI-compatible proxy affinity: `sendSessionAffinityHeaders: true`
+  when missing. It does **not** auto-enable optional generic
+  `supportsLongCacheRetention`.
+
+Safety contract:
+
+* Requires interactive UI confirmation. Non-interactive mode refuses to write and
+  shows manual edit guidance.
+* Shows a preview with the file path, provider/model edit location, JSON to write,
+  placement reason, and risk notices before writing.
+* Risk notices MUST include: the change affects all sessions using that provider/
+  channel (or all models in the provider when provider-level placement is chosen),
+  a timestamped backup path `models.json.backup-cache-optimizer-<ts>`, and the need
+  to `/reload` or restart Pi.
+* Uses a comment-preserving JSONC surgical editor. It does not stringify/rewrite the
+  full file; it locates existing provider/model/compat nodes while respecting string
+  literals, escapes, line comments, block comments, and trailing commas.
+* Writes by backup → temp file → atomic rename. Post-write self-check reparses JSONC,
+  validates effective merged compat, and verifies the original parsed structure is
+  preserved except for repaired compat keys. On post-write self-check failure, the
+  backup is restored.
+* The fix may insert/repair `compat` keys or a missing `compat` object under an
+  existing provider/model. It MUST NOT create provider entries, model entries, API
+  keys, credentials, or router slugs.
+
 ### `/cache-optimizer reset`
 
 Resets only the current Pi session's stats bucket for the active provider/model.
@@ -939,8 +980,8 @@ other Pi sessions.
 ### No arguments
 
 When the Pi UI supports it (`ctx.ui.select` available), shows an interactive
-selection menu with options: Enable, Disable, Doctor, Stats, Compat, Reset, Cancel.
-Selecting a subcommand executes the corresponding logic. Cancel closes the menu.
+selection menu with options: Enable, Disable, Doctor, Stats, Compat, Fix, Reset,
+Cancel. Selecting a subcommand executes the corresponding logic. Cancel closes the menu.
 
 In non-interactive terminals (no `ui.select`), falls back to a short text help
 listing available subcommands, runtime enabled/disabled state, and a one-line summary

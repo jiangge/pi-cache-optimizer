@@ -1612,7 +1612,7 @@ function hasEffectivePromptCacheKey(record: UnknownRecord): boolean {
   return isNonEmptyString(record.prompt_cache_key) || isNonEmptyString(record.promptCacheKey);
 }
 
-function isNonEmptyString(value: unknown): boolean {
+function isNonEmptyString(value: unknown): value is string {
   return typeof value === "string" && value.trim().length > 0;
 }
 
@@ -3121,12 +3121,15 @@ function parseCacheStats(value: unknown): CacheStats | undefined {
 
 function parsePersistedRoutedModelRef(value: unknown): PersistedRoutedModelRef | undefined {
   const record = asRecord(value);
-  if (!record || !isNonEmptyString(record.provider) || !isNonEmptyString(record.id)) return undefined;
+  const provider = record?.provider;
+  const id = record?.id;
+  const name = record?.name;
+  if (!isNonEmptyString(provider) || !isNonEmptyString(id)) return undefined;
 
   return {
-    provider: record.provider.trim(),
-    id: record.id.trim(),
-    name: isNonEmptyString(record.name) ? record.name.trim() : record.id.trim(),
+    provider: provider.trim(),
+    id: id.trim(),
+    name: isNonEmptyString(name) ? name.trim() : id.trim(),
   };
 }
 
@@ -3530,8 +3533,9 @@ function describeRouterChannelDiagnostics(model: PiModel): string[] {
     provider.includes("openrouter")
   ) {
     const compat = getCompat(model);
-    const hasOnly = !!(compat as Record<string, unknown>)["openRouterRouting"]?.only;
-    const hasOrder = !!(compat as Record<string, unknown>)["openRouterRouting"]?.order;
+    const routing = asRecord((compat as Record<string, unknown>)["openRouterRouting"]);
+    const hasOnly = !!routing?.only;
+    const hasOrder = !!routing?.order;
 
     notes.push(
       "🔀 Router/channel: OpenRouter detected. OpenRouter is a multi-provider router; " +
@@ -3566,8 +3570,9 @@ function describeRouterChannelDiagnostics(model: PiModel): string[] {
     provider.includes("vercel-ai-gateway")
   ) {
     const compat = getCompat(model);
-    const hasOnly = !!(compat as Record<string, unknown>)["vercelGatewayRouting"]?.only;
-    const hasOrder = !!(compat as Record<string, unknown>)["vercelGatewayRouting"]?.order;
+    const routing = asRecord((compat as Record<string, unknown>)["vercelGatewayRouting"]);
+    const hasOnly = !!routing?.only;
+    const hasOrder = !!routing?.order;
 
     notes.push(
       "🔀 Router/channel: Vercel AI Gateway detected. The gateway may route to different " +
@@ -4131,8 +4136,10 @@ function stripJsoncComments(text: string): string {
   let i = 0;
   while (i < text.length) {
     const ch = text[i];
+
     if (ch === '"') {
-      // String literal — copy until closing quote (handle escapes)
+      // String literal — copy byte-for-byte until the closing quote.
+      // Escaped quotes/slashes must not be mistaken for comment delimiters.
       out.push(ch);
       i++;
       while (i < text.length) {
@@ -4146,37 +4153,72 @@ function stripJsoncComments(text: string): string {
           break;
         }
       }
-    } else if (ch === '/' && i + 1 < text.length && text[i + 1] === '/') {
-      // Line comment — replace with spaces until newline
-      out.push(' ');
-      i++;
+      continue;
+    }
+
+    if (ch === '/' && i + 1 < text.length && text[i + 1] === '/') {
+      // Line comment — replace BOTH slashes and every comment byte with
+      // spaces, but leave the newline to be copied by the normal path.
+      out.push(' ', ' ');
+      i += 2;
       while (i < text.length && text[i] !== '\n') {
         out.push(' ');
         i++;
       }
-    } else if (ch === '/' && i + 1 < text.length && text[i + 1] === '*') {
-      // Block comment — replace with spaces (preserve newlines)
-      out.push(' ');
-      i++;
-      while (i + 1 < text.length) {
-        if (text[i] === '*' && text[i + 1] === '/') {
-          out.push(' ');
+      continue;
+    }
+
+    if (ch === '/' && i + 1 < text.length && text[i + 1] === '*') {
+      // Block comment — replace every byte with a space except newlines.
+      // This deliberately preserves text.length and all structural offsets.
+      out.push(' ', ' ');
+      i += 2;
+      while (i < text.length) {
+        if (text[i] === '*' && i + 1 < text.length && text[i + 1] === '/') {
+          out.push(' ', ' ');
           i += 2;
           break;
         }
-        if (text[i] === '\n') {
-          out.push('\n');
-        } else {
-          out.push(' ');
-        }
+        out.push(text[i] === '\n' ? '\n' : ' ');
         i++;
       }
-    } else {
-      out.push(ch);
-      i++;
+      continue;
     }
+
+    out.push(ch);
+    i++;
   }
   return out.join('');
+}
+
+/**
+ * Remove JSONC trailing commas from already comment-stripped text.
+ * The returned text stays length-preserving (commas become spaces), which
+ * gives JSON.parse a tolerant JSONC surface without affecting diagnostics.
+ */
+function stripJsoncTrailingCommas(text: string): string {
+  const chars = text.split("");
+  let i = 0;
+  while (i < chars.length) {
+    if (chars[i] === '"') {
+      const str = readJsonStringLiteral(text, i);
+      if (!str) break;
+      i = str.end;
+      continue;
+    }
+
+    if (chars[i] === ',') {
+      let j = i + 1;
+      while (j < chars.length && isJsonWhitespace(chars[j])) j++;
+      if (chars[j] === '}' || chars[j] === ']') chars[i] = ' ';
+    }
+    i++;
+  }
+  return chars.join('');
+}
+
+function parseJsonc(text: string): unknown {
+  return JSON.parse(stripJsoncTrailingCommas(stripJsoncComments(text)));
 }
 
 /**
@@ -4222,153 +4264,51 @@ function locateModelInJsonc(
   // Clean text of comments first for reliable structural scanning
   const clean = stripJsoncComments(text);
 
-  // Strategy: find `"providers"` key in the root object, then find the
-  // provider key under it, then the `"models"` array, then the array
-  // element whose `"id"` matches. We map via the stripped text (comment
-  // removal replaces comment chars with spaces, preserving offsets).
+  // Strategy: find `"providers"` as a direct root key, then find the
+  // provider key under it, then the provider's direct `"models"` key.
+  // All object/value traversal uses the string-aware primitives above so
+  // braces, brackets, comment markers, or escaped quotes inside strings do
+  // not corrupt offsets.
+  const rootBrace = skipJsonWhitespace(clean, 0);
+  if (clean[rootBrace] !== "{") return undefined;
 
-  const pos = clean.indexOf('"providers"');
-  if (pos < 0) return undefined;
+  const providersKey = findJsonObjectKey(clean, rootBrace, "providers");
+  if (!providersKey) return undefined;
+  const providersBrace = skipJsonWhitespace(clean, providersKey.valueStart);
+  if (clean[providersBrace] !== "{") return undefined;
+  const providersEnd = findMatchingBracket(clean, providersBrace);
+  if (providersEnd === undefined) return undefined;
 
-  // Scan from `"providers"` to find the `{` of the provider block
-  let cur = pos + '"providers"'.length;
-  // Skip `:`, whitespace, etc.
-  while (cur < clean.length && clean[cur] !== '{') cur++;
-  if (cur >= clean.length) return undefined;
-  cur++; // Skip `{`
+  const providerKey = findJsonObjectKey(clean, providersBrace, providerLabel);
+  if (!providerKey || providerKey.keyStart > providersEnd) return undefined;
+  const providerBrace = skipJsonWhitespace(clean, providerKey.valueStart);
+  if (clean[providerBrace] !== "{") return undefined;
+  const providerEndBrace = findMatchingBracket(clean, providerBrace);
+  if (providerEndBrace === undefined || providerEndBrace > providersEnd) return undefined;
 
-  // Now scan key-value pairs in the providers object to find the matching providerLabel
-  const providerLabelJson = JSON.stringify(providerLabel);
-  let providerBrace = -1;
-  let providerEndBrace = -1;
-
-  while (cur < clean.length) {
-    // Skip whitespace/comments
-    while (cur < clean.length && (clean[cur] === ' ' || clean[cur] === '\n' || clean[cur] === '\r' || clean[cur] === '\t')) cur++;
-    if (cur >= clean.length) break;
-    if (clean[cur] === '}') break; // End of providers
-
-    // Try to read a string key
-    if (clean[cur] !== '"') { cur++; continue; }
-    const keyEnd = clean.indexOf('"', cur + 1);
-    if (keyEnd < 0) return undefined;
-    const key = clean.slice(cur + 1, keyEnd);
-    cur = keyEnd + 1;
-
-    // Skip `:`
-    while (cur < clean.length && clean[cur] !== ':') cur++;
-    if (cur >= clean.length) return undefined;
-    cur++; // Skip `:`
-    while (cur < clean.length && (clean[cur] === ' ' || clean[cur] === '\n' || clean[cur] === '\r' || clean[cur] === '\t')) cur++;
-
-    if (key === providerLabel) {
-      // Found — expect `{` starting the provider object
-      if (clean[cur] !== '{') return undefined;
-      providerBrace = cur;
-      // Find matching closing `}` for the provider object (track depth)
-      let depth = 1;
-      let scan = cur + 1;
-      while (scan < clean.length && depth > 0) {
-        if (clean[scan] === '{') depth++;
-        else if (clean[scan] === '}') depth--;
-        if (depth > 0) scan++;
-      }
-      providerEndBrace = scan;
-      break;
-    }
-
-    // Skip the value
-    if (clean[cur] === '{') {
-      let depth = 1;
-      cur++;
-      while (cur < clean.length && depth > 0) {
-        if (clean[cur] === '{') depth++;
-        else if (clean[cur] === '}') depth--;
-        cur++;
-      }
-    } else if (clean[cur] === '[') {
-      let depth = 1;
-      cur++;
-      while (cur < clean.length && depth > 0) {
-        if (clean[cur] === '[') depth++;
-        else if (clean[cur] === ']') depth--;
-        cur++;
-      }
-    } else if (clean[cur] === '"') {
-      const strEnd = clean.indexOf('"', cur + 1);
-      if (strEnd < 0) return undefined;
-      cur = strEnd + 1;
-    } else {
-      // Number, boolean, etc.
-      while (cur < clean.length && clean[cur] !== ',' && clean[cur] !== '}' && clean[cur] !== '\n') cur++;
-    }
-    // Skip comma
-    if (cur < clean.length && clean[cur] === ',') cur++;
-  }
-
-  if (providerBrace < 0 || providerEndBrace < 0) return undefined;
-
-  // Scan provider object at depth 1 for a provider-level "compat" object.
-  // Depth-aware + string-aware so nested model compat objects are not confused
-  // with the provider-level one.
+  // Provider-level compat is a direct provider child only. Nested model
+  // compat objects are intentionally skipped whole by findJsonObjectKey.
   let providerCompatBrace = -1;
   let providerCompatEnd = -1;
-  {
-    let pScan = providerBrace + 1;
-    let pDepth = 1;
-    while (pScan < providerEndBrace && pDepth > 0) {
-      const ch = clean[pScan];
-      if (ch === '"') {
-        // Read the string (key or value) fully
-        const strEnd = clean.indexOf('"', pScan + 1);
-        if (strEnd < 0) break;
-        const str = clean.slice(pScan + 1, strEnd);
-        if (pDepth === 1 && str === 'compat') {
-          // Confirm it's a key: next non-ws char must be ':'
-          let after = strEnd + 1;
-          while (after < providerEndBrace && (clean[after] === ' ' || clean[after] === '\n' || clean[after] === '\r' || clean[after] === '\t')) after++;
-          if (clean[after] === ':') {
-            after++;
-            while (after < providerEndBrace && (clean[after] === ' ' || clean[after] === '\n' || clean[after] === '\r' || clean[after] === '\t')) after++;
-            if (clean[after] === '{') {
-              providerCompatBrace = after;
-              let d = 1;
-              let s = after + 1;
-              while (s < clean.length && d > 0) {
-                if (clean[s] === '"') {
-                  const e = clean.indexOf('"', s + 1);
-                  if (e < 0) break;
-                  s = e + 1;
-                  continue;
-                }
-                if (clean[s] === '{') d++;
-                else if (clean[s] === '}') d--;
-                if (d > 0) s++;
-              }
-              providerCompatEnd = s;
-              pScan = s + 1;
-              continue;
-            }
-          }
-        }
-        pScan = strEnd + 1;
-        continue;
+  const providerCompatKey = findJsonObjectKey(clean, providerBrace, "compat");
+  if (providerCompatKey && providerCompatKey.keyStart < providerEndBrace) {
+    const brace = skipJsonWhitespace(clean, providerCompatKey.valueStart);
+    if (clean[brace] === "{") {
+      const end = findMatchingBracket(clean, brace);
+      if (end !== undefined && end <= providerEndBrace) {
+        providerCompatBrace = brace;
+        providerCompatEnd = end;
       }
-      if (ch === '{' || ch === '[') pDepth++;
-      else if (ch === '}' || ch === ']') pDepth--;
-      pScan++;
     }
   }
 
-  // Now find the `"models"` array within the provider
-  const providerContent = clean.slice(providerBrace + 1, providerEndBrace);
-  const modelsIdx = providerContent.indexOf('"models"');
-  if (modelsIdx < 0) return undefined;
+  const modelsKey = findJsonObjectKey(clean, providerBrace, "models");
+  if (!modelsKey || modelsKey.keyStart > providerEndBrace) return undefined;
 
-  // Find the `[` of the models array
-  let modelsScan = providerBrace + 1 + modelsIdx + '"models"'.length;
-  while (modelsScan < clean.length && clean[modelsScan] !== '[') modelsScan++;
-  if (modelsScan >= clean.length) return undefined;
+  let modelsScan = skipJsonWhitespace(clean, modelsKey.valueStart);
+  if (clean[modelsScan] !== "[") return undefined;
+  const modelsEnd = findMatchingBracket(clean, modelsScan);
+  if (modelsEnd === undefined || modelsEnd > providerEndBrace) return undefined;
   modelsScan++; // Skip `[`
 
   // Scan ALL array elements: collect every model id, and record the target's position
@@ -4379,83 +4319,52 @@ function locateModelInJsonc(
   let compatBrace = -1;
   let compatEndBrace = -1;
 
-  while (modelsScan < clean.length) {
-    // Skip whitespace/comma
-    while (modelsScan < clean.length && (clean[modelsScan] === ' ' || clean[modelsScan] === '\n' || clean[modelsScan] === '\r' || clean[modelsScan] === '\t' || clean[modelsScan] === ',')) modelsScan++;
-    if (modelsScan >= clean.length) break;
-    if (clean[modelsScan] === ']') break; // End of array
-
-    if (clean[modelsScan] !== '{') { modelsScan++; continue; }
-
-    // Found a model object `{`
-    const elementBrace = modelsScan;
-
-    // Find the matching closing `}` and extract this element's `"id"` at depth 1
-    let depth = 1;
-    let scan = modelsScan + 1;
-    let elementId: string | undefined;
-
-    while (scan < clean.length && depth > 0) {
-      if (clean[scan] === '"') {
-        const strEnd = clean.indexOf('"', scan + 1);
-        if (strEnd < 0) break;
-        if (depth === 1 && elementId === undefined && clean.slice(scan, scan + 4) === '"id"') {
-          // Found "id" key — find the colon and the value
-          let afterKey = scan + 4;
-          while (afterKey < clean.length && clean[afterKey] !== ':') afterKey++;
-          if (afterKey < clean.length) {
-            afterKey++; // skip ':'
-            while (afterKey < clean.length && (clean[afterKey] === ' ' || clean[afterKey] === '\n' || clean[afterKey] === '\r' || clean[afterKey] === '\t')) afterKey++;
-            if (afterKey < clean.length && clean[afterKey] === '"') {
-              const idStart = afterKey + 1;
-              const idEnd = clean.indexOf('"', idStart);
-              if (idEnd > idStart) {
-                elementId = clean.slice(idStart, idEnd);
-              }
-            }
-          }
-        }
-        scan = strEnd + 1;
-        continue;
-      }
-      if (clean[scan] === '{') depth++;
-      else if (clean[scan] === '}') depth--;
-      scan++;
+  while (modelsScan < modelsEnd) {
+    modelsScan = skipJsonWhitespace(clean, modelsScan);
+    if (clean[modelsScan] === ',') {
+      modelsScan++;
+      continue;
     }
+    if (modelsScan >= modelsEnd || clean[modelsScan] === ']') break;
+    if (clean[modelsScan] !== '{') return undefined;
 
-    const elementEnd = scan - 1; // The `}` that closed this element
+    const elementBrace = modelsScan;
+    const elementEnd = findMatchingBracket(clean, elementBrace);
+    if (elementEnd === undefined || elementEnd > modelsEnd) return undefined;
+
+    const idKey = findJsonObjectKey(clean, elementBrace, "id");
+    let elementId: string | undefined;
+    if (idKey && idKey.keyStart < elementEnd) {
+      const idValueStart = skipJsonWhitespace(clean, idKey.valueStart);
+      const idLiteral = readJsonStringLiteral(clean, idValueStart);
+      if (idLiteral && idLiteral.end <= elementEnd) {
+        elementId = idLiteral.value;
+      }
+    }
 
     if (elementId !== undefined) {
       allModelIds.push(elementId);
     }
 
     if (elementId === modelId && modelBrace < 0) {
-      // This is the target model — record its position and find its compat
       modelBrace = elementBrace;
       modelEndBrace = elementEnd;
-      const modelContent = clean.slice(modelBrace + 1, modelEndBrace);
-      const compatIdx = modelContent.indexOf('"compat"');
-      if (compatIdx >= 0) {
-        compatKeyStartClean = modelBrace + 1 + compatIdx;
-        let compatScan = compatKeyStartClean + '"compat"'.length;
-        while (compatScan < clean.length && clean[compatScan] !== ':') compatScan++;
-        compatScan++;
-        while (compatScan < clean.length && (clean[compatScan] === ' ' || clean[compatScan] === '\n' || clean[compatScan] === '\r' || clean[compatScan] === '\t')) compatScan++;
-        if (compatScan < clean.length && clean[compatScan] === '{') {
-          compatBrace = compatScan;
-          let cdepth = 1;
-          let cscan = compatScan + 1;
-          while (cscan < clean.length && cdepth > 0) {
-            if (clean[cscan] === '{') cdepth++;
-            else if (clean[cscan] === '}') cdepth--;
-            if (cdepth > 0) cscan++;
+
+      const compatKey = findJsonObjectKey(clean, modelBrace, "compat");
+      if (compatKey && compatKey.keyStart < modelEndBrace) {
+        compatKeyStartClean = compatKey.keyStart;
+        const brace = skipJsonWhitespace(clean, compatKey.valueStart);
+        if (clean[brace] === "{") {
+          const end = findMatchingBracket(clean, brace);
+          if (end !== undefined && end <= modelEndBrace) {
+            compatBrace = brace;
+            compatEndBrace = end;
           }
-          compatEndBrace = cscan;
         }
       }
     }
 
-    modelsScan = scan;
+    modelsScan = elementEnd + 1;
   }
 
   if (modelBrace < 0 || modelEndBrace < 0) return undefined;
@@ -4596,6 +4505,48 @@ function decideFixPlacement(
   };
 }
 
+function findExistingCompatKeysInJsonc(
+  original: string,
+  compatBrace: number,
+  compatEnd: number,
+  keys: string[],
+): string[] {
+  if (compatBrace < 0 || compatEnd <= compatBrace) return [];
+  const clean = stripJsoncComments(original);
+  return keys.filter((key) => {
+    const found = findJsonObjectKey(clean, compatBrace, key);
+    return !!found && found.keyStart < compatEnd;
+  });
+}
+
+function chooseFixPlacement(
+  original: string,
+  location: ModelNodeLocation,
+  compatKeys: Record<string, unknown>,
+  providerLabel: string,
+): { placement: "provider" | "model"; reason: string } {
+  const decision = decideFixPlacement(compatKeys, providerLabel, location.allModelIds);
+  const existingModelKeys = findExistingCompatKeysInJsonc(
+    original,
+    location.compatObjectBrace,
+    location.compatObjectEnd,
+    Object.keys(compatKeys),
+  );
+
+  // Provider-level writes cannot override a model-level compat key because Pi's
+  // merge order is provider.compat then model.compat. If the active model already
+  // has one of the keys we need to repair (e.g. thinkingFormat: "legacy"), write
+  // at model level even when the key would otherwise be provider-safe.
+  if (decision.placement === "provider" && existingModelKeys.length > 0) {
+    return {
+      placement: "model",
+      reason: `model-level compat already contains ${existingModelKeys.join(", ")} — repairing the active model override directly`,
+    };
+  }
+
+  return decision;
+}
+
 function composeFixInsertion(
   original: string,
   location: ModelNodeLocation,
@@ -4607,14 +4558,12 @@ function composeFixInsertion(
   const targetCompatEnd = placement === "provider" ? location.providerCompatEnd : location.compatObjectEnd;
   const containerBrace = placement === "provider" ? location.providerObjectBrace : location.modelObjectBrace;
 
-  // Helper: format the new keys as lines with the given indent, alphabetically sorted.
-  const formatKeys = (indent: string): string =>
-    Object.entries(compatKeys)
-      .sort(([a], [b]) => a.localeCompare(b))
-      .map(([k, v]) => {
-        const val = typeof v === 'string' ? `"${v}"` : JSON.stringify(v);
-        return `${indent}${JSON.stringify(k)}: ${val}`;
-      })
+  // Helper: format key/value pairs as lines with the given indent,
+  // alphabetically sorted for stable previews and deterministic edits.
+  const sortedEntries = Object.entries(compatKeys).sort(([a], [b]) => a.localeCompare(b));
+  const formatEntries = (indent: string, entries: Array<[string, unknown]>): string =>
+    entries
+      .map(([k, v]) => `${indent}${JSON.stringify(k)}: ${JSON.stringify(v)}`)
       .join(',\n');
 
   // Helper: line-start indentation of the line containing `offset` in `original`.
@@ -4627,25 +4576,52 @@ function composeFixInsertion(
   };
 
   if (targetCompatBrace >= 0 && targetCompatEnd > targetCompatBrace) {
-    // ── Existing compat object: insert new key lines right after `{`. ──
-    // The existing interior is preserved BYTE-FOR-BYTE (no reflow, no re-indent).
+    // ── Existing compat object: insert absent keys and surgically replace
+    // direct existing keys whose value is wrong (e.g. thinkingFormat: "legacy").
+    // Unrelated interior bytes/comments/key order are preserved.
     const interiorStart = targetCompatBrace + 1;
     const interior = original.slice(interiorStart, targetCompatEnd);
     const hasContent = interior.trim().length > 0;
+    const clean = stripJsoncComments(original);
 
-    // Indent for the new key lines: copy the first existing key line's indent,
+    // Indent for inserted key lines: copy the first existing key line's indent,
     // else derive one level deeper than the compat brace's own line.
     const braceLineIndent = lineIndentAt(targetCompatBrace);
     const innerMatch = interior.match(/\r?\n([ \t]+)\S/);
     const innerIndent = innerMatch ? innerMatch[1] : braceLineIndent + '  ';
-    const keysFormatted = formatKeys(innerIndent);
 
-    if (hasContent) {
-      // `{` + "\n<new keys>," + <original interior untouched> + `}`
-      return original.slice(0, interiorStart) + `\n${keysFormatted},` + original.slice(interiorStart);
+    const edits: Array<{ start: number; end: number; text: string }> = [];
+    const missingEntries: Array<[string, unknown]> = [];
+
+    for (const [key, value] of sortedEntries) {
+      const existing = findJsonObjectKey(clean, targetCompatBrace, key);
+      if (existing && existing.keyStart < targetCompatEnd) {
+        const valueStart = skipJsonWhitespace(clean, existing.valueStart);
+        const valueEnd = skipJsonValue(clean, valueStart);
+        if (valueEnd !== undefined && valueEnd <= targetCompatEnd) {
+          const nextValue = JSON.stringify(value);
+          if (original.slice(valueStart, valueEnd) !== nextValue) {
+            edits.push({ start: valueStart, end: valueEnd, text: nextValue });
+          }
+          continue;
+        }
+      }
+      missingEntries.push([key, value]);
     }
-    // Empty compat `{}` (or whitespace only): write keys + put `}` back on its own line.
-    return original.slice(0, interiorStart) + `\n${keysFormatted}\n${braceLineIndent}` + original.slice(targetCompatEnd);
+
+    if (missingEntries.length > 0) {
+      const keysFormatted = formatEntries(innerIndent, missingEntries);
+      if (hasContent) {
+        edits.push({ start: interiorStart, end: interiorStart, text: `\n${keysFormatted},` });
+      } else {
+        edits.push({ start: interiorStart, end: targetCompatEnd, text: `\n${keysFormatted}\n${braceLineIndent}` });
+      }
+    }
+
+    // Apply later edits first so earlier offsets remain valid.
+    return edits
+      .sort((a, b) => b.start - a.start)
+      .reduce((text, edit) => text.slice(0, edit.start) + edit.text + text.slice(edit.end), original);
   }
 
   // ── No compat object yet: create one right after the container `{`. ──
@@ -4666,12 +4642,12 @@ function composeFixInsertion(
     : '  ';
   const innerIndent = keyIndent + unit;
 
-  const compatBlock = `\n${keyIndent}"compat": {\n${formatKeys(innerIndent)}\n${keyIndent}},`;
+  const compatBlock = `\n${keyIndent}"compat": {\n${formatEntries(innerIndent, sortedEntries)}\n${keyIndent}},`;
   return original.slice(0, afterBrace) + compatBlock + suffix;
 }
 
 /**
- * Self-check after compose: parse original and modified via stripJsoncComments,
+ * Self-check after compose: parse original and modified as JSONC,
  * assert target compat flags exist in the right path, and remaining structure
  * is deep-equal (ignoring the inserted keys).
  * Returns null on success, error message on failure.
@@ -4684,17 +4660,17 @@ function selfCheckFix(
   compatKeys: Record<string, unknown>,
 ): string | null {
   try {
-    // Step 1: Parse both versions (this validates JSON syntax)
-    const origParsed = JSON.parse(stripJsoncComments(original));
-    const modParsed = JSON.parse(stripJsoncComments(modified));
+    // Step 1: Parse both versions as JSONC (comments + trailing commas allowed).
+    const origParsed = parseJsonc(original);
+    const modParsed = parseJsonc(modified);
 
     // Step 2: Validate modified file has correct structure
-    const providers = modParsed?.providers;
-    if (!providers || typeof providers !== 'object') {
+    const providers = asRecord(asRecord(modParsed)?.providers);
+    if (!providers) {
       return "Modified file: providers object missing or invalid";
     }
-    const provider = providers[providerLabel];
-    if (!provider || typeof provider !== 'object') {
+    const provider = asRecord(providers[providerLabel]);
+    if (!provider) {
       return `Modified file: provider "${providerLabel}" not found`;
     }
 
@@ -4711,6 +4687,18 @@ function selfCheckFix(
     const targetModel = models.find((m: Record<string, unknown>) => m.id === modelId);
     if (!targetModel || typeof targetModel !== 'object') {
       return `Modified file: model "${modelId}" not found in provider`;
+    }
+
+    // Locate the corresponding original provider/model objects. The structure
+    // preservation check below may allow repaired compat values to differ, but
+    // only on these exact target/provider compat objects — never on siblings.
+    const origProviders = asRecord(asRecord(origParsed)?.providers);
+    const origProvider = asRecord(origProviders?.[providerLabel]);
+    const origModels = Array.isArray(origProvider?.models) ? origProvider.models : undefined;
+    const origTargetModel = origModels?.find((m: unknown) => asRecord(m)?.id === modelId);
+    const origTargetModelRecord = asRecord(origTargetModel);
+    if (!origProvider || !origTargetModelRecord) {
+      return `Original file: provider/model "${providerLabel}/${modelId}" not found`;
     }
     
     // Step 5: Compute the EFFECTIVE merged compat (provider-level + model-level),
@@ -4754,15 +4742,23 @@ function selfCheckFix(
       for (const key of Object.keys(origObj)) {
         if (!(key in modObj)) return false;
         if (key === 'compat') {
-          // For compat, allow extra keys in modified (the inserted ones)
+          // For compat, allow extra keys in modified (the inserted ones).
+          // Use recursive isSubset so nested objects (e.g. { deep: true })
+          // are compared by content, not reference.
           if (typeof origObj[key] !== 'object' || typeof modObj[key] !== 'object') {
             if (origObj[key] !== modObj[key]) return false;
           } else {
-            // Check all original compat keys are present and equal
             const origCompat = origObj[key] as Record<string, unknown>;
             const modCompat = modObj[key] as Record<string, unknown>;
+            const mayRepairThisCompat = origObj === origProvider || origObj === origTargetModelRecord;
             for (const ck of Object.keys(origCompat)) {
-              if (origCompat[ck] !== modCompat[ck]) return false;
+              if (!(ck in modCompat)) return false;
+              // The fix may repair an existing wrong compat value (for example
+              // thinkingFormat: "legacy" -> "deepseek"), but only on the
+              // target provider/model compat objects. Sibling compat blocks must
+              // remain structure-equivalent.
+              if (mayRepairThisCompat && Object.prototype.hasOwnProperty.call(compatKeys, ck)) continue;
+              if (!isSubset(origCompat[ck], modCompat[ck], `${path}.${ck}`)) return false;
             }
           }
         } else if (!isSubset(origObj[key], modObj[key], `${path}.${key}`)) {
@@ -4781,11 +4777,17 @@ function selfCheckFix(
       return "Modified file: content is shorter than original (possible truncation)";
     }
     
-    // Step 9: Validate no syntax issues by checking brackets balance
-    const openBraces = (modified.match(/{/g) || []).length;
-    const closeBraces = (modified.match(/}/g) || []).length;
-    if (openBraces !== closeBraces) {
-      return `Modified file: bracket mismatch (${openBraces} open, ${closeBraces} close)`;
+    // Step 9: Validate root bracket integrity with the same string/comment-aware
+    // scanner used for edits. Do not count raw braces: comments or strings may
+    // legitimately contain unmatched `{` / `}` bytes.
+    const modifiedClean = stripJsoncComments(modified);
+    const rootStart = skipJsonWhitespace(modifiedClean, 0);
+    const rootEnd = findMatchingBracket(modifiedClean, rootStart);
+    if (rootEnd === undefined) {
+      return "Modified file: root bracket mismatch";
+    }
+    if (skipJsonWhitespace(modifiedClean, rootEnd + 1) !== modifiedClean.length) {
+      return "Modified file: trailing non-whitespace content after root object";
     }
 
     return null;
@@ -4801,8 +4803,7 @@ function selfCheckFix(
 function formatCompatKeysForInsertion(compatKeys: Record<string, unknown>): string {
   return Object.entries(compatKeys)
     .map(([k, v]) => {
-      const val = typeof v === 'string' ? `"${v}"` : String(v);
-      return `  ${JSON.stringify(k)}: ${val}`;
+      return `  ${JSON.stringify(k)}: ${JSON.stringify(v)}`;
     })
     .join(',\n');
 }
@@ -5033,10 +5034,14 @@ export const __internals_for_tests = {
   // JSONC surgical edit helpers
   MODELS_JSON_PATH,
   stripJsoncComments,
+  stripJsoncTrailingCommas,
+  parseJsonc,
   locateModelInJsonc,
   composeFixInsertion,
   selfCheckFix,
   decideFixPlacement,
+  chooseFixPlacement,
+  findExistingCompatKeysInJsonc,
   deepEqualIgnoringKeys,
   formatCompatKeysForInsertion,
   backupTimestamp,
@@ -5755,7 +5760,7 @@ export default function (pi: ExtensionAPI) {
 
         // Compose the modified text — auto-detect the best placement level:
         // provider level (channel-wide) when safe for all sibling models, else model level.
-        const decision = decideFixPlacement(suggestion.compatKeys, suggestion.providerLabel, location.allModelIds);
+        const decision = chooseFixPlacement(originalText, location, suggestion.compatKeys, suggestion.providerLabel);
         const modifiedText = composeFixInsertion(originalText, location, suggestion.compatKeys, decision.placement);
 
         // Self-check
@@ -5769,10 +5774,9 @@ export default function (pi: ExtensionAPI) {
           return;
         }
 
-        // Build preview snippet
-        const keysPreview = Object.entries(suggestion.compatKeys)
-          .map(([k, v]) => `    ${k}: ${JSON.stringify(v)}`)
-          .join("\n");
+        // Build preview snippet as copyable JSON (the surgical editor will
+        // insert or repair these exact compat key/value pairs).
+        const keysPreview = JSON.stringify(suggestion.compatKeys, null, 2);
         const targetHasCompat = decision.placement === "provider" ? location.providerCompatBrace >= 0 : location.compatObjectBrace >= 0;
         const placementDesc = targetHasCompat ? `existing "compat" object` : `new "compat" object`;
         const locationDesc = decision.placement === "provider"
@@ -5791,7 +5795,7 @@ export default function (pi: ExtensionAPI) {
           ``,
           `Location: ${locationDesc}`,
           `Placement: ${decision.placement} level — ${decision.reason}`,
-          `Keys to insert:`, 
+          `Compat JSON to write:`,
           keysPreview,
           ``, 
           `⚠️  Risk notice:`,
@@ -5948,7 +5952,7 @@ export default function (pi: ExtensionAPI) {
               return;
             }
 
-            const menuDecision = decideFixPlacement(suggestion.compatKeys, suggestion.providerLabel, location.allModelIds);
+            const menuDecision = chooseFixPlacement(originalText, location, suggestion.compatKeys, suggestion.providerLabel);
             const modifiedText = composeFixInsertion(originalText, location, suggestion.compatKeys, menuDecision.placement);
             const checkError = selfCheckFix(originalText, modifiedText, suggestion.providerLabel, suggestion.modelId, suggestion.compatKeys);
             if (checkError !== null) {
@@ -5956,9 +5960,7 @@ export default function (pi: ExtensionAPI) {
               return;
             }
 
-            const keysPreview = Object.entries(suggestion.compatKeys)
-              .map(([k, v]) => `    ${k}: ${JSON.stringify(v)}`)
-              .join("\n");
+            const keysPreview = JSON.stringify(suggestion.compatKeys, null, 2);
             const ts = backupTimestamp();
             const backupPath = `${MODELS_JSON_PATH}.backup-cache-optimizer-${ts}`;
 
@@ -5973,7 +5975,7 @@ export default function (pi: ExtensionAPI) {
               `📝 Preview of changes to ${getModelsJsonDisplayPath()}:`,
               `Location: ${menuLocationDesc}`,
               `Placement: ${menuDecision.placement} level — ${menuDecision.reason}`,
-              `Keys to insert:`, 
+              `Compat JSON to write:`,
               keysPreview,
               ``, 
               `⚠️  Risk notice:`,

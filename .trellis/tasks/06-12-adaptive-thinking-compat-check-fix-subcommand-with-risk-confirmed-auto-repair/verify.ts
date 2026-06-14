@@ -14,6 +14,8 @@ const {
   buildAdaptiveThinkingCompatSuggestion,
   buildAdaptiveThinkingCompatWarningText,
   stripJsoncComments,
+  stripJsoncTrailingCommas,
+  parseJsonc,
   locateModelInJsonc,
   composeFixInsertion,
   selfCheckFix,
@@ -23,6 +25,9 @@ const {
   buildExactRouterStatusEntry,
   mergeLastRoutedModels,
   makeSessionModelKey,
+  decideFixPlacement,
+  chooseFixPlacement,
+  isDeepSeekLikeModel,
 } = __internals_for_tests;
 
 type Failure = { name: string; detail: string };
@@ -147,16 +152,21 @@ expectDeepEq("empty-suggestion", emptySuggestion, {});
 
 // Basic — no comments
 expectEq("strip-plain", stripJsoncComments('{"a": 1}'), '{"a": 1}');
+expectEq("strip-plain-length", stripJsoncComments('{"a": 1}').length, '{"a": 1}'.length);
 
 // Line comment — content-preserving: comment chars replaced with spaces
-const strippedLine = stripJsoncComments('{"a": 1 // comment\n}');
+const lineCommentInput = '{"a": 1 // comment\n}';
+const strippedLine = stripJsoncComments(lineCommentInput);
 expect("strip-line-comment", !strippedLine.includes('//'), "line comment should be removed");
 expect("strip-line-comment-newline", strippedLine.includes('\n'), "newline preserved");
+expectEq("strip-line-comment-length", strippedLine.length, lineCommentInput.length);
 
 // Block comment
-const strippedBlock2 = stripJsoncComments('{"a": 1 /* cmt */ }');
+const blockInput = '{"a": 1 /* cmt */ }';
+const strippedBlock2 = stripJsoncComments(blockInput);
 expect("strip-block-comment", !strippedBlock2.includes('/*'), "block comment removed");
 expect("strip-block-comment-close", !strippedBlock2.includes('*/'), "block comment close removed");
+expectEq("strip-block-comment-length", strippedBlock2.length, blockInput.length);
 
 // String with slashes inside (should not be treated as comments)
 expectEq("strip-string-slashes", stripJsoncComments('{"url": "http://example.com"}'), '{"url": "http://example.com"}');
@@ -181,6 +191,17 @@ expectEq("strip-block-inside-string", stripJsoncComments('{"x": "foo /* bar */"}
 const strippedTrailing = stripJsoncComments('{"a": 1, // comment\n"b": 2}');
 expect("strip-trailing", !strippedTrailing.includes('//'), "line comment removed");
 expect("strip-trailing-valid", (() => { try { JSON.parse(strippedTrailing); return true; } catch { return false; } })(), "result should be valid JSON");
+
+// JSONC trailing commas — stripJsoncComments intentionally preserves commas,
+// parseJsonc removes them in a length-preserving tolerant pass.
+const trailingCommaJsonc = '{"a": 1, /* c */ "b": [2,],}';
+const noTrailingCommas = stripJsoncTrailingCommas(stripJsoncComments(trailingCommaJsonc));
+expectEq("strip-trailing-comma-length", noTrailingCommas.length, trailingCommaJsonc.length);
+expect("strip-trailing-comma-object", !noTrailingCommas.includes(',}'), "object trailing comma should be replaced");
+expect("strip-trailing-comma-array", !noTrailingCommas.includes(',]'), "array trailing comma should be replaced");
+const parsedJsonc = parseJsonc(trailingCommaJsonc) as any;
+expectEq("parse-jsonc-trailing-object", parsedJsonc.a, 1);
+expectEq("parse-jsonc-trailing-array", parsedJsonc.b[0], 2);
 
 // Empty object with comment
 expectEq("strip-empty-object-comment", stripJsoncComments('{\n// comment\n}'), '{\n          \n}');
@@ -353,6 +374,36 @@ if (locWithCompat) {
   expectEq("compose-with-compat-new-val", parsed.providers.p.models[0].compat.forceAdaptiveThinking, true);
 }
 
+// Wrong existing compat value: replace only that value, preserve sibling keys.
+const targetWrongCompat = `{
+  "providers": {
+    "p": {
+      "models": [
+        {
+          "id": "test-model",
+          "compat": {
+            "thinkingFormat": "legacy",
+            "existing": { "nested": true }
+          }
+        }
+      ]
+    }
+  }
+}`;
+
+const locWrongCompat = locateModelInJsonc(targetWrongCompat, "p", "test-model");
+expect("compose-wrong-compat-find", locWrongCompat !== undefined, "should find target with wrong compat");
+if (locWrongCompat) {
+  const result = composeFixInsertion(targetWrongCompat, locWrongCompat, { thinkingFormat: "deepseek" });
+  const check = selfCheckFix(targetWrongCompat, result, "p", "test-model", { thinkingFormat: "deepseek" });
+  expect("compose-wrong-compat-check", check === null, `self-check should pass: ${check || ""}`);
+
+  const parsed = JSON.parse(stripJsoncComments(result));
+  expectEq("compose-wrong-compat-value", parsed.providers.p.models[0].compat.thinkingFormat, "deepseek");
+  expectEq("compose-wrong-compat-existing", parsed.providers.p.models[0].compat.existing.nested, true);
+  expect("compose-wrong-compat-old-removed", !result.includes('"thinkingFormat": "legacy"'), "old value should be replaced");
+}
+
 // ====================================================================
 // Test 8: Compose with multiple keys
 // ====================================================================
@@ -421,6 +472,24 @@ if (fixSugProxy) {
 const fixModelOk2 = makeModel({ id: "gpt-4o", api: "openai-completions", baseUrl: "https://proxy.example.com", compat: { sendSessionAffinityHeaders: true, supportsLongCacheRetention: true } });
 const fixSugOk = buildFixSuggestion(fixModelOk2);
 expect("fix-suggestion-ok", fixSugOk === undefined, "no suggestion for already configured model");
+
+// Wrong-valued compat is repairable, not just missing compat.
+const wrongDeepSeekFormat = makeModel({
+  id: "deepseek-chat",
+  api: "openai-completions",
+  baseUrl: "https://api.deepseek.com",
+  compat: {
+    thinkingFormat: "legacy",
+    supportsLongCacheRetention: true,
+    sendSessionAffinityHeaders: true,
+    requiresReasoningContentOnAssistantMessages: true,
+  },
+});
+const wrongFormatSuggestion = buildFixSuggestion(wrongDeepSeekFormat);
+expect("fix-suggestion-wrong-format", wrongFormatSuggestion !== undefined, "wrong thinkingFormat should be repairable");
+if (wrongFormatSuggestion) {
+  expectDeepEq("fix-suggestion-wrong-format-keys", wrongFormatSuggestion.compatKeys, { thinkingFormat: "deepseek" });
+}
 
 // ====================================================================
 // Test 10: deepEqualIgnoringKeys
@@ -579,6 +648,285 @@ const emptyExactEntry = buildExactRouterStatusEntry(
 expect("exact-router-empty-bucket", emptyExactEntry !== undefined, "exact restore should survive missing bucket");
 if (emptyExactEntry) {
   expectEq("exact-router-empty-total", emptyExactEntry.stats.totalRequests, 0);
+}
+
+// ====================================================================
+// Test 14: decideFixPlacement — auto-detect provider vs model level
+// ====================================================================
+
+// Single model => provider level (equivalent, easier to maintain)
+const dfp1 = decideFixPlacement(
+  { forceAdaptiveThinking: true },
+  "test-provider",
+  ["claude-opus-4-8"],
+);
+expectEq("dfp-single-model", dfp1.placement, "provider");
+
+// Multiple models all adaptive => provider level (all siblings compatible)
+const dfp2 = decideFixPlacement(
+  { forceAdaptiveThinking: true },
+  "test-provider",
+  ["claude-opus-4-8", "claude-sonnet-4-6", "claude-fable-5"],
+);
+expectEq("dfp-all-adaptive", dfp2.placement, "provider");
+
+// Mixed models (one non-adaptive) => model level (unsafe for siblings)
+const dfp3 = decideFixPlacement(
+  { forceAdaptiveThinking: true },
+  "test-provider",
+  ["claude-opus-4-8", "gpt-4o"],
+);
+expectEq("dfp-mixed", dfp3.placement, "model");
+
+// Channel-safe keys (sendSessionAffinityHeaders) always provider level
+const dfp4 = decideFixPlacement(
+  { sendSessionAffinityHeaders: true },
+  "test-provider",
+  ["claude-opus-4-8", "gpt-4o"],
+);
+expectEq("dfp-safe-keys", dfp4.placement, "provider");
+
+// DeepSeek keys with mixed providers => model level
+const dfp5 = decideFixPlacement(
+  { thinkingFormat: "deepseek", requiresReasoningContentOnAssistantMessages: true },
+  "test-provider",
+  ["deepseek-chat", "gpt-4o"],
+);
+expectEq("dfp-deepseek-mixed", dfp5.placement, "model");
+
+// DeepSeek keys with all DeepSeek providers => provider level
+const dfp6 = decideFixPlacement(
+  { thinkingFormat: "deepseek", requiresReasoningContentOnAssistantMessages: true },
+  "test-provider",
+  ["deepseek-chat", "deepseek-coder"],
+);
+expectEq("dfp-deepseek-all", dfp6.placement, "provider");
+
+// A model-level existing key must be repaired at model level even if all
+// siblings are compatible; provider-level compat would be shadowed by model compat.
+const choosePlacementTarget = `{
+  "providers": {
+    "p": {
+      "models": [
+        { "id": "deepseek-chat", "compat": { "thinkingFormat": "legacy" } },
+        { "id": "deepseek-coder" }
+      ]
+    }
+  }
+}`;
+const chooseLoc = locateModelInJsonc(choosePlacementTarget, "p", "deepseek-chat");
+expect("choose-placement-loc", chooseLoc !== undefined, "should locate model for choose placement");
+if (chooseLoc) {
+  const choice = chooseFixPlacement(choosePlacementTarget, chooseLoc, { thinkingFormat: "deepseek" }, "p");
+  expectEq("choose-placement-model-override", choice.placement, "model");
+}
+
+// ====================================================================
+// Test 15: composeFixInsertion at provider level
+// ====================================================================
+
+const providerNoCompat = `{
+  "providers": {
+    "test-provider": {
+      "api": "anthropic-messages",
+      "models": [
+        {
+          "id": "claude-opus-4-8",
+          "name": "Opus 4.8"
+        }
+      ]
+    }
+  }
+}`;
+const locProv = locateModelInJsonc(providerNoCompat, "test-provider", "claude-opus-4-8");
+expect("provider-loc-found", locProv !== undefined, "should find model for provider-level test");
+if (locProv) {
+  // compose at provider level with channel-safe keys
+  const provResult = composeFixInsertion(providerNoCompat, locProv, { sendSessionAffinityHeaders: true }, "provider");
+
+  // self-check should pass
+  const provCheck = selfCheckFix(providerNoCompat, provResult, "test-provider", "claude-opus-4-8", { sendSessionAffinityHeaders: true });
+  expect("provider-self-check", provCheck === null, `provider-level self-check: ${provCheck || "null"}`);
+
+  // Validate parsed structure
+  const provParsed = JSON.parse(stripJsoncComments(provResult));
+  expectEq("provider-compat-value", provParsed.providers["test-provider"].compat?.sendSessionAffinityHeaders, true);
+  // Model-level compat should remain absent
+  expect("provider-no-model-compat", provParsed.providers["test-provider"].models[0].compat === undefined,
+    "model-level compat should remain absent after provider-level write");
+
+  // Byte fidelity: text before insertion point and after compat should match original
+  const insertedLen = provResult.length - providerNoCompat.length;
+  const provCompatEnd = locProv.providerObjectEnd;
+  expect("provider-byte-after",
+    providerNoCompat.slice(provCompatEnd) === provResult.slice(provCompatEnd + insertedLen),
+    "text outside insertion point should match original");
+}
+
+// Provider-level insert with existing provider compat
+const providerWithCompat = `{
+  "providers": {
+    "p": {
+      "api": "test",
+      "compat": {
+        "existing": true
+      },
+      "models": [
+        {
+          "id": "test-model"
+        }
+      ]
+    }
+  }
+}`;
+const locProv2 = locateModelInJsonc(providerWithCompat, "p", "test-model");
+expect("provider-compat-loc", locProv2 !== undefined, "should find model for provider-level compat test");
+if (locProv2) {
+  const prov2Result = composeFixInsertion(providerWithCompat, locProv2, { sendSessionAffinityHeaders: true }, "provider");
+  const prov2Check = selfCheckFix(providerWithCompat, prov2Result, "p", "test-model", { sendSessionAffinityHeaders: true });
+  expect("provider-compat-self-check", prov2Check === null, `provider compat level self-check: ${prov2Check || "null"}`);
+
+  const prov2Parsed = JSON.parse(stripJsoncComments(prov2Result));
+  expectEq("provider-compat-existing", prov2Parsed.providers["p"].compat?.existing, true);
+  expectEq("provider-compat-new", prov2Parsed.providers["p"].compat?.sendSessionAffinityHeaders, true);
+}
+
+// ====================================================================
+// Test 16: DeepSeek buildFixSuggestion and partial config
+// ====================================================================
+
+const dsFixModel = makeModel({ id: "deepseek-chat", name: "DeepSeek Chat", api: "openai-completions", baseUrl: "https://api.deepseek.com", compat: {} });
+const dsFixSug = buildFixSuggestion(dsFixModel);
+expect("ds-fix-sug-found", dsFixSug !== undefined, "DeepSeek model should produce fix suggestion");
+if (dsFixSug) {
+  expect("ds-fix-sug-thinking", dsFixSug.compatKeys.thinkingFormat === "deepseek",
+    `expected thinkingFormat: "deepseek", got ${JSON.stringify(dsFixSug.compatKeys.thinkingFormat)}`);
+  expectEq("ds-fix-sug-reasoning", dsFixSug.compatKeys.requiresReasoningContentOnAssistantMessages, true);
+  expectEq("ds-fix-sug-session", dsFixSug.compatKeys.sendSessionAffinityHeaders, true);
+  expectEq("ds-fix-sug-longcache", dsFixSug.compatKeys.supportsLongCacheRetention, true);
+}
+
+// Partially configured model — only missing keys should be suggested
+const partialDsModel = makeModel({
+  id: "deepseek-chat",
+  api: "openai-completions",
+  baseUrl: "https://api.deepseek.com",
+  compat: { thinkingFormat: "deepseek", sendSessionAffinityHeaders: true },
+});
+const partialMissing = describeMissingCacheCompatForModel(partialDsModel);
+expect("partial-missing-reasoning", partialMissing.includes("requiresReasoningContentOnAssistantMessages"),
+  `partial model missing should include reasoning, got: ${partialMissing.join(",")}`);
+expect("partial-missing-longcache", partialMissing.includes("supportsLongCacheRetention"),
+  `partial model missing should include longcache, got: ${partialMissing.join(",")}`);
+expect("partial-missing-no-thinking", !partialMissing.includes("thinkingFormat"),
+  "partial model should NOT report thinkingFormat as missing");
+
+const partialSuggestion = buildFixSuggestion(partialDsModel);
+expect("partial-sug-found", partialSuggestion !== undefined, "partial model should have suggestion");
+if (partialSuggestion) {
+  expect("partial-sug-no-thinking", partialSuggestion.compatKeys.thinkingFormat === undefined,
+    "partial model should NOT suggest thinkingFormat");
+  expectEq("partial-sug-reasoning", partialSuggestion.compatKeys.requiresReasoningContentOnAssistantMessages, true);
+  expect("partial-sug-no-session", partialSuggestion.compatKeys.sendSessionAffinityHeaders === undefined,
+    "partial model should NOT suggest sendSessionAffinityHeaders");
+}
+
+// Already fully configured DeepSeek model
+const fullDsModel = makeModel({
+  id: "deepseek-chat",
+  api: "openai-completions",
+  baseUrl: "https://api.deepseek.com",
+  compat: {
+    supportsLongCacheRetention: true,
+    sendSessionAffinityHeaders: true,
+    requiresReasoningContentOnAssistantMessages: true,
+    thinkingFormat: "deepseek",
+  },
+});
+const fullSuggestion = buildFixSuggestion(fullDsModel);
+expect("full-ds-no-sug", fullSuggestion === undefined, "fully configured DeepSeek model should have no suggestion");
+
+// ====================================================================
+// Test 17: Byte-fidelity — text outside insertion zone must match original
+// ====================================================================
+
+const fidelityOriginal = `{
+  "providers": {
+    "p": {
+      "models": [
+        {
+          "id": "test",
+          "compat": {
+            "existing": true
+          }
+        }
+      ]
+    }
+  }
+}`;
+
+const locFidelity = locateModelInJsonc(fidelityOriginal, "p", "test");
+expect("fidelity-loc", locFidelity !== undefined, "should find model for fidelity test");
+if (locFidelity) {
+  const fidelityResult = composeFixInsertion(fidelityOriginal, locFidelity, { forceAdaptiveThinking: true });
+  const insertedLen = fidelityResult.length - fidelityOriginal.length;
+
+  // Before the compat opening brace: identical
+  const beforeCompat = fidelityOriginal.slice(0, locFidelity.compatObjectBrace);
+  const beforeCompatMod = fidelityResult.slice(0, locFidelity.compatObjectBrace);
+  expectEq("fidelity-before", beforeCompat, beforeCompatMod);
+
+  // After the compat closing brace: identical (shifted by insertion length)
+  const afterCompatOrig = fidelityOriginal.slice(locFidelity.compatObjectEnd);
+  const afterCompatMod = fidelityResult.slice(locFidelity.compatObjectEnd + insertedLen);
+  expectEq("fidelity-after", afterCompatOrig, afterCompatMod);
+
+  // Inside the compat: new keys present
+  const inside = fidelityResult.slice(locFidelity.compatObjectBrace, locFidelity.compatObjectEnd + insertedLen);
+  expect("fidelity-inside-new-key", inside.includes('"forceAdaptiveThinking"'),
+    "modified compat should contain new key");
+  expect("fidelity-inside-existing-key", inside.includes('"existing"'),
+    "modified compat should still contain existing keys");
+}
+
+// ====================================================================
+// Test 18: Multi-key insertion into existing non-empty compat
+// ====================================================================
+
+const multiExistingTarget = `{
+  "providers": {
+    "p": {
+      "models": [
+        {
+          "id": "test",
+          "compat": {
+            "existing": "value",
+            "other": 42
+          }
+        }
+      ]
+    }
+  }
+}`;
+
+const locMultiExist = locateModelInJsonc(multiExistingTarget, "p", "test");
+expect("multi-exist-loc", locMultiExist !== undefined, "should find model for multi-existing test");
+if (locMultiExist) {
+  const result = composeFixInsertion(multiExistingTarget, locMultiExist, {
+    forceAdaptiveThinking: true,
+    sendSessionAffinityHeaders: true,
+  });
+  const check = selfCheckFix(multiExistingTarget, result, "p", "test", {
+    forceAdaptiveThinking: true,
+    sendSessionAffinityHeaders: true,
+  });
+  expect("multi-exist-self-check", check === null, `multi-existing compat self-check: ${check || "null"}`);
+
+  const parsed = JSON.parse(stripJsoncComments(result));
+  expectEq("multi-exist-existing1", parsed.providers.p.models[0].compat.existing, "value");
+  expectEq("multi-exist-existing2", parsed.providers.p.models[0].compat.other, 42);
+  expectEq("multi-exist-new1", parsed.providers.p.models[0].compat.forceAdaptiveThinking, true);
+  expectEq("multi-exist-new2", parsed.providers.p.models[0].compat.sendSessionAffinityHeaders, true);
 }
 
 // ====================================================================

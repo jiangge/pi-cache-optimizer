@@ -8,7 +8,7 @@
 
 Pi extension for improving provider-side KV / prompt cache hit rates. It keeps stable prompt content near the front, adds a conservative OpenAI-compatible `prompt_cache_key` fallback, warns about common proxy cache-routing gaps, and shows read-only footer cache stats.
 
-> Renamed from `pi-deepseek-cache-optimizer`. Existing footer counters migrate automatically. This package never creates, edits, backs up, or deletes your `~/.pi/agent/models.json`.
+> Renamed from `pi-deepseek-cache-optimizer`. Existing footer counters migrate automatically. The extension does **not** touch `~/.pi/agent/models.json` during normal operation; only `/cache-optimizer fix` can edit it, and only after an explicit interactive preview + confirmation with an automatic timestamped backup.
 
 ## Contents
 
@@ -17,6 +17,8 @@ Pi extension for improving provider-side KV / prompt cache hit rates. It keeps s
 - [Commands](#commands)
 - [Persistent opt-out](#persistent-opt-out)
 - [OpenAI-compatible proxy setup](#openai-compatible-proxy-setup)
+- [Anthropic adaptive thinking models](#anthropic-adaptive-thinking-models)
+- [Auto-repair with `/cache-optimizer fix`](#auto-repair-with-cache-optimizer-fix)
 - [Footer stats](#footer-stats)
 - [Uninstall](#uninstall)
 - [Verify effect](#verify-effect)
@@ -161,7 +163,7 @@ Or use model-level override:
 
 1. Shows full preview of changes (file path, edit location, JSON to write, risks)
 2. Warns: ① changes affect all sessions using that channel, ② automatic backup created at `models.json.backup-cache-optimizer-<timestamp>`, ③ Pi reload required
-3. Uses comment-preserving surgical editor — existing comments, indentation, key order preserved
+3. Uses comment-preserving surgical editor — existing comments, indentation, and existing key order are preserved
 4. Requires explicit user confirmation (interactive prompt or `ui.select`)
 5. Writes atomically (temp + rename); self-validates after write
 6. Falls back to manual guidance if JSONC scanner cannot confidently locate the target
