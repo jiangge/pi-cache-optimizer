@@ -1637,9 +1637,6 @@ function describeMissingOpenAIFamilyProxyCompat(model: PiModel): string[] {
   if (!isOpenAICompatibleProxyApi(model.api)) return missing;
   if (isOfficialOpenAIBaseUrl(model)) return missing;
 
-  if (compat.supportsLongCacheRetention !== true) {
-    missing.push("supportsLongCacheRetention");
-  }
   if (compat.sendSessionAffinityHeaders !== true) {
     missing.push("sendSessionAffinityHeaders");
   }
@@ -1660,14 +1657,25 @@ function describeMissingOpenAICompatibleProxyCompat(model: PiModel): string[] {
   if (!isOpenAICompatibleProxyApi(model.api)) return missing;
   if (isOfficialOpenAIBaseUrl(model)) return missing;
 
-  if (compat.supportsLongCacheRetention !== true) {
-    missing.push("supportsLongCacheRetention");
-  }
   if (compat.sendSessionAffinityHeaders !== true) {
     missing.push("sendSessionAffinityHeaders");
   }
 
   return missing;
+}
+
+function describeOptionalOpenAICompatibleProxyCompat(model: PiModel): string[] {
+  const compat = getCompat(model);
+  const optional: string[] = [];
+
+  if (!isOpenAICompatibleProxyApi(model.api)) return optional;
+  if (isOfficialOpenAIBaseUrl(model)) return optional;
+
+  if (compat.supportsLongCacheRetention !== true) {
+    optional.push("supportsLongCacheRetention");
+  }
+
+  return optional;
 }
 
 function buildSafeOpenAIProxyCompatSuggestion(missing: string[]): Record<string, boolean> {
@@ -1760,19 +1768,20 @@ function appendOpenAIProxyCompatAdviceLines(lines: string[], missing: string[], 
       lines.push("Safe default suggestion:");
     }
     lines.push(JSON.stringify(suggestion, null, 2));
-  } else if (missing.includes("supportsLongCacheRetention")) {
-    lines.push("No safe automatic JSON change is recommended for `supportsLongCacheRetention`.");
   }
 
   if (missing.includes("sendSessionAffinityHeaders")) {
     lines.push("- sendSessionAffinityHeaders: recommended for third-party proxies when supported; it helps keep one Pi session on the same upstream/backend.");
   }
-  if (missing.includes("supportsLongCacheRetention")) {
-    lines.push("- supportsLongCacheRetention: optional. Enable only after your endpoint/proxy explicitly supports OpenAI long prompt cache retention.");
-    lines.push(`- ${getPromptCacheRetentionUnsupportedHint()}`);
-  }
-
   appendCredentialSafeProviderGuidance(lines, options, suggestion);
+}
+
+function appendOptionalOpenAIProxyCompatAdviceLines(lines: string[], optional: string[]): void {
+  if (!optional.includes("supportsLongCacheRetention")) return;
+  lines.push("");
+  lines.push("Optional (not required, not auto-fixed):");
+  lines.push("- supportsLongCacheRetention: enable only after your endpoint/proxy explicitly supports OpenAI long prompt cache retention.");
+  lines.push(`- ${getPromptCacheRetentionUnsupportedHint()}`);
 }
 
 /**
@@ -3699,8 +3708,21 @@ function buildDoctorDiagnosis(model: PiModel, options: { promptCacheRetention400
   const adaptiveThinkingApplicable = isAdaptiveThinkingCompatApplicable(model);
   const deepSeekCompatApplicable = isDeepSeekCompatCheckApplicable(model);
   const missing = describeMissingCacheCompatForModel(model);
+  const optionalOpenAIProxyCompat = (!adaptiveThinkingApplicable && !deepSeekCompatApplicable)
+    ? describeOptionalOpenAICompatibleProxyCompat(model)
+    : [];
+  const fixSug = buildFixSuggestion(model);
+  const safeFixableMissing = fixSug ? Object.keys(fixSug.compatKeys) : [];
+  const advisoryMissing = missing.filter(m => !safeFixableMissing.includes(m));
+
+  if (safeFixableMissing.length > 0) {
+    lines.push(`⚠️  Missing compat flags: ${safeFixableMissing.join(", ")}`);
+  }
+  if (advisoryMissing.length > 0) {
+    lines.push(`ℹ️  Optional: ${advisoryMissing.join(", ")} (enable only if needed)`);
+  }
+
   if (missing.length > 0) {
-    lines.push(`⚠️  Missing compat flags: ${missing.join(", ")}`);
     const key = modelKey(model);
     const slashIdx = key.indexOf("/");
     const providerLabel = slashIdx > 0 ? key.slice(0, slashIdx) : key;
@@ -3712,9 +3734,11 @@ function buildDoctorDiagnosis(model: PiModel, options: { promptCacheRetention400
       appendDeepSeekCompatAdviceLines(lines, missing, { providerLabel, modelId: model.id });
     } else {
       appendOpenAIProxyCompatAdviceLines(lines, missing, { providerLabel, modelId: model.id });
+      appendOptionalOpenAIProxyCompatAdviceLines(lines, optionalOpenAIProxyCompat);
     }
   } else if (adaptiveThinkingApplicable || deepSeekCompatApplicable || isCompatCheckApplicable(model)) {
     lines.push("✅ Compat fully configured.");
+    appendOptionalOpenAIProxyCompatAdviceLines(lines, optionalOpenAIProxyCompat);
   } else {
     lines.push(...getCompatCheckNotApplicableLines(model));
   }
@@ -3772,7 +3796,8 @@ function buildLowHitDiagnosis(
   const lines: string[] = [];
 
   // 1. Missing compat flags (adapter-aware: DeepSeek has extra reasoning compat)
-  const missingCompat = describeMissingCacheCompatForModel(model);
+  const fixSugLHD = buildFixSuggestion(model);
+  const safeFixableMissingLHD = fixSugLHD ? Object.keys(fixSugLHD.compatKeys) : [];
 
   // 2. Router/channel risk (reuse existing check)
   const routerNotes = describeRouterChannelDiagnostics(model);
@@ -3790,7 +3815,7 @@ function buildLowHitDiagnosis(
   // 5. Today's overall trend from persisted stats
   const todayStats = stats ?? emptyCacheStats();
 
-  const hasMissingCompat = missingCompat.length > 0;
+  const hasMissingCompat = safeFixableMissingLHD.length > 0;
   const hasRouterRisk = routerNotes.length > 0;
   const hasUsageMissing = missingUsageSamples > 0;
 
@@ -3819,7 +3844,7 @@ function buildLowHitDiagnosis(
 
   // Priority 1: missing compat flags
   if (hasMissingCompat) {
-    lines.push(`⚠️  Missing compat flags: ${missingCompat.join(", ")}`);
+    lines.push(`⚠️  Missing compat flags: ${safeFixableMissingLHD.join(", ")}`);
     lines.push("   These flags enable prompt caching and session-affinity routing.");
     lines.push("   Run /cache-optimizer compat for edit instructions.");
   }
@@ -3872,11 +3897,17 @@ function buildLowHitDiagnosis(
 
 function buildCompatDiagnosis(model: PiModel): string | undefined {
   const missing = describeMissingCacheCompatForModel(model);
+  const fixSugC = buildFixSuggestion(model);
+  const safeFixableMissingC = fixSugC ? Object.keys(fixSugC.compatKeys) : [];
+  const advisoryMissingC = missing.filter(m => !safeFixableMissingC.includes(m));
   const adaptiveThinkingApplicable = isAdaptiveThinkingCompatApplicable(model);
   const deepSeekCompatApplicable = isDeepSeekCompatCheckApplicable(model);
+  const optionalOpenAIProxyCompat = (!adaptiveThinkingApplicable && !deepSeekCompatApplicable)
+    ? describeOptionalOpenAICompatibleProxyCompat(model)
+    : [];
   const routerNotes = describeRouterChannelDiagnostics(model);
 
-  if (missing.length === 0 && routerNotes.length === 0) return undefined;
+  if (missing.length === 0 && routerNotes.length === 0 && optionalOpenAIProxyCompat.length === 0) return undefined;
 
   const key = modelKey(model);
   const lines: string[] = [];
@@ -3886,7 +3917,12 @@ function buildCompatDiagnosis(model: PiModel): string | undefined {
     const providerLabel = slashIdx > 0 ? key.slice(0, slashIdx) : key;
     const modelsJsonPath = getModelsJsonDisplayPath();
     lines.push(`Active model: ${key}`);
-    lines.push(`Missing: ${missing.join(", ")}`);
+    if (safeFixableMissingC.length > 0) {
+      lines.push(`Safe-fixable: ${safeFixableMissingC.join(", ")}`);
+    }
+    if (advisoryMissingC.length > 0) {
+      lines.push(`Optional: ${advisoryMissingC.join(", ")} (enable only if needed)`);
+    }
     lines.push("");
     lines.push(`Edit ${modelsJsonPath} -> providers["${providerLabel}"] -> compat`);
     lines.push(`(at the same level as baseUrl/api/apiKey/models).`);
@@ -3896,16 +3932,18 @@ function buildCompatDiagnosis(model: PiModel): string | undefined {
       appendDeepSeekCompatAdviceLines(lines, missing, { providerLabel, modelId: model.id });
     } else {
       appendOpenAIProxyCompatAdviceLines(lines, missing, { providerLabel, modelId: model.id });
+      appendOptionalOpenAIProxyCompatAdviceLines(lines, optionalOpenAIProxyCompat);
     }
   }
 
-  // When compat is fully configured but router notes exist, prefix the status.
-  if (routerNotes.length > 0 && missing.length === 0) {
+  // When compat is fully configured but router/optional notes exist, prefix the status.
+  if ((routerNotes.length > 0 || optionalOpenAIProxyCompat.length > 0) && missing.length === 0) {
     if (adaptiveThinkingApplicable || deepSeekCompatApplicable || isCompatCheckApplicable(model)) {
       lines.push("✅ Compat fully configured.");
       if (isPromptCacheRetention400Applicable(model)) {
         lines.push(getPromptCacheRetentionUnsupportedHint());
       }
+      appendOptionalOpenAIProxyCompatAdviceLines(lines, optionalOpenAIProxyCompat);
     } else {
       lines.push(...getCompatCheckNotApplicableLines(model));
     }
@@ -4853,6 +4891,7 @@ export const __internals_for_tests = {
   isOpenAIFamilyToken,
   describeMissingOpenAIFamilyProxyCompat,
   describeMissingOpenAICompatibleProxyCompat,
+  describeOptionalOpenAICompatibleProxyCompat,
   describeMissingDeepSeekCompat,
   isDeepSeekCompatCheckApplicable,
   describeMissingCacheCompatForModel,
@@ -5405,8 +5444,11 @@ export default function (pi: ExtensionAPI) {
     // changes and day rollovers. Redundant setStatus calls are blocked by the
     // `lastStatusText` early return above.
     if (runtimeOptimizerEnabled && statusText !== undefined && model) {
-      const compatMissing = describeMissingCacheCompatForModel(model);
-      if (compatMissing.length > 0) {
+      // Only show ⚠️ compat when there are safe-fixable missing compat keys.
+      // Optional/advisory-only flags (e.g. supportsLongCacheRetention on generic
+      // OpenAI-compatible proxies) do NOT trigger the marker — the doctor/compat
+      // commands still mention them as optional guidance.
+      if (buildFixSuggestion(model) !== undefined) {
         statusText = statusText + " ⚠️ compat";
       }
     }

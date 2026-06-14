@@ -175,12 +175,13 @@ core's own cache transport.
 #### Third-party OpenAI-compatible proxy compat warning
 
 For models using `api: "openai-completions"` through a non-official
-base URL (not `api.openai.com`), warn once per model when merged compat lacks
-one or both of `supportsLongCacheRetention` and `sendSessionAffinityHeaders`.
-The copyable JSON suggestion MUST be conservative: recommend
-`sendSessionAffinityHeaders: true` by default when missing, but do NOT
-recommend `supportsLongCacheRetention: true` as an automatic safe default.
-Long retention is optional and must be accompanied by guidance to enable it only
+base URL (not `api.openai.com`), warn/mark missing compat only when merged compat
+lacks `sendSessionAffinityHeaders`. The copyable JSON suggestion MUST be
+conservative: recommend `sendSessionAffinityHeaders: true` by default when
+missing, but do NOT recommend `supportsLongCacheRetention: true` as an automatic
+safe default. Long retention is optional advisory text only; it must not keep
+`⚠️ compat` active or make `/cache-optimizer fix` report unresolved work after
+session affinity has been fixed. It may be mentioned as optional guidance only
 when the endpoint/proxy explicitly supports OpenAI `prompt_cache_retention`.
 
 If a third-party proxy returns `400 Unsupported parameter: prompt_cache_retention`,
@@ -789,9 +790,8 @@ timestamp is reset to 0 and the one-time notification is re-armed.
 ## Compat footer marker (`⚠️ compat`)
 
 When the active model is a non-official OpenAI-compatible proxy (`openai-completions`
-API through a non-`api.openai.com` base URL) and its merged `compat` lacks one
-or both of `supportsLongCacheRetention` or `sendSessionAffinityHeaders`, the
-footer status line appends `⚠️ compat`:
+API through a non-`api.openai.com` base URL) and its merged `compat` lacks
+`sendSessionAffinityHeaders`, the footer status line appends `⚠️ compat`:
 
 ```text
 OpenAI cache 0/0 · 0M/0M tok ⚠️ compat
@@ -852,8 +852,9 @@ Shows current active model status: provider, model id/name, API type, base URL,
 merged compat flags, and whether any cache/session-affinity compat flags are missing.
 If compat flags are missing, includes a copyable safe JSON suggestion and the edit
 location (`~/.pi/agent/models.json -> providers.<id> -> compat`). The JSON only
-includes `sendSessionAffinityHeaders: true` when missing; `supportsLongCacheRetention`
-is explained as optional/risky rather than inserted into the copyable safe snippet.
+includes `sendSessionAffinityHeaders: true` when missing. `supportsLongCacheRetention`
+is explained as optional/risky guidance rather than treated as missing or inserted
+into the copyable safe snippet.
 For channels with no explicit `models.json` provider block yet, the output MUST
 explain that users should keep existing authentication as-is, must not copy
 credentials/tokens/API keys, and should add only cache/routing compatibility in a
@@ -1061,7 +1062,7 @@ compat). It does NOT read or expose:
 
 | Scenario | Expected behavior |
 |---|---|
-| `/cache-optimizer doctor` with model that has missing compat flags | Output includes `Missing compat flags: supportsLongCacheRetention, sendSessionAffinityHeaders`, a copyable safe JSON suggestion with `sendSessionAffinityHeaders: true`, the `~/.pi/agent/models.json -> providers["<id>"]` path, optional/risky guidance for `supportsLongCacheRetention`, and credential-safe guidance that keeps existing authentication as-is while placing only compat overrides in `models.json` |
+| `/cache-optimizer doctor` with generic proxy missing session affinity | Output includes `Missing compat flags: sendSessionAffinityHeaders`, a copyable safe JSON suggestion with `sendSessionAffinityHeaders: true`, the `~/.pi/agent/models.json -> providers["<id>"]` path, optional/risky guidance for `supportsLongCacheRetention`, and credential-safe guidance that keeps existing authentication as-is while placing only compat overrides in `models.json` |
 | `/cache-optimizer doctor` with DeepSeek-like Pi Mono model missing reasoning compat | Output includes missing `requiresReasoningContentOnAssistantMessages` and `thinkingFormat`, plus copyable JSON with `requiresReasoningContentOnAssistantMessages: true` and `thinkingFormat: "deepseek"`. |
 | `/cache-optimizer compat` with DeepSeek-like Pi Mono model missing reasoning compat | Shows the same DeepSeek-specific JSON suggestion and edit location; custom transports still show not-applicable. |
 | `/cache-optimizer doctor` without an active model | Notification: "No active model selected" |
@@ -1074,7 +1075,7 @@ compat). It does NOT read or expose:
 | Runtime disabled before hooks fire | `before_agent_start` returns `{}`, `before_provider_request` does not add `prompt_cache_key`, `message_end` continues updating comparison stats, and session/model compat warnings are suppressed |
 | `/cache-optimizer` (no args) with UI supports select | Shows interactive selection menu (Enable / Disable / Doctor / Stats / Compat / Reset / Cancel) |
 | `/cache-optimizer` (no args) without UI | Text help lists `enable`, `disable`, `doctor`, `stats`, `compat`, `reset` subcommands plus runtime state |
-| Footer status for missing-compat model | Shows `⚠️ compat` appended to the cache stats line |
+| Footer status for generic proxy after `/cache-optimizer fix` added `sendSessionAffinityHeaders` but `supportsLongCacheRetention` remains absent | No `⚠️ compat`; doctor/compat may still show optional long-retention guidance, but the model is considered safely configured |
 | Footer status when compat is fixed or model changes | `⚠️ compat` marker clears |
 | `/cache-optimizer doctor` with OpenRouter model | Output includes `🔀 Router/channel: OpenRouter detected` with routing fix suggestion and JSON example for `openRouterRouting` |
 | `/cache-optimizer doctor` with Vercel AI Gateway model | Output includes `🔀 Router/channel: Vercel AI Gateway detected` with `vercelGatewayRouting` suggestion |

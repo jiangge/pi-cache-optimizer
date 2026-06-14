@@ -21,6 +21,9 @@ const {
   selfCheckFix,
   buildFixSuggestion,
   describeMissingCacheCompatForModel,
+  describeOptionalOpenAICompatibleProxyCompat,
+  buildDoctorDiagnosis,
+  buildCompatDiagnosis,
   parsePersistedCacheStats,
   buildExactRouterStatusEntry,
   mergeLastRoutedModels,
@@ -466,7 +469,33 @@ expect("fix-suggestion-proxy", fixSugProxy !== undefined, "should produce sugges
 if (fixSugProxy) {
   expectEq("fix-suggestion-proxy-key-count", Object.keys(fixSugProxy.compatKeys).length, 1);
   expectEq("fix-suggestion-proxy-flag", fixSugProxy.compatKeys.sendSessionAffinityHeaders, true);
+  expect("fix-suggestion-proxy-no-long-retention", fixSugProxy.compatKeys.supportsLongCacheRetention === undefined,
+    "generic proxy fix must not auto-enable optional supportsLongCacheRetention");
 }
+
+// User-reported scenario: after `/cache-optimizer fix` writes the safe
+// session-affinity key for tencent/kimi-2.5, the remaining optional long-retention
+// advice must not keep the model in "missing compat" / fix-needed state.
+const kimiBeforeFix = makeModel({ id: "kimi-2.5", name: "Kimi 2.5", provider: "tencent", api: "openai-completions", baseUrl: "https://api.tencent.example/v1", compat: {} });
+const kimiBeforeMissing = describeMissingCacheCompatForModel(kimiBeforeFix);
+expectDeepEq("kimi-before-missing", kimiBeforeMissing, ["sendSessionAffinityHeaders"]);
+expectDeepEq("kimi-before-optional", describeOptionalOpenAICompatibleProxyCompat(kimiBeforeFix), ["supportsLongCacheRetention"]);
+const kimiBeforeSuggestion = buildFixSuggestion(kimiBeforeFix);
+expect("kimi-before-fixable", kimiBeforeSuggestion !== undefined, "kimi before fix should be fixable");
+if (kimiBeforeSuggestion) {
+  expectDeepEq("kimi-before-fix-keys", kimiBeforeSuggestion.compatKeys, { sendSessionAffinityHeaders: true });
+}
+
+const kimiAfterFix = makeModel({ id: "kimi-2.5", name: "Kimi 2.5", provider: "tencent", api: "openai-completions", baseUrl: "https://api.tencent.example/v1", compat: { sendSessionAffinityHeaders: true } });
+expectDeepEq("kimi-after-missing", describeMissingCacheCompatForModel(kimiAfterFix), []);
+expectDeepEq("kimi-after-optional", describeOptionalOpenAICompatibleProxyCompat(kimiAfterFix), ["supportsLongCacheRetention"]);
+expect("kimi-after-no-fix-suggestion", buildFixSuggestion(kimiAfterFix) === undefined, "kimi after safe fix should not still need fix");
+const kimiDoctor = buildDoctorDiagnosis(kimiAfterFix);
+expect("kimi-doctor-fully-configured", kimiDoctor.includes("✅ Compat fully configured."), "doctor should show fully configured after safe fix");
+expect("kimi-doctor-optional-only", kimiDoctor.includes("Optional (not required, not auto-fixed)"), "doctor should keep optional guidance separate");
+const kimiCompat = buildCompatDiagnosis(kimiAfterFix) ?? "";
+expect("kimi-compat-fully-configured", kimiCompat.includes("✅ Compat fully configured."), "compat should show fully configured after safe fix");
+expect("kimi-compat-optional-only", kimiCompat.includes("Optional (not required, not auto-fixed)"), "compat should keep optional guidance separate");
 
 // Already configured model — no suggestion
 const fixModelOk2 = makeModel({ id: "gpt-4o", api: "openai-completions", baseUrl: "https://proxy.example.com", compat: { sendSessionAffinityHeaders: true, supportsLongCacheRetention: true } });
@@ -529,7 +558,9 @@ expect("routing-adaptive", atMissing.includes("forceAdaptiveThinking"), "adaptiv
 // OpenAI proxy routing (non-GPT)
 const proxyModel = makeModel({ id: "kimi-model", api: "openai-completions", baseUrl: "https://kimi.example.com", compat: {} });
 const proxyMissing = describeMissingCacheCompatForModel(proxyModel);
-expect("routing-proxy", proxyMissing.length > 0, "proxy model should return missing flags");
+expectDeepEq("routing-proxy", proxyMissing, ["sendSessionAffinityHeaders"]);
+const proxyOptional = describeOptionalOpenAICompatibleProxyCompat(proxyModel);
+expectDeepEq("routing-proxy-optional", proxyOptional, ["supportsLongCacheRetention"]);
 
 // ====================================================================
 // Test 13: persisted exact router model restore metadata (v5)
