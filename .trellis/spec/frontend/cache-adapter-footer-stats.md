@@ -230,7 +230,7 @@ same cache-bearing backend unless the proxy also honors session-affinity headers
 
 ---
 
-## Persisted stats schema (v4: session-scoped)
+## Persisted stats schema (v5: session-scoped + exact router restore)
 
 Stats are persisted per Pi session + provider/model, not only per provider family.
 Adapter selection remains id/name-only; the active model's `provider` participates
@@ -248,10 +248,17 @@ type CacheStats = {
   totalInputTokens: number;
 };
 
-type PersistedCacheStatsV4 = {
-  version: 4;
+type PersistedRoutedModelRef = {
+  provider: string;
+  id: string;
+  name?: string;
+};
+
+type PersistedCacheStatsV5 = {
+  version: 5;
   sessions: Record<string, Record<string, CacheStats>>; // sessionHash → modelKey → stats
   legacyFamily: Partial<Record<CacheProviderId, CacheStats>>;
+  lastRoutedModelBySession?: Record<string, PersistedRoutedModelRef>; // sessionHash → last real upstream model used while active model was router/auto
 };
 ```
 
@@ -264,9 +271,13 @@ type PersistedCacheStatsV4 = {
   or displayed.
 * Within each session, the inner map key is `${provider}/${id}` (same format as
   v3 `statsByModel`), separating e.g. `otokapi/gpt-5.5` from `cafecode/gpt-5.5`.
-* `legacyFamily` exists only as a migration/fallback bucket for pre-v4 data and
-  rare `message_end` updates where no active model is available. New normal
+* `legacyFamily` exists only as a migration/fallback bucket for pre-v4/v5 data
+  and rare `message_end` updates where no active model is available. New normal
   updates MUST write to the current session's bucket.
+* `lastRoutedModelBySession` persists the exact last real upstream model seen
+  while the active model was a router channel (for example `router/auto`). This
+  lets `/reload` restore the footer for the exact last routed model instead of a
+  best-effort "largest stats bucket" guess.
 * In-memory stats storage uses session-scoped keys of the form
   `${sessionHash}:${provider}/${id}` for O(1) lookup. The display helper
   `modelKeyFromSessionKey` strips the hash prefix for user-facing output.
@@ -299,11 +310,12 @@ type PersistedCacheStatsV4 = {
     old session buckets may remain on disk but are not loaded into the new
     session's footer counters
 
-### Stats migration (v4)
+### Stats migration (v5)
 
 | Input state | Behavior |
 |---|---|
-| `version: 4` | Parse valid `sessions` entries (all sessions' data loaded; the caller filters by current session hash). Parse valid `legacyFamily`. |
+| `version: 5` | Parse valid `sessions` entries (all sessions' data loaded; the caller filters by current session hash). Parse valid `legacyFamily` and `lastRoutedModelBySession`. |
+| `version: 4` | Parse valid `sessions` entries and `legacyFamily`; start with no exact router metadata. The next persist writes v5. |
 | `version: 3` | Migrate `statsByModel` entries (prefixed with current session hash) into the in-memory stats table. Legacy model keys without session context are treated as current-session data. |
 | `version: 2` with `statsByProvider` | Migrate valid family buckets to `legacyFamily`; start with empty session stats. |
 | `version: 1` single DeepSeek stats | Migrate valid stats to `legacyFamily.deepseek`; start with empty session stats. |
@@ -313,9 +325,10 @@ type PersistedCacheStatsV4 = {
 
 | Condition | Behavior |
 |---|---|
-| New path readable (v4) | Parse `sessions[sessionHash]` for current session data; load `legacyFamily`. |
-| New path readable (v3) | Migrate `statsByModel` to current session hash; write v4 on next persist. |
-| New path missing AND old path readable | Parse old path (v1/v2/v3), write the v4 shape to the new path atomically, best-effort `unlink` old path. |
+| New path readable (v5) | Parse `sessions[sessionHash]` for current session data; load `legacyFamily` and exact `lastRoutedModelBySession[sessionHash]` when present. |
+| New path readable (v4) | Parse `sessions[sessionHash]` for current session data; load `legacyFamily`; start with no exact router metadata; write v5 on next persist. |
+| New path readable (v3) | Migrate `statsByModel` to current session hash; write v5 on next persist. |
+| New path missing AND old path readable | Parse old path (v1/v2/v3/v4), write the v5 shape to the new path atomically, best-effort `unlink` old path. |
 | New path missing AND old path also missing | Initialize empty session stats and `legacyFamily` in memory. |
 | New path readable but corrupt JSON | Log a one-line warning, fall back to empty counters; do NOT delete. |
 | Old path corrupt | Log a one-line warning, do NOT delete the old file, do NOT write from corrupt data. |
@@ -345,12 +358,15 @@ and removing `_nosession`.
 
 * `modelKey(model)` is exactly `${model.provider}/${model.id}` for user-facing display.
   The internal lookup key is `${sessionHash}:${provider}/${id}`.
-* `session_start` (not reload): read persisted v4 file, load `sessions[currentSessionHash]`
-  entries into the in-memory stats table. Legacy v3 keys without session context are
-  migrated by prefixing with the current session hash.
+* `session_start` (not reload): read the persisted v5 file, load
+  `sessions[currentSessionHash]` entries into the in-memory stats table, and
+  restore `lastRoutedModelBySession[currentSessionHash]` when present. Legacy
+  v3 keys without session context are migrated by prefixing with the current
+  session hash.
 * `session_start` (reload): preserve session-scoped stats by re-reading the
-  persisted v4 file for the current `sessionHash` (same Pi session id) and
-  filtering to `sessions[currentSessionHash]`. Clear only transient state
+  persisted v5 file for the current `sessionHash` (same Pi session id),
+  filtering to `sessions[currentSessionHash]`, and restoring the exact last
+  routed model for that session when present. Clear only transient state
   (recent samples, integrity notification) and republish footer; do not reset
   current-session counters.
 * `model_select` and `session_start` publish status for the selected/current model.
@@ -383,7 +399,9 @@ and removing `_nosession`.
 | New v2 stats file exists | Load v2 `statsByProvider` into `legacyFamily`; start with empty session stats; next write persists v4. |
 | New v3 stats file has entries for `otokapi/gpt-5.5` and `cafecode/gpt-5.5` | Migrate both unscoped keys into the current session hash; selecting either model displays only that provider/model key's counters, even though both use the OpenAI-family footer label. |
 | Selected matching model has no current-session entry yet | Display empty same-day stats (`0/0`, `0M/0M`) instead of legacy family aggregate counters. |
-| `/reload` session_start reason | Re-read persisted v4 data for the same current session hash, clear only transient state (recent samples, integrity notifications), and re-publish footer with current stats. |
+| `/reload` session_start reason | Re-read persisted v5 data for the same current session hash, clear only transient state (recent samples, integrity notifications), and re-publish footer with current stats. |
+| Active model is `router/auto`, persisted exact last routed model exists, and another bucket has more total requests | `/reload` restores the footer for the exact persisted last routed model, not the largest stats bucket. |
+| Active model is `router/auto`, exact last routed model exists but its stats bucket was reset/removed | `/reload` still restores that exact model's footer label with empty same-day stats (`0/0`, `0M/0M`). |
 | Non-GPT OpenAI-compatible model (Kimi, Qwen, GLM, MiniMax, Mimo, Hunyuan, Mistral, Grok, Llama, Nemotron, Cohere, Yi) with `openai-completions` API | Selected adapter shows the corresponding footer label; compat warning fires for non-official base URLs missing cache/session-affinity flags. |
 | Model id/name contains both GPT-family and non-GPT tokens (e.g. `kimi-gpt-4`) | GPT adapter takes precedence (earlier in `CACHE_PROVIDER_ADAPTERS`). Footer shows `OpenAI cache`, stats still scoped by provider/model key. |
 | Different Pi sessions with same provider/model | Keys differ by session hash; footer shows only current session's counters. |
@@ -400,16 +418,20 @@ and removing `_nosession`.
 
 ---
 
-### Good / Base / Bad cases for v4 session stats
+### Good / Base / Bad cases for v5 session stats
 
 * **Good**: Same Pi session + same provider/model uses one internal key
   (`${sessionHash}:${provider}/${id}`), accumulates counters across turns,
   survives `/reload`, and `/cache-optimizer reset` clears only that key while
   leaving other models and other session hashes intact.
 * **Base**: A v3 unscoped `statsByModel` file is treated as legacy data for the
-  current session. The first explicit current-session persist writes v4
+  current session. The first explicit current-session persist writes v5
   `sessions[currentSessionHash]` data and removes any transitional
   `_nosession` bucket.
+* **Good**: When the active model is a router channel, the exact last real
+  upstream model is persisted under `lastRoutedModelBySession[currentSessionHash]`
+  so `/reload` restores the correct footer label and bucket, even if another
+  provider/model bucket in the same session has more requests.
 * **Base**: v2/v1 family-level stats migrate only into `legacyFamily`; a matched
   but unseen current-session model still displays `0/0` instead of inheriting
   old family totals.
@@ -418,7 +440,7 @@ and removing `_nosession`.
   `_nosession` after a current-session write, or claiming inter-process locking
   semantics that the atomic rename writer does not provide.
 
-### Wrong vs correct: v4 session stats persistence
+### Wrong vs correct: v5 session stats persistence
 
 #### Wrong
 
@@ -449,9 +471,12 @@ await writePersistedCacheStats(state, sessionHash);
 When modifying cache stats, migration, rollover, or footer behavior, add/update a
 task-level verification script that asserts:
 
-* v4 parse/round-trip preserves valid `sessions[sessionHash][provider/model]`
-  entries for all sessions plus `legacyFamily`, and drops malformed entries
-  without throwing.
+* v5 parse/round-trip preserves valid `sessions[sessionHash][provider/model]`
+  entries for all sessions plus `legacyFamily` and `lastRoutedModelBySession`,
+  and drops malformed entries without throwing.
+* v4 parse/migration preserves valid `sessions[sessionHash][provider/model]`
+  entries plus `legacyFamily`, starts with no exact router metadata, and writes
+  v5 on the next persist.
 * v3 parse/migration assigns valid unscoped `statsByModel` entries to the
   current session hash on restore while preserving `legacyFamily`; malformed
   entries are dropped without throwing.
@@ -468,12 +493,15 @@ task-level verification script that asserts:
 * `/reload` preserves session-scoped stats by re-reading current-session
   persistence and does not reset counters; it only clears transient state
   (recent samples, integrity notification).
+* When the active model is a router channel, exact persisted
+  `lastRoutedModelBySession[currentSessionHash]` metadata restores the footer
+  for the exact last routed provider/model, not merely the largest stats bucket.
 * `/cache-optimizer reset` clears only the current session + active model stats
   entry and recent samples, persists immediately in explicit current-session
   mode, and shows 0/0.
 * `_nosession` reset-resurrection regression: after legacy/no-session data is
   migrated, resetting the active model and then `/reload` MUST NOT resurrect the
-  deleted stats; persisted v4 output must not retain `_nosession` after an
+  deleted stats; persisted v5 output must not retain `_nosession` after an
   explicit current-session write.
 * Sequential write preservation: a write for the current session preserves other
   existing session buckets visible in the persisted file, while tests must not

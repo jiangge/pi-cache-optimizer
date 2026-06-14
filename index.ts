@@ -162,9 +162,16 @@ type PersistedCacheStatsV2 = {
 };
 
 /** Per-model-key scoped state. Used in memory and for v3 persistence. */
+type PersistedRoutedModelRef = {
+  provider: string;
+  id: string;
+  name?: string;
+};
+
 type CacheStatsState = {
   statsByModel: Record<string, CacheStats>;
   legacyFamily: Partial<Record<CacheProviderId, CacheStats>>;
+  lastRoutedModelBySession?: Record<string, PersistedRoutedModelRef>;
 };
 
 type PersistedCacheStatsV3 = {
@@ -184,6 +191,13 @@ type PersistedCacheStatsV4 = {
   version: 4;
   sessions: Record<string, Record<string, CacheStats>>;
   legacyFamily: Partial<Record<CacheProviderId, CacheStats>>;
+};
+
+type PersistedCacheStatsV5 = {
+  version: 5;
+  sessions: Record<string, Record<string, CacheStats>>;
+  legacyFamily: Partial<Record<CacheProviderId, CacheStats>>;
+  lastRoutedModelBySession?: Record<string, PersistedRoutedModelRef>;
 };
 
 type UsageSnapshot = {
@@ -3105,12 +3119,55 @@ function parseCacheStats(value: unknown): CacheStats | undefined {
   };
 }
 
+function parsePersistedRoutedModelRef(value: unknown): PersistedRoutedModelRef | undefined {
+  const record = asRecord(value);
+  if (!record || !isNonEmptyString(record.provider) || !isNonEmptyString(record.id)) return undefined;
+
+  return {
+    provider: record.provider.trim(),
+    id: record.id.trim(),
+    name: isNonEmptyString(record.name) ? record.name.trim() : record.id.trim(),
+  };
+}
+
+function routedModelRefToPiModel(ref: PersistedRoutedModelRef): PiModel {
+  return {
+    id: ref.id,
+    name: ref.name ?? ref.id,
+    provider: ref.provider,
+    api: "",
+    baseUrl: "",
+    reasoning: false,
+    input: ["text"],
+    cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+    contextWindow: 0,
+    maxTokens: 0,
+  } as PiModel;
+}
+
+function buildExactRouterStatusEntry(
+  sessionHash: string | undefined,
+  statsByModel: Record<string, CacheStats>,
+  lastRoutedModel: PersistedRoutedModelRef | undefined,
+): { adapter: CacheProviderAdapter; stats: CacheStats } | undefined {
+  if (!sessionHash || !lastRoutedModel) return undefined;
+
+  const model = routedModelRefToPiModel(lastRoutedModel);
+  const adapter = selectAdapterForModel(model);
+  if (!adapter) return undefined;
+
+  const key = makeSessionModelKey(sessionHash, lastRoutedModel.provider, lastRoutedModel.id);
+  return { adapter, stats: statsByModel[key] ?? emptyCacheStats() };
+}
+
 function parsePersistedCacheStats(value: unknown): CacheStatsState | undefined {
   const record = asRecord(value);
   if (!record) return undefined;
 
-  // version 4: session-scoped stats + legacy family fallback
-  if (record.version === 4) {
+  // version 4/5: session-scoped stats + legacy family fallback.
+  // v5 additionally persists the last actual routed model per session so
+  // router/auto can restore the exact upstream footer after /reload.
+  if (record.version === 4 || record.version === 5) {
     const legacyFamily: Partial<Record<CacheProviderId, CacheStats>> = {};
     const rawFamily = asRecord(record.legacyFamily);
     if (rawFamily) {
@@ -3138,10 +3195,19 @@ function parsePersistedCacheStats(value: unknown): CacheStatsState | undefined {
       }
     }
 
-    return { statsByModel, legacyFamily };
+    const lastRoutedModelBySession: Record<string, PersistedRoutedModelRef> = {};
+    const rawLastRoutedModels = asRecord(record.lastRoutedModelBySession);
+    if (rawLastRoutedModels) {
+      for (const [sessionHash, rawModel] of Object.entries(rawLastRoutedModels)) {
+        const parsed = parsePersistedRoutedModelRef(rawModel);
+        if (parsed) lastRoutedModelBySession[sessionHash] = parsed;
+      }
+    }
+
+    return { statsByModel, legacyFamily, lastRoutedModelBySession };
   }
 
-  // version 3: migrate to v4 semantics by wrapping statsByModel into sessions
+  // version 3: migrate to v4/v5 semantics by wrapping statsByModel into sessions
   if (record.version === 3) {
     const statsByModel: Record<string, CacheStats> = {};
     const rawModelMap = asRecord(record.statsByModel);
@@ -3335,11 +3401,38 @@ function mergeCacheSessions(
   return sessions;
 }
 
+function mergeLastRoutedModels(
+  existingLastRoutedModelBySession: Record<string, PersistedRoutedModelRef>,
+  state: CacheStatsState,
+  currentSessionHash?: string,
+): Record<string, PersistedRoutedModelRef> {
+  const merged: Record<string, PersistedRoutedModelRef> = { ...existingLastRoutedModelBySession };
+  const incoming = state.lastRoutedModelBySession ?? {};
+
+  if (currentSessionHash !== undefined) {
+    const current = incoming[currentSessionHash];
+    if (current) {
+      merged[currentSessionHash] = current;
+    } else {
+      // Explicit deletion: when incoming state has no entry for current session,
+      // remove any existing stale entry to reflect intentional reset.
+      delete merged[currentSessionHash];
+    }
+    return merged;
+  }
+
+  for (const [sessionHash, ref] of Object.entries(incoming)) {
+    merged[sessionHash] = ref;
+  }
+  return merged;
+}
+
 async function writePersistedCacheStats(state: CacheStatsState, currentSessionHash?: string): Promise<void> {
   await mkdir(STATE_DIR, { recursive: true });
 
   // Read existing file to preserve other sessions' data.
   let existingSessions: Record<string, Record<string, CacheStats>> = {};
+  let existingLastRoutedModelBySession: Record<string, PersistedRoutedModelRef> = {};
   try {
     const raw = await readFile(STATE_FILE_PATH, "utf8");
     const parsed = parsePersistedCacheStats(JSON.parse(raw));
@@ -3355,17 +3448,24 @@ async function writePersistedCacheStats(state: CacheStatsState, currentSessionHa
           existingSessions[hash][modelKey] = stats;
         }
       }
+      existingLastRoutedModelBySession = { ...(parsed.lastRoutedModelBySession ?? {}) };
     }
   } catch {
     // Ignore read errors (file may not exist yet).
   }
 
   const sessions = mergeCacheSessions(existingSessions, state, currentSessionHash);
+  const lastRoutedModelBySession = mergeLastRoutedModels(
+    existingLastRoutedModelBySession,
+    state,
+    currentSessionHash,
+  );
 
-  const payload: PersistedCacheStatsV4 = {
-    version: 4,
+  const payload: PersistedCacheStatsV5 = {
+    version: 5,
     sessions,
     legacyFamily: state.legacyFamily,
+    ...(Object.keys(lastRoutedModelBySession).length > 0 ? { lastRoutedModelBySession } : {}),
   };
   const tempPath = `${STATE_FILE_PATH}.${process.pid}.${Date.now()}.tmp`;
 
@@ -4919,8 +5019,12 @@ export const __internals_for_tests = {
   makeSessionModelKey,
   modelKeyFromSessionKey,
   filterRestorableStatsForSession,
+  parsePersistedRoutedModelRef,
+  routedModelRefToPiModel,
+  buildExactRouterStatusEntry,
   // Persistence helpers (for reload/reset tests)
   mergeCacheSessions,
+  mergeLastRoutedModels,
   writePersistedCacheStats,
   readPersistedCacheStats,
   STATE_FILE_PATH,
@@ -4960,6 +5064,7 @@ export default function (pi: ExtensionAPI) {
   let currentSessionId = "";
   let currentSessionHash = "";
   let currentSessionHashSet = false;
+  let lastActualRoutedModel: PersistedRoutedModelRef | undefined;
   const PERSIST_DEBOUNCE_MS = 2000;
   /** In-memory recent usage samples per model key (not persisted, cleared on reload). */
   const recentSamplesByModelKey = new Map<string, CacheUsageSample[]>();
@@ -4970,6 +5075,7 @@ export default function (pi: ExtensionAPI) {
       currentSessionId = sid;
       currentSessionHash = hashSessionId(sid);
       currentSessionHashSet = true;
+      lastActualRoutedModel = undefined;
     }
   }
 
@@ -5019,7 +5125,13 @@ export default function (pi: ExtensionAPI) {
   }
 
   function getCacheStatsState(): CacheStatsState {
-    return { statsByModel: cacheStatsByModel, legacyFamily: cacheStatsLegacyFamily };
+    return {
+      statsByModel: cacheStatsByModel,
+      legacyFamily: cacheStatsLegacyFamily,
+      ...(currentSessionHashSet && lastActualRoutedModel
+        ? { lastRoutedModelBySession: { [currentSessionHash]: lastActualRoutedModel } }
+        : {}),
+    };
   }
 
   /** Look up active stats for a model, falling back to legacy family. */
@@ -5146,6 +5258,9 @@ export default function (pi: ExtensionAPI) {
         currentSessionHashSet ? currentSessionHash : undefined,
       );
       cacheStatsLegacyFamily = persisted?.legacyFamily ?? emptyAllCacheStats();
+      lastActualRoutedModel = currentSessionHashSet
+        ? persisted?.lastRoutedModelBySession?.[currentSessionHash]
+        : undefined;
 
       await rollOverStatsIfNeeded(ctx);
       return;
@@ -5160,8 +5275,61 @@ export default function (pi: ExtensionAPI) {
       currentSessionHashSet ? currentSessionHash : undefined,
     );
     cacheStatsLegacyFamily = persisted?.legacyFamily ?? emptyAllCacheStats();
+    lastActualRoutedModel = currentSessionHashSet
+      ? persisted?.lastRoutedModelBySession?.[currentSessionHash]
+      : undefined;
     lastStatusText = undefined;
     await rollOverStatsIfNeeded(ctx);
+  }
+
+  /**
+   * Fallback for older persisted files that do not yet carry exact
+   * last-routed-model metadata. When the current model is a router channel
+   * (e.g. router/auto), restorable stats are stored under the real upstream
+   * model's provider/id key, not under router/auto. Find the best valid entry
+   * (highest totalRequests among adapter-detectable model keys) so we can show
+   * meaningful footer content on session_start after reload.
+   */
+  function findBestRouterModelStats(): { adapter: CacheProviderAdapter; stats: CacheStats } | undefined {
+    if (!currentSessionHash) return undefined;
+    const prefix = `${currentSessionHash}:`;
+    let best: { adapter: CacheProviderAdapter; stats: CacheStats; total: number } | undefined;
+
+    for (const [key, stats] of Object.entries(cacheStatsByModel)) {
+      if (!key.startsWith(prefix)) continue;
+
+      // Extract provider/id from key like "abc123:run-claude/claude-opus-4-8"
+      const modelKeyPart = key.slice(prefix.length);
+      const slashIdx = modelKeyPart.indexOf("/");
+      if (slashIdx < 0 || slashIdx >= modelKeyPart.length - 1) continue;
+      const modelId = modelKeyPart.slice(slashIdx + 1);
+      const providerName = modelKeyPart.slice(0, slashIdx);
+
+      // Construct a minimal model for adapter detection.
+      // Every is*LikeModel function only accesses model.id and model.name
+      // via getModelIdNameTokenValues, so { id, name } is sufficient.
+      const mockModel = {
+        id: modelId,
+        name: modelId,
+        provider: providerName,
+        api: "",
+        baseUrl: "",
+        reasoning: false,
+        input: ["text"],
+        cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+        contextWindow: 0,
+        maxTokens: 0,
+      } as PiModel;
+
+      const adapter = selectAdapterForModel(mockModel);
+      if (!adapter) continue;
+
+      if (!best || stats.totalRequests > best.total) {
+        best = { adapter, stats, total: stats.totalRequests };
+      }
+    }
+
+    return best ? { adapter: best.adapter, stats: best.stats } : undefined;
   }
 
   async function publishStatus(ctx: ExtensionContext, model: PiModel | undefined = ctx.model): Promise<void> {
@@ -5171,11 +5339,23 @@ export default function (pi: ExtensionAPI) {
     const adapter = selectAdapterForModel(model);
     let statusText: string | undefined;
     if (!adapter && isRouterModel(model)) {
-      // router/auto has no stable target family before the first successful
-      // routed response. Keep the existing cache footer visible instead of
-      // clearing it on model_select; message_end will switch to the real
-      // upstream model/provider after pi-router relays the response metadata.
-      return;
+      // On model_select (existing footer), keep the existing cache footer
+      // visible instead of clearing it. On session_start (no footer yet
+      // after reload/fresh start), restore the exact last actual routed model
+      // for this session when available; fall back to older best-effort
+      // heuristics only when no exact metadata exists.
+      if (lastStatusText !== undefined) return;
+      const realEntry = buildExactRouterStatusEntry(
+        currentSessionHashSet ? currentSessionHash : undefined,
+        cacheStatsByModel,
+        lastActualRoutedModel,
+      ) ?? findBestRouterModelStats();
+      if (realEntry) {
+        const statsText = formatCacheStats(realEntry.adapter, realEntry.stats);
+        statusText = runtimeOptimizerEnabled
+          ? statsText
+          : `Cache Optimizer disabled · ${statsText}`;
+      }
     }
 
     if (adapter) {
@@ -5360,6 +5540,23 @@ export default function (pi: ExtensionAPI) {
     const usage = adapter.normalizeUsage(event.message);
 
     const statsModel = isRouterModel(ctx.model) ? modelFromAssistantMessage(event.message, ctx.model) : ctx.model;
+    let routedModelChanged = false;
+    if (isRouterModel(ctx.model) && statsModel && !isRouterModel(statsModel)) {
+      const nextRoutedModel: PersistedRoutedModelRef = {
+        provider: statsModel.provider,
+        id: statsModel.id,
+        name: statsModel.name || statsModel.id,
+      };
+      if (
+        !lastActualRoutedModel ||
+        lastActualRoutedModel.provider !== nextRoutedModel.provider ||
+        lastActualRoutedModel.id !== nextRoutedModel.id ||
+        (lastActualRoutedModel.name || lastActualRoutedModel.id) !== (nextRoutedModel.name || nextRoutedModel.id)
+      ) {
+        lastActualRoutedModel = nextRoutedModel;
+        routedModelChanged = true;
+      }
+    }
 
     // Record recent sample (even when usage is missing, for trend diagnosis)
     if (statsModel) {
@@ -5370,7 +5567,10 @@ export default function (pi: ExtensionAPI) {
       recordRecentSample(sk, usage ?? { cacheRead: 0, cacheWrite: 0, totalInput: 0 }, missingFields);
     }
 
-    if (!usage) return;
+    if (!usage) {
+      if (routedModelChanged) schedulePersistCacheStats(ctx);
+      return;
+    }
 
     await rollOverStatsIfNeeded(ctx);
 

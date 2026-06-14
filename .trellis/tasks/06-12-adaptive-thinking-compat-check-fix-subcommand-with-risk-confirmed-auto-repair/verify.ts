@@ -19,6 +19,10 @@ const {
   selfCheckFix,
   buildFixSuggestion,
   describeMissingCacheCompatForModel,
+  parsePersistedCacheStats,
+  buildExactRouterStatusEntry,
+  mergeLastRoutedModels,
+  makeSessionModelKey,
 } = __internals_for_tests;
 
 type Failure = { name: string; detail: string };
@@ -457,6 +461,125 @@ expect("routing-adaptive", atMissing.includes("forceAdaptiveThinking"), "adaptiv
 const proxyModel = makeModel({ id: "kimi-model", api: "openai-completions", baseUrl: "https://kimi.example.com", compat: {} });
 const proxyMissing = describeMissingCacheCompatForModel(proxyModel);
 expect("routing-proxy", proxyMissing.length > 0, "proxy model should return missing flags");
+
+// ====================================================================
+// Test 13: persisted exact router model restore metadata (v5)
+// ====================================================================
+
+const sessionHash = "sess1234abcd5678";
+const routerPersisted = parsePersistedCacheStats({
+  version: 5,
+  sessions: {
+    [sessionHash]: {
+      "run-claude/claude-opus-4-8": {
+        day: "2026-06-14",
+        totalRequests: 2,
+        hitRequests: 1,
+        cachedInputTokens: 100,
+        cacheWriteInputTokens: 50,
+        totalInputTokens: 200,
+      },
+      "otokapi/gpt-5.5": {
+        day: "2026-06-14",
+        totalRequests: 9,
+        hitRequests: 8,
+        cachedInputTokens: 900,
+        cacheWriteInputTokens: 0,
+        totalInputTokens: 1000,
+      },
+    },
+  },
+  legacyFamily: {},
+  lastRoutedModelBySession: {
+    [sessionHash]: {
+      provider: "run-claude",
+      id: "claude-opus-4-8",
+      name: "Claude Opus 4.8",
+    },
+  },
+});
+expect("parse-v5-router-meta", routerPersisted !== undefined, "v5 persisted state should parse");
+if (routerPersisted) {
+  expectEq(
+    "parse-v5-router-provider",
+    routerPersisted.lastRoutedModelBySession?.[sessionHash]?.provider,
+    "run-claude",
+  );
+  const exactEntry = buildExactRouterStatusEntry(
+    sessionHash,
+    routerPersisted.statsByModel,
+    routerPersisted.lastRoutedModelBySession?.[sessionHash],
+  );
+  expect("exact-router-entry", exactEntry !== undefined, "exact router entry should resolve");
+  if (exactEntry) {
+    expectEq("exact-router-label", exactEntry.adapter.label, "Claude cache");
+    expectEq("exact-router-total", exactEntry.stats.totalRequests, 2);
+  }
+}
+
+// v4 files have no last-routed metadata; parse should still succeed.
+const routerPersistedV4 = parsePersistedCacheStats({
+  version: 4,
+  sessions: {
+    [sessionHash]: {
+      "run-claude/claude-opus-4-8": {
+        day: "2026-06-14",
+        totalRequests: 1,
+        hitRequests: 0,
+        cachedInputTokens: 0,
+        cacheWriteInputTokens: 10,
+        totalInputTokens: 100,
+      },
+    },
+  },
+  legacyFamily: {},
+});
+expect("parse-v4-no-router-meta", routerPersistedV4 !== undefined, "v4 persisted state should still parse");
+expectEq(
+  "parse-v4-router-meta-empty",
+  Object.keys(routerPersistedV4?.lastRoutedModelBySession ?? {}).length,
+  0,
+);
+
+// Exact routed model should win even when another model has more requests.
+if (routerPersisted) {
+  const exactEntry = buildExactRouterStatusEntry(
+    sessionHash,
+    routerPersisted.statsByModel,
+    routerPersisted.lastRoutedModelBySession?.[sessionHash],
+  );
+  expectEq("exact-beats-largest-total", exactEntry?.stats.totalRequests, 2);
+}
+
+// mergeLastRoutedModels should preserve sibling sessions and update current session.
+const mergedLastRouted = mergeLastRoutedModels(
+  {
+    sibling: { provider: "otokapi", id: "gpt-5.5", name: "GPT-5.5" },
+    [sessionHash]: { provider: "old", id: "old-model", name: "Old Model" },
+  },
+  {
+    statsByModel: {},
+    legacyFamily: {},
+    lastRoutedModelBySession: {
+      [sessionHash]: { provider: "run-claude", id: "claude-opus-4-8", name: "Claude Opus 4.8" },
+    },
+  },
+  sessionHash,
+);
+expectEq("merge-last-routed-sibling-preserved", mergedLastRouted.sibling.provider, "otokapi");
+expectEq("merge-last-routed-current-overwritten", mergedLastRouted[sessionHash].provider, "run-claude");
+
+// Exact router restore should still produce a 0/0 footer when metadata exists but the
+// specific stats bucket was reset/absent.
+const emptyExactEntry = buildExactRouterStatusEntry(
+  sessionHash,
+  {},
+  { provider: "run-claude", id: "claude-opus-4-8", name: "Claude Opus 4.8" },
+);
+expect("exact-router-empty-bucket", emptyExactEntry !== undefined, "exact restore should survive missing bucket");
+if (emptyExactEntry) {
+  expectEq("exact-router-empty-total", emptyExactEntry.stats.totalRequests, 0);
+}
 
 // ====================================================================
 // Summary
