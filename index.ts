@@ -1381,6 +1381,34 @@ function modelKey(model: PiModel): string {
   return `${model.provider}/${model.id}`;
 }
 
+function isRouterModel(model: PiModel | undefined): boolean {
+  return lower(model?.provider) === "router";
+}
+
+function modelFromAssistantMessage(message: unknown, fallback: PiModel | undefined): PiModel | undefined {
+  const record = getAssistantRecord(message);
+  if (!record) return fallback;
+
+  const id = lower(record.responseModel) || lower(record.model) || fallback?.id;
+  const provider = lower(record.provider) || fallback?.provider;
+  const api = lower(record.api) || fallback?.api;
+  if (!id || !provider || !api) return fallback;
+
+  return {
+    ...(fallback ?? {}),
+    id,
+    name: id,
+    provider,
+    api,
+    baseUrl: fallback?.baseUrl ?? "",
+    reasoning: fallback?.reasoning ?? false,
+    input: fallback?.input ?? ["text"],
+    cost: fallback?.cost ?? { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+    contextWindow: fallback?.contextWindow ?? 0,
+    maxTokens: fallback?.maxTokens ?? 0,
+  } as PiModel;
+}
+
 function keyForModelExt(model: { provider: string; id: string }): string {
   return `${model.provider}/${model.id}`;
 }
@@ -2835,7 +2863,8 @@ function selectAdapterForModel(model: PiModel | undefined): CacheProviderAdapter
 }
 
 function selectAdapterForAssistantMessage(message: unknown, model: PiModel | undefined): CacheProviderAdapter | undefined {
-  return CACHE_PROVIDER_ADAPTERS.find((adapter) => adapter.matchesAssistantMessage(message, model));
+  const responseModel = isRouterModel(model) ? modelFromAssistantMessage(message, model) : model;
+  return CACHE_PROVIDER_ADAPTERS.find((adapter) => adapter.matchesAssistantMessage(message, responseModel));
 }
 
 function notifyCacheCompatIfNeeded(
@@ -5141,6 +5170,14 @@ export default function (pi: ExtensionAPI) {
 
     const adapter = selectAdapterForModel(model);
     let statusText: string | undefined;
+    if (!adapter && isRouterModel(model)) {
+      // router/auto has no stable target family before the first successful
+      // routed response. Keep the existing cache footer visible instead of
+      // clearing it on model_select; message_end will switch to the real
+      // upstream model/provider after pi-router relays the response metadata.
+      return;
+    }
+
     if (adapter) {
       // Display session-scoped stats. A model that has never been used
       // in this session shows 0/0. The message_end hook populates
@@ -5322,9 +5359,11 @@ export default function (pi: ExtensionAPI) {
 
     const usage = adapter.normalizeUsage(event.message);
 
+    const statsModel = isRouterModel(ctx.model) ? modelFromAssistantMessage(event.message, ctx.model) : ctx.model;
+
     // Record recent sample (even when usage is missing, for trend diagnosis)
-    if (ctx.model) {
-      const sk = sessionModelKey(ctx.model);
+    if (statsModel) {
+      const sk = sessionModelKey(statsModel);
       const missingFields = usage === undefined || (usage.cacheRead === 0 && usage.cacheWrite === 0 && usage.totalInput === 0)
         ? true
         : hasMissingUsageFields(event.message, adapter);
@@ -5335,17 +5374,17 @@ export default function (pi: ExtensionAPI) {
 
     await rollOverStatsIfNeeded(ctx);
 
-    // Update stats scoped to current session + active model.
-    // Falls back to legacy family when ctx.model is undefined.
-    if (ctx.model) {
-      const sk = sessionModelKey(ctx.model);
+    // Update stats scoped to current session + actual routed model.
+    // Falls back to legacy family when no model is available.
+    if (statsModel) {
+      const sk = sessionModelKey(statsModel);
       addUsageToCacheStats(getOrCreateStatsByModelKey(sk), usage);
     } else {
       addUsageToCacheStats(getStatsForModel(undefined, adapter), usage);
     }
 
     schedulePersistCacheStats(ctx);
-    await publishStatus(ctx);
+    await publishStatus(ctx, statsModel);
   });
 
   // ────────────────────────────────────────────────────────────────
