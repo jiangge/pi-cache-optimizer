@@ -1,0 +1,2 @@
+{"file": ".trellis/spec/frontend/cache-adapter-footer-stats.md", "reason": "Binding contract for adapter selection, footer stats identity, prompt-cache-key fallback, compat warnings, and provider transport caveats. The routing-provider protocol must preserve these semantics."}
+{"file": ".trellis/tasks/06-18-06-18-routing-provider-cache-protocol/prd.md", "reason": "Task requirements and protocol contract for implementing generic routing-provider support without coupling to pi-router or pi-auto-router."}

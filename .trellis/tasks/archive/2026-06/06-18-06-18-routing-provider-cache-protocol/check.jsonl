@@ -1,0 +1,2 @@
+{"file": ".trellis/spec/frontend/cache-adapter-footer-stats.md", "reason": "Use as the review checklist: adapter detection must remain id/name-based, stats must remain truthful, compat warnings must stay advisory, and prompt/cache-key behavior must preserve existing gates."}
+{"file": ".trellis/tasks/06-18-06-18-routing-provider-cache-protocol/prd.md", "reason": "Acceptance criteria and test plan for reviewing the generic routing-provider protocol implementation."}
