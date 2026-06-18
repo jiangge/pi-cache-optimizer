@@ -33,8 +33,9 @@
 - 对缺少缓存 / session-affinity compat 的第三方 OpenAI-compatible 代理给出一次性提醒。
 - 检测 Anthropic adaptive thinking 模型（opus-4.6+、sonnet-4.6+、fable-5+）是否缺少 `forceAdaptiveThinking: true` compat。
 - 为支持的模型家族显示按 session 隔离的底部缓存统计。
+- 通过版本化全局协议（`Symbol.for("pi.routing.registry.v1")` 与 `Symbol.for("pi.cache.hints.v1")`）支持可选的 router extension 集成，而不导入任何 router 包。
 
-缓存是 provider 侧的 best-effort 行为。第三方代理仍可能隐藏缓存 usage、拒绝不支持的参数，或把请求路由到多个上游。
+缓存是 provider 侧的 best-effort 行为。第三方代理和 router extension 仍可能隐藏缓存 usage、拒绝不支持的参数，或把请求路由到多个上游。
 
 ## 安装
 
@@ -211,6 +212,8 @@ Provider 级最小 override：
 ## Footer 统计
 
 统计是只读本地计数，保存在 `~/.pi/agent/pi-cache-optimizer-stats.json`，按 Pi session + provider/model 隔离。文件只包含日期和数字计数，不包含 API key、prompt、payload、headers、响应或模型输出。
+
+对于虚拟 routing provider，最终 assistant message 的 metadata 是权威来源：如果 message 携带真实上游 `provider`、`model` / `responseModel`、`api` 和 usage，统计会归因到真实上游 provider/model，而不是虚拟 router 外壳。Router extension 也可以在 `Symbol.for("pi.routing.registry.v1")` 下发布 live route adapter，让 footer、doctor、compat 和 reset 在最终 assistant message 出现前解析当前上游。本扩展还通过 `Symbol.for("pi.cache.hints.v1")` 暴露按查询过滤的 prompt/cache hints，供转发到内部 `streamSimple` 的 router 使用。两个协议都是可选、版本化的；不需要导入任何 router 包。
 
 示例 footer：
 

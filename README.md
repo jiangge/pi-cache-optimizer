@@ -33,8 +33,9 @@ Pi extension for improving provider-side KV / prompt cache hit rates. It keeps s
 - Warns once for third-party OpenAI-compatible proxies missing cache/session-affinity compat flags.
 - Detects Anthropic adaptive thinking models (opus-4.6+, sonnet-4.6+, fable-5+) missing `forceAdaptiveThinking: true` compat.
 - Shows session-scoped footer stats for supported model families.
+- Supports optional router-extension integration through versioned global protocols (`Symbol.for("pi.routing.registry.v1")` and `Symbol.for("pi.cache.hints.v1")`) without importing router packages.
 
-Caching is provider-side and best-effort. Third-party proxies can still hide cache usage, reject unsupported parameters, or route requests across multiple upstreams.
+Caching is provider-side and best-effort. Third-party proxies and router extensions can still hide cache usage, reject unsupported parameters, or route requests across multiple upstreams.
 
 ## Install
 
@@ -211,6 +212,8 @@ If only one model should change, use `modelOverrides`:
 ## Footer stats
 
 Stats are read-only local counters stored at `~/.pi/agent/pi-cache-optimizer-stats.json` and scoped by Pi session + provider/model. They contain only dates and numeric counters — no API keys, prompts, payloads, headers, responses, or model output.
+
+For virtual routing providers, completed assistant message metadata is authoritative: if the message carries real upstream `provider`, `model` / `responseModel`, `api`, and usage, stats are attributed to that upstream provider/model instead of the virtual router shell. Router extensions may also publish a live route adapter under `Symbol.for("pi.routing.registry.v1")` so footer, doctor, compat, and reset flows can resolve the current upstream before the final assistant message exists. The cache optimizer also exposes query-scoped prompt/cache hints via `Symbol.for("pi.cache.hints.v1")` for routers that forward to inner `streamSimple` calls. Both protocols are optional and versioned; no router package import is required.
 
 Example footer:
 

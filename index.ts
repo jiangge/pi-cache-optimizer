@@ -71,6 +71,8 @@ const NO_OPENAI_CACHE_KEY_ENV = "PI_CACHE_OPTIMIZER_NO_OPENAI_CACHE_KEY";
 const OPENAI_PROMPT_CACHE_KEY_MAX_LENGTH = 64;
 const NO_SKILL_COMPRESSION_ENV = "PI_CACHE_OPTIMIZER_NO_SKILL_COMPRESSION";
 const NO_PROMPT_REWRITE_ENV = "PI_CACHE_OPTIMIZER_NO_PROMPT_REWRITE";
+const PI_ROUTING_REGISTRY_SYMBOL = Symbol.for("pi.routing.registry.v1");
+const PI_CACHE_HINTS_SYMBOL = Symbol.for("pi.cache.hints.v1");
 
 let runtimeOptimizerEnabled = true;
 
@@ -166,6 +168,80 @@ type PersistedRoutedModelRef = {
   provider: string;
   id: string;
   name?: string;
+};
+
+type PiRouteSnapshot = {
+  virtualProvider: string;
+  virtualModelId: string;
+  provider: string;
+  modelId: string;
+  api?: string;
+  canonicalModelId?: string;
+  routeLabel?: string;
+  status?: "planned" | "trying" | "selected" | "success" | "failed";
+  sessionIdHash?: string;
+  requestId?: string;
+  timestamp: number;
+};
+
+type PiRouteResolveHint = {
+  sessionIdHash?: string;
+  requestId?: string;
+};
+
+type PiRouterAdapterV1 = {
+  virtualProvider: string;
+  resolveActiveRoute(
+    virtualModelId: string,
+    hint?: PiRouteResolveHint,
+  ): PiRouteSnapshot | undefined;
+  resolveCandidateRoutes?(virtualModelId: string): PiRouteSnapshot[];
+  subscribe?(listener: (event: PiRouteSnapshot) => void): () => void;
+};
+
+type PiRoutingRegistryV1 = {
+  version: 1;
+  registerRouter(adapter: PiRouterAdapterV1): () => void;
+  getRouter(virtualProvider: string): PiRouterAdapterV1 | undefined;
+};
+
+type PiCacheHintsInput = {
+  sessionIdHash?: string;
+  virtualProvider?: string;
+  virtualModelId?: string;
+  upstreamProvider?: string;
+  upstreamModelId?: string;
+  api?: string;
+};
+
+type PiCacheHintsOutput = {
+  systemPrompt?: string;
+  promptCacheKey?: string;
+  cacheRetention?: "long";
+};
+
+type PiCacheHintSnapshot = PiCacheHintsInput & PiCacheHintsOutput & {
+  timestamp: number;
+};
+
+type PiCacheHintsV1 = {
+  version: 1;
+  getHints(input: PiCacheHintsInput): PiCacheHintsOutput | undefined;
+};
+
+type ProtocolGlobal = typeof globalThis & Record<symbol, unknown> & {
+  __piCacheOptimizerRouter?: unknown;
+  __piCacheOptimizerCacheKey__?: unknown;
+};
+
+type ModelRegistryLike = {
+  find?(provider: string, modelId: string): PiModel | undefined;
+  getAvailable?(): PiModel[];
+  getAll?(): PiModel[];
+};
+
+type ContextWithOptionalModelRegistry = Pick<ExtensionContext, "sessionManager"> & {
+  modelRegistry?: ModelRegistryLike;
 };
 
 type CacheStatsState = {
@@ -634,6 +710,210 @@ function getSessionPromptCacheKey(ctx: ExtensionContext): string | undefined {
  */
 function hashSessionId(sessionId: string): string {
   return createHash("sha256").update(sessionId).digest("hex").slice(0, 16);
+}
+
+function getProtocolGlobal(): ProtocolGlobal {
+  return globalThis as ProtocolGlobal;
+}
+
+function firstNonEmptyString(...values: unknown[]): string | undefined {
+  for (const value of values) {
+    if (isNonEmptyString(value)) return value.trim();
+  }
+  return undefined;
+}
+
+function sessionHashFromContext(ctx: Pick<ExtensionContext, "sessionManager">): string | undefined {
+  const sessionId = ctx.sessionManager.getSessionId();
+  return sessionId ? hashSessionId(sessionId) : undefined;
+}
+
+function isPiRouterAdapterV1(value: unknown): value is PiRouterAdapterV1 {
+  const record = asRecord(value);
+  return !!record && isNonEmptyString(record.virtualProvider) && typeof record.resolveActiveRoute === "function";
+}
+
+function isRoutingRegistryV1(value: unknown): value is PiRoutingRegistryV1 {
+  const record = asRecord(value);
+  return !!record && record.version === 1 && typeof record.registerRouter === "function" && typeof record.getRouter === "function";
+}
+
+function createRoutingRegistry(): PiRoutingRegistryV1 {
+  const routers = new Map<string, PiRouterAdapterV1>();
+  return {
+    version: 1,
+    registerRouter(adapter: PiRouterAdapterV1): () => void {
+      if (!isPiRouterAdapterV1(adapter)) return () => undefined;
+      const key = adapter.virtualProvider.trim();
+      routers.set(key, adapter);
+      return () => {
+        if (routers.get(key) === adapter) routers.delete(key);
+      };
+    },
+    getRouter(virtualProvider: string): PiRouterAdapterV1 | undefined {
+      return routers.get(virtualProvider);
+    },
+  };
+}
+
+function getRoutingRegistry(): PiRoutingRegistryV1 | undefined {
+  const candidate = getProtocolGlobal()[PI_ROUTING_REGISTRY_SYMBOL];
+  return isRoutingRegistryV1(candidate) ? candidate : undefined;
+}
+
+function ensureRoutingRegistry(): PiRoutingRegistryV1 {
+  const existing = getRoutingRegistry();
+  if (existing) return existing;
+
+  const created = createRoutingRegistry();
+  getProtocolGlobal()[PI_ROUTING_REGISTRY_SYMBOL] = created;
+  return created;
+}
+
+function parseRouteStatus(value: unknown): PiRouteSnapshot["status"] | undefined {
+  return value === "planned" || value === "trying" || value === "selected" || value === "success" || value === "failed"
+    ? value
+    : undefined;
+}
+
+function parseRouteSnapshot(
+  value: unknown,
+  fallbackVirtualProvider?: string,
+  fallbackVirtualModelId?: string,
+): PiRouteSnapshot | undefined {
+  const record = asRecord(value);
+  if (!record) return undefined;
+
+  const virtualProvider = firstNonEmptyString(record.virtualProvider, fallbackVirtualProvider);
+  const virtualModelId = firstNonEmptyString(record.virtualModelId, record.virtualModel, fallbackVirtualModelId);
+  const provider = firstNonEmptyString(record.provider, record.upstreamProvider, record.targetProvider);
+  const modelId = firstNonEmptyString(record.modelId, record.upstreamModelId, record.targetModelId, record.responseModel);
+  if (!virtualProvider || !virtualModelId || !provider || !modelId) return undefined;
+
+  const timestamp = getNumber(record.timestamp) ?? Date.now();
+  return {
+    virtualProvider,
+    virtualModelId,
+    provider,
+    modelId,
+    api: firstNonEmptyString(record.api),
+    canonicalModelId: firstNonEmptyString(record.canonicalModelId),
+    routeLabel: firstNonEmptyString(record.routeLabel, record.label),
+    status: parseRouteStatus(record.status),
+    sessionIdHash: firstNonEmptyString(record.sessionIdHash),
+    requestId: firstNonEmptyString(record.requestId),
+    timestamp,
+  };
+}
+
+function resolveActiveRouteSnapshot(
+  model: PiModel | undefined,
+  ctx?: Pick<ExtensionContext, "sessionManager">,
+): PiRouteSnapshot | undefined {
+  if (!model) return undefined;
+  const hint: PiRouteResolveHint | undefined = ctx ? { sessionIdHash: sessionHashFromContext(ctx) } : undefined;
+
+  const adapter = getRoutingRegistry()?.getRouter(model.provider);
+  if (adapter) {
+    try {
+      const snapshot = parseRouteSnapshot(
+        adapter.resolveActiveRoute(model.id, hint),
+        model.provider,
+        model.id,
+      );
+      if (snapshot) return snapshot;
+    } catch (error) {
+      console.warn(`${LOG_PREFIX}: routing registry adapter failed`, error);
+    }
+  }
+
+  // Temporary migration shim for the prototype global used by early router PRs.
+  // New integrations should use Symbol.for("pi.routing.registry.v1") instead.
+  const legacy = getProtocolGlobal().__piCacheOptimizerRouter;
+  if (!legacy || !lower(model.provider).includes("router")) return undefined;
+  try {
+    if (typeof legacy === "function") {
+      return parseRouteSnapshot(legacy(model.provider, model.id, hint), model.provider, model.id);
+    }
+    const legacyRecord = asRecord(legacy);
+    const resolver = legacyRecord?.resolveActiveRoute;
+    if (typeof resolver === "function") {
+      return parseRouteSnapshot(resolver.call(legacy, model.id, hint), model.provider, model.id);
+    }
+    return parseRouteSnapshot(legacy, model.provider, model.id);
+  } catch (error) {
+    console.warn(`${LOG_PREFIX}: legacy routing global failed`, error);
+    return undefined;
+  }
+}
+
+function routeSnapshotToPiModel(snapshot: PiRouteSnapshot, fallback?: PiModel): PiModel {
+  return {
+    ...(fallback ?? {}),
+    id: snapshot.modelId,
+    name: snapshot.canonicalModelId ?? snapshot.modelId,
+    provider: snapshot.provider,
+    api: snapshot.api ?? fallback?.api ?? "",
+    baseUrl: fallback?.baseUrl ?? "",
+    reasoning: fallback?.reasoning ?? false,
+    input: fallback?.input ?? ["text"],
+    cost: fallback?.cost ?? { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+    contextWindow: fallback?.contextWindow ?? 0,
+    maxTokens: fallback?.maxTokens ?? 0,
+    compat: fallback?.compat,
+  } as PiModel;
+}
+
+function findModelInRegistry(registry: ModelRegistryLike | undefined, provider: string, id: string): PiModel | undefined {
+  const found = registry?.find?.(provider, id);
+  if (found) return found;
+
+  const available = registry?.getAvailable?.() ?? [];
+  const availableMatch = available.find((candidate) => candidate.provider === provider && candidate.id === id);
+  if (availableMatch) return availableMatch;
+
+  const all = registry?.getAll?.() ?? [];
+  return all.find((candidate) => candidate.provider === provider && candidate.id === id);
+}
+
+function resolveRouteModel(
+  model: PiModel | undefined,
+  ctx?: ContextWithOptionalModelRegistry,
+): PiModel | undefined {
+  const snapshot = resolveActiveRouteSnapshot(model, ctx);
+  if (!snapshot) return undefined;
+
+  return findModelInRegistry(ctx?.modelRegistry, snapshot.provider, snapshot.modelId)
+    ?? routeSnapshotToPiModel(snapshot, model);
+}
+
+function isVirtualRoutingModel(model: PiModel | undefined, ctx?: Pick<ExtensionContext, "sessionManager">): boolean {
+  if (!model) return false;
+  return isRouterModel(model) || !!getRoutingRegistry()?.getRouter(model.provider) || !!resolveActiveRouteSnapshot(model, ctx);
+}
+
+function isCacheHintsServiceV1(value: unknown): value is PiCacheHintsV1 {
+  const record = asRecord(value);
+  return !!record && record.version === 1 && typeof record.getHints === "function";
+}
+
+function getCacheHintsService(): PiCacheHintsV1 | undefined {
+  const candidate = getProtocolGlobal()[PI_CACHE_HINTS_SYMBOL];
+  return isCacheHintsServiceV1(candidate) ? candidate : undefined;
+}
+
+function installCacheHintsService(service: PiCacheHintsV1): () => void {
+  const globals = getProtocolGlobal();
+  const previous = globals[PI_CACHE_HINTS_SYMBOL];
+  globals[PI_CACHE_HINTS_SYMBOL] = service;
+  return () => {
+    if (globals[PI_CACHE_HINTS_SYMBOL] !== service) return;
+    if (previous === undefined) {
+      delete globals[PI_CACHE_HINTS_SYMBOL];
+    } else {
+      globals[PI_CACHE_HINTS_SYMBOL] = previous;
+    }
+  };
 }
 
 /**
@@ -1403,10 +1683,10 @@ function modelFromAssistantMessage(message: unknown, fallback: PiModel | undefin
   const record = getAssistantRecord(message);
   if (!record) return fallback;
 
-  const id = lower(record.responseModel) || lower(record.model) || fallback?.id;
-  const provider = lower(record.provider) || fallback?.provider;
-  const api = lower(record.api) || fallback?.api;
-  if (!id || !provider || !api) return fallback;
+  const id = firstNonEmptyString(record.responseModel, record.model, fallback?.id);
+  const provider = firstNonEmptyString(record.provider, fallback?.provider);
+  const api = firstNonEmptyString(record.api, fallback?.api) ?? "";
+  if (!id || !provider) return fallback;
 
   return {
     ...(fallback ?? {}),
@@ -2886,7 +3166,10 @@ function selectAdapterForModel(model: PiModel | undefined): CacheProviderAdapter
 }
 
 function selectAdapterForAssistantMessage(message: unknown, model: PiModel | undefined): CacheProviderAdapter | undefined {
-  const responseModel = isRouterModel(model) ? modelFromAssistantMessage(message, model) : model;
+  // Assistant message metadata is request-local and authoritative for virtual
+  // routing providers. Use it first for every model; direct providers normally
+  // echo the same provider/model and therefore remain unchanged.
+  const responseModel = modelFromAssistantMessage(message, model);
   return CACHE_PROVIDER_ADAPTERS.find((adapter) => adapter.matchesAssistantMessage(message, responseModel));
 }
 
@@ -3161,7 +3444,7 @@ function buildExactRouterStatusEntry(
   sessionHash: string | undefined,
   statsByModel: Record<string, CacheStats>,
   lastRoutedModel: PersistedRoutedModelRef | undefined,
-): { adapter: CacheProviderAdapter; stats: CacheStats } | undefined {
+): { model: PiModel; adapter: CacheProviderAdapter; stats: CacheStats } | undefined {
   if (!sessionHash || !lastRoutedModel) return undefined;
 
   const model = routedModelRefToPiModel(lastRoutedModel);
@@ -3169,7 +3452,7 @@ function buildExactRouterStatusEntry(
   if (!adapter) return undefined;
 
   const key = makeSessionModelKey(sessionHash, lastRoutedModel.provider, lastRoutedModel.id);
-  return { adapter, stats: statsByModel[key] ?? emptyCacheStats() };
+  return { model, adapter, stats: statsByModel[key] ?? emptyCacheStats() };
 }
 
 function parsePersistedCacheStats(value: unknown): CacheStatsState | undefined {
@@ -5062,6 +5345,18 @@ export const __internals_for_tests = {
   parsePersistedRoutedModelRef,
   routedModelRefToPiModel,
   buildExactRouterStatusEntry,
+  // Routing-provider protocol helpers
+  PI_ROUTING_REGISTRY_SYMBOL,
+  PI_CACHE_HINTS_SYMBOL,
+  ensureRoutingRegistry,
+  getRoutingRegistry,
+  parseRouteSnapshot,
+  resolveActiveRouteSnapshot,
+  routeSnapshotToPiModel,
+  resolveRouteModel,
+  isVirtualRoutingModel,
+  installCacheHintsService,
+  getCacheHintsService,
   // Persistence helpers (for reload/reset tests)
   mergeCacheSessions,
   mergeLastRoutedModels,
@@ -5109,6 +5404,7 @@ export default function (pi: ExtensionAPI) {
   let currentSessionHash = "";
   let currentSessionHashSet = false;
   let lastActualRoutedModel: PersistedRoutedModelRef | undefined;
+  let latestCacheHint: PiCacheHintSnapshot | undefined;
   const PERSIST_DEBOUNCE_MS = 2000;
   /** In-memory recent usage samples per model key (not persisted, cleared on reload). */
   const recentSamplesByModelKey = new Map<string, CacheUsageSample[]>();
@@ -5122,6 +5418,28 @@ export default function (pi: ExtensionAPI) {
       lastActualRoutedModel = undefined;
     }
   }
+
+  const uninstallCacheHintsService = installCacheHintsService({
+    version: 1,
+    getHints(input: PiCacheHintsInput): PiCacheHintsOutput | undefined {
+      if (!runtimeOptimizerEnabled || isEnabledEnv(process.env[NO_PROMPT_REWRITE_ENV])) return undefined;
+      const hint = latestCacheHint;
+      if (!hint) return undefined;
+      if (input.sessionIdHash && hint.sessionIdHash && input.sessionIdHash !== hint.sessionIdHash) return undefined;
+      if (input.virtualProvider && hint.virtualProvider && input.virtualProvider !== hint.virtualProvider) return undefined;
+      if (input.virtualModelId && hint.virtualModelId && input.virtualModelId !== hint.virtualModelId) return undefined;
+      if (input.upstreamProvider && hint.upstreamProvider && input.upstreamProvider !== hint.upstreamProvider) return undefined;
+      if (input.upstreamModelId && hint.upstreamModelId && input.upstreamModelId !== hint.upstreamModelId) return undefined;
+      if (input.api && hint.api && input.api !== hint.api) return undefined;
+
+      return {
+        systemPrompt: hint.systemPrompt,
+        promptCacheKey: hint.promptCacheKey,
+        cacheRetention: hint.cacheRetention,
+      };
+    },
+  });
+  void uninstallCacheHintsService;
 
   /**
    * Build a session-scoped stats key from the current session hash + model key.
@@ -5206,6 +5524,13 @@ export default function (pi: ExtensionAPI) {
     return created;
   }
 
+  function resetStatsForModel(model: PiModel): void {
+    const sk = sessionModelKey(model);
+    delete cacheStatsByModel[sk];
+    recentSamplesByModelKey.delete(sk);
+    lastStatusText = undefined;
+  }
+
   function resetCurrentSessionStats(): void {
     const prefix = `${currentSessionHash || "_nosession"}:`;
     for (const key of Object.keys(cacheStatsByModel)) {
@@ -5214,6 +5539,7 @@ export default function (pi: ExtensionAPI) {
     for (const key of Array.from(recentSamplesByModelKey.keys())) {
       if (key.startsWith(prefix)) recentSamplesByModelKey.delete(key);
     }
+    lastActualRoutedModel = undefined;
     lastStatusText = undefined;
   }
 
@@ -5380,9 +5706,13 @@ export default function (pi: ExtensionAPI) {
     syncSessionHash(ctx);
     await rollOverStatsIfNeeded(ctx);
 
-    const adapter = selectAdapterForModel(model);
+    const routedModel = resolveRouteModel(model, ctx);
+    const displayModel = routedModel ?? model;
+    const adapter = selectAdapterForModel(displayModel);
+    const activeIsVirtualRoute = !!routedModel || isVirtualRoutingModel(model, ctx);
     let statusText: string | undefined;
-    if (!adapter && isRouterModel(model)) {
+
+    if (!adapter && !routedModel && activeIsVirtualRoute) {
       // On model_select (existing footer), keep the existing cache footer
       // visible instead of clearing it. On session_start (no footer yet
       // after reload/fresh start), restore the exact last actual routed model
@@ -5405,8 +5735,8 @@ export default function (pi: ExtensionAPI) {
     if (adapter) {
       // Display session-scoped stats. A model that has never been used
       // in this session shows 0/0. The message_end hook populates
-      // cacheStatsByModel[sessionModelKey(model)] on first use.
-      const sk = model ? sessionModelKey(model) : undefined;
+      // cacheStatsByModel[sessionModelKey(displayModel)] on first use.
+      const sk = displayModel ? sessionModelKey(displayModel) : undefined;
       const stats = sk ? cacheStatsByModel[sk] : undefined;
       const statsText = formatCacheStats(adapter, stats ?? emptyCacheStats());
       statusText = runtimeOptimizerEnabled ? statsText : `Cache Optimizer disabled · ${statsText}`;
@@ -5443,12 +5773,12 @@ export default function (pi: ExtensionAPI) {
     // Re-evaluated on every status update so the marker persists through stats
     // changes and day rollovers. Redundant setStatus calls are blocked by the
     // `lastStatusText` early return above.
-    if (runtimeOptimizerEnabled && statusText !== undefined && model) {
+    if (runtimeOptimizerEnabled && statusText !== undefined && displayModel) {
       // Only show ⚠️ compat when there are safe-fixable missing compat keys.
       // Optional/advisory-only flags (e.g. supportsLongCacheRetention on generic
       // OpenAI-compatible proxies) do NOT trigger the marker — the doctor/compat
       // commands still mention them as optional guidance.
-      if (buildFixSuggestion(model) !== undefined) {
+      if (buildFixSuggestion(displayModel) !== undefined) {
         statusText = statusText + " ⚠️ compat";
       }
     }
@@ -5459,18 +5789,26 @@ export default function (pi: ExtensionAPI) {
     ctx.ui.setStatus(STATUS_KEY, statusText);
   }
 
+  ensureRoutingRegistry();
+
   pi.on("session_start", async (event, ctx) => {
     await restoreCacheStats(event.reason, ctx);
-    if (runtimeOptimizerEnabled) notifyCacheCompatIfNeeded(ctx.model, ctx, warnedModels);
+    if (runtimeOptimizerEnabled) notifyCacheCompatIfNeeded(resolveRouteModel(ctx.model, ctx) ?? ctx.model, ctx, warnedModels);
     await publishStatus(ctx);
   });
 
   pi.on("model_select", async (event, ctx) => {
-    if (runtimeOptimizerEnabled) notifyCacheCompatIfNeeded(event.model, ctx, warnedModels);
+    if (runtimeOptimizerEnabled) notifyCacheCompatIfNeeded(resolveRouteModel(event.model, ctx) ?? event.model, ctx, warnedModels);
     await publishStatus(ctx, event.model);
   });
 
   pi.on("before_agent_start", async (event, _ctx) => {
+    latestCacheHint = undefined;
+    const routeSnapshot = resolveActiveRouteSnapshot(_ctx.model, _ctx);
+    const routedModel = routeSnapshot
+      ? findModelInRegistry(_ctx.modelRegistry, routeSnapshot.provider, routeSnapshot.modelId) ?? routeSnapshotToPiModel(routeSnapshot, _ctx.model)
+      : undefined;
+
     // ────────────────────────────────────────────────────────────────
     // OpenAI Responses-family bypass (codex-responses + responses + azure responses)
     //
@@ -5497,7 +5835,7 @@ export default function (pi: ExtensionAPI) {
     // compression, reorder) for these APIs. Third-party providers
     // that use openai-completions are unaffected.
     // ────────────────────────────────────────────────────────────────
-    const model = _ctx.model;
+    const model = routedModel ?? _ctx.model;
     if (model && isResponsesPromptRewriteBypassApi(model.api)) {
       return {};
     }
@@ -5535,7 +5873,27 @@ export default function (pi: ExtensionAPI) {
     // ships to the provider.
     const optimized = optimizeSystemPrompt(compressedPrompt, event.systemPromptOptions);
 
+    const promptCacheKey = getSessionPromptCacheKey(_ctx);
+    const cacheRetention = process.env[PI_CACHE_RETENTION_ENV] === LONG_CACHE_RETENTION_VALUE ? LONG_CACHE_RETENTION_VALUE : undefined;
+    const publishHint = (systemPrompt: string): void => {
+      latestCacheHint = {
+        sessionIdHash: currentSessionHashSet ? currentSessionHash : sessionHashFromContext(_ctx),
+        virtualProvider: routeSnapshot?.virtualProvider ?? _ctx.model?.provider,
+        virtualModelId: routeSnapshot?.virtualModelId ?? _ctx.model?.id,
+        upstreamProvider: routeSnapshot?.provider ?? model?.provider,
+        upstreamModelId: routeSnapshot?.modelId ?? model?.id,
+        api: model?.api,
+        systemPrompt,
+        promptCacheKey,
+        cacheRetention,
+        timestamp: Date.now(),
+      };
+      const globals = getProtocolGlobal();
+      globals.__piCacheOptimizerCacheKey__ = promptCacheKey;
+    };
+
     if (optimized.changed && optimized.systemPrompt.trim().length > 0) {
+      publishHint(optimized.systemPrompt);
       return { systemPrompt: optimized.systemPrompt };
     }
 
@@ -5544,24 +5902,28 @@ export default function (pi: ExtensionAPI) {
     // the volume cut even when reorder is a no-op (e.g., short sessions
     // where no stable candidate is long enough).
     if (compressedPrompt !== strippedPrompt && compressedPrompt.trim().length > 0) {
+      publishHint(compressedPrompt);
       return { systemPrompt: compressedPrompt };
     }
     if (strippedPrompt !== event.systemPrompt && strippedPrompt.trim().length > 0) {
+      publishHint(strippedPrompt);
       return { systemPrompt: strippedPrompt };
     }
 
+    publishHint(event.systemPrompt);
     return {};
   });
 
   pi.on("before_provider_request", (event, ctx) => {
     if (!shouldInjectOpenAIPromptCacheKey()) return undefined;
-    if (!isOpenAICompatibleApi(ctx.model?.api)) return undefined;
+    const requestModel = resolveRouteModel(ctx.model, ctx) ?? ctx.model;
+    if (!isOpenAICompatibleApi(requestModel?.api)) return undefined;
 
     return addOpenAIPromptCacheKey(event.payload, getSessionPromptCacheKey(ctx));
   });
 
   pi.on("after_provider_response", (event, ctx) => {
-    const model = ctx.model;
+    const model = resolveRouteModel(ctx.model, ctx) ?? ctx.model;
     if (!runtimeOptimizerEnabled || !model) return;
     if (event.status !== 400) return;
     if (!isPromptCacheRetention400Applicable(model)) return;
@@ -5586,9 +5948,12 @@ export default function (pi: ExtensionAPI) {
 
     const usage = adapter.normalizeUsage(event.message);
 
-    const statsModel = isRouterModel(ctx.model) ? modelFromAssistantMessage(event.message, ctx.model) : ctx.model;
+    // Completed message metadata is request-local and authoritative for virtual
+    // routing providers. Use it whenever it supplies provider/model identity;
+    // fall back to the active context model for direct providers.
+    const statsModel = modelFromAssistantMessage(event.message, ctx.model) ?? ctx.model;
     let routedModelChanged = false;
-    if (isRouterModel(ctx.model) && statsModel && !isRouterModel(statsModel)) {
+    if (isVirtualRoutingModel(ctx.model, ctx) && statsModel && !isVirtualRoutingModel(statsModel, ctx)) {
       const nextRoutedModel: PersistedRoutedModelRef = {
         provider: statsModel.provider,
         id: statsModel.id,
@@ -5651,7 +6016,8 @@ export default function (pi: ExtensionAPI) {
     description: "Diagnose Pi cache configuration",
     handler: async (args: string, cmdCtx) => {
       syncSessionHash(cmdCtx);
-      const model = cmdCtx.model;
+      const selectedModel = cmdCtx.model;
+      const model = resolveRouteModel(selectedModel, cmdCtx as unknown as ExtensionContext) ?? selectedModel;
       const subcommand = args.trim().toLowerCase().split(/\s+/)[0] || "help";
 
       if (subcommand === "enable") {
@@ -5719,14 +6085,12 @@ export default function (pi: ExtensionAPI) {
           return;
         }
 
-        const sk = sessionModelKey(model);
         const displayKey = modelKey(model);
 
-        // Reset session-scoped stats for the active model.
-        delete cacheStatsByModel[sk];
-
-        // Clear recent samples for this session+model key.
-        recentSamplesByModelKey.delete(sk);
+        // Reset session-scoped stats for the effective active model. If the
+        // selected model is a virtual router and the protocol exposes a live
+        // route, this clears the real upstream bucket, not the router shell.
+        resetStatsForModel(model);
 
         // Persist immediately.
         await flushPersistCacheStats(cmdCtx as unknown as ExtensionContext);
@@ -6069,10 +6433,8 @@ export default function (pi: ExtensionAPI) {
               if (!adapter) {
                 cmdCtx.ui.notify("ℹ️ Active model does not match a cache adapter. No stats to reset.", "info");
               } else {
-                const sk = sessionModelKey(model);
                 const displayKey = modelKey(model);
-                delete cacheStatsByModel[sk];
-                recentSamplesByModelKey.delete(sk);
+                resetStatsForModel(model);
                 await flushPersistCacheStats(cmdCtx as unknown as ExtensionContext);
                 await publishStatus(cmdCtx as unknown as ExtensionContext, model);
                 cmdCtx.ui.notify(

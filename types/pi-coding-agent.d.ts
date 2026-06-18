@@ -30,6 +30,11 @@ declare module "@earendil-works/pi-coding-agent" {
 
   export type ExtensionContext = {
     model?: ExtensionModel;
+    modelRegistry: {
+      find(provider: string, modelId: string): ExtensionModel | undefined;
+      getAvailable(): ExtensionModel[];
+      getAll(): ExtensionModel[];
+    };
     sessionManager: { getSessionId(): string };
     ui: {
       notify(message: string, level?: "info" | "warning" | "error" | string): void;

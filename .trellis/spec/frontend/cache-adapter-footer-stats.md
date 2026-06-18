@@ -403,6 +403,9 @@ and removing `_nosession`.
 | `/reload` session_start reason | Re-read persisted v5 data for the same current session hash, clear only transient state (recent samples, integrity notifications), and re-publish footer with current stats. |
 | Active model is `router/auto`, persisted exact last routed model exists, and another bucket has more total requests | `/reload` restores the footer for the exact persisted last routed model, not the largest stats bucket. |
 | Active model is `router/auto`, exact last routed model exists but its stats bucket was reset/removed | `/reload` still restores that exact model's footer label with empty same-day stats (`0/0`, `0M/0M`). |
+| Active model is a virtual routing provider registered under `Symbol.for("pi.routing.registry.v1")` | Footer, doctor, compat, prompt-cache-key fallback, and reset resolve the live upstream provider/model when the registry returns a valid route snapshot. |
+| A virtual routing provider relays assistant message `provider` + `model`/`responseModel` + `api` metadata | `message_end` stats use the message-local upstream identity, even if the active model is a router shell or the live registry has changed. |
+| A router extension queries `Symbol.for("pi.cache.hints.v1")` while optimizer is enabled | Returns query-scoped optimized system prompt / prompt cache key / long-retention hint only when the query matches the latest session/route hint; existing request-level keys still remain authoritative. |
 | Non-GPT OpenAI-compatible model (Kimi, Qwen, GLM, MiniMax, Mimo, Hunyuan, Mistral, Grok, Llama, Nemotron, Cohere, Yi) with `openai-completions` API | Selected adapter shows the corresponding footer label; compat warning fires for non-official base URLs missing cache/session-affinity flags. |
 | Model id/name contains both GPT-family and non-GPT tokens (e.g. `kimi-gpt-4`) | GPT adapter takes precedence (earlier in `CACHE_PROVIDER_ADAPTERS`). Footer shows `OpenAI cache`, stats still scoped by provider/model key. |
 | Different Pi sessions with same provider/model | Keys differ by session hash; footer shows only current session's counters. |
@@ -611,6 +614,126 @@ to a control run with the noise pre-filtered).
 
 ---
 
+## Routing-provider protocol
+
+Virtual routing extensions are supported through optional versioned global symbols, not package imports.
+
+### 1. Scope / Trigger
+
+* Trigger: active Pi model is a virtual provider (for example a router/profile model) that forwards to a real upstream provider/model.
+* Applies to footer stats, `/cache-optimizer doctor`, `/cache-optimizer compat`, `/cache-optimizer reset`, OpenAI-compatible `prompt_cache_key` fallback, and router prompt/cache hint passthrough.
+
+### 2. Signatures
+
+```ts
+const PI_ROUTING_REGISTRY = Symbol.for("pi.routing.registry.v1");
+const PI_CACHE_HINTS = Symbol.for("pi.cache.hints.v1");
+
+type PiRouteSnapshot = {
+  virtualProvider: string;
+  virtualModelId: string;
+  provider: string;
+  modelId: string;
+  api?: string;
+  canonicalModelId?: string;
+  routeLabel?: string;
+  status?: "planned" | "trying" | "selected" | "success" | "failed";
+  sessionIdHash?: string;
+  requestId?: string;
+  timestamp: number;
+};
+
+type PiRouterAdapterV1 = {
+  virtualProvider: string;
+  resolveActiveRoute(
+    virtualModelId: string,
+    hint?: { sessionIdHash?: string; requestId?: string },
+  ): PiRouteSnapshot | undefined;
+  resolveCandidateRoutes?(virtualModelId: string): PiRouteSnapshot[];
+  subscribe?(listener: (event: PiRouteSnapshot) => void): () => void;
+};
+
+type PiRoutingRegistryV1 = {
+  version: 1;
+  registerRouter(adapter: PiRouterAdapterV1): () => void;
+  getRouter(virtualProvider: string): PiRouterAdapterV1 | undefined;
+};
+
+type PiCacheHintsV1 = {
+  version: 1;
+  getHints(input: {
+    sessionIdHash?: string;
+    virtualProvider?: string;
+    virtualModelId?: string;
+    upstreamProvider?: string;
+    upstreamModelId?: string;
+    api?: string;
+  }): {
+    systemPrompt?: string;
+    promptCacheKey?: string;
+    cacheRetention?: "long";
+  } | undefined;
+};
+```
+
+### 3. Contracts
+
+* `message_end` MUST prefer assistant message metadata (`provider`, `model` / `responseModel`, `api`) for final stats identity. This request-local metadata is authoritative and prevents global-route races.
+* Live registry data MAY be used for pre-message UX: footer display, doctor, compat, reset, and prompt-cache-key fallback. It MUST NOT override final message metadata.
+* `pi-cache-optimizer` MUST NOT import router packages or read router-specific config files. Routers MUST NOT import this package; both sides use optional symbol discovery.
+* When resolving a route snapshot, first look up the full Pi model in `ctx.modelRegistry.find(provider, modelId)` / available model lists so `api`, `baseUrl`, and merged `compat` are preserved. Use snapshot fields only as fallback.
+* The cache hints service MUST be query-scoped and disabled when runtime optimizer or prompt rewrite is disabled. It MUST NOT overwrite an existing request-level `prompt_cache_key` / `promptCacheKey`.
+* Temporary legacy globals such as `__piCacheOptimizerRouter` are migration shims only; new integrations should use the versioned symbols.
+
+### 4. Validation & Error Matrix
+
+| Condition | Behavior |
+|---|---|
+| No routing registry / no router for provider | Fall back to current direct-model behavior. |
+| Router adapter throws or returns malformed snapshot | Log warning, ignore the snapshot, do not crash. |
+| Snapshot lacks provider or model id | Treat as absent. |
+| Registry resolves a model missing from `modelRegistry` | Build a minimal fallback model from snapshot fields; stats remain id/name-token based. |
+| Active route changes before `message_end` | Final stats still follow assistant message metadata. |
+| Cache hints query does not match latest session/route | Return `undefined`. |
+
+### 5. Good/Base/Bad Cases
+
+* Good: `router/deepseek-v4-pro` resolves to `deepseek/deepseek-v4-pro`; doctor/compat/reset operate on the DeepSeek model and footer uses the DeepSeek stats bucket.
+* Good: A completed message from a router carries `provider: "anthropic"`, `responseModel: "claude-opus-4-8"`; stats update `anthropic/claude-opus-4-8` even if the live registry now points elsewhere.
+* Base: A simple router that relays message metadata but does not register a live route still gets correct final stats after the response.
+* Bad: Selecting adapter/stats identity from route display names such as "Smart Route" or from provider id alone.
+* Bad: Publishing the full system prompt in unscoped legacy globals or duplicating the system prompt in forwarded context.
+
+### 6. Tests Required
+
+* Verify registry install/register/unregister and route snapshot parsing.
+* Verify live route resolution uses `ctx.modelRegistry` to preserve upstream `api`, `baseUrl`, and `compat`.
+* Verify `selectAdapterForAssistantMessage` uses assistant metadata for routed messages.
+* Verify exact router footer restore still returns the last persisted upstream model, not the largest bucket.
+* Verify cache hints are query-scoped and existing request keys are preserved.
+* Verify legacy global shim support, if retained.
+
+### 7. Wrong vs Correct
+
+#### Wrong
+
+```ts
+// Global singleton route races with concurrent sessions and may be stale by message_end.
+const route = globalThis.__piCacheOptimizerRouter.current;
+const statsKey = `${route.provider}/${route.modelId}`;
+```
+
+#### Correct
+
+```ts
+// Use live route only for pre-response UX; final stats come from message metadata.
+const live = getRoutingRegistry()?.getRouter(ctx.model.provider)?.resolveActiveRoute(ctx.model.id);
+const responseModel = modelFromAssistantMessage(event.message, ctx.model);
+const statsKey = `${responseModel.provider}/${responseModel.id}`;
+```
+
+---
+
 ## Forbidden patterns
 
 * Writing `models.json` outside `/cache-optimizer fix`'s explicit preview + confirmation flow. The fix flow may create a timestamped backup and atomically replace `models.json`, but only to insert/repair safe `compat` keys or a missing `compat` object under an existing provider/model. It MUST NOT create/delete provider entries, model entries, API keys, credentials, or router slugs.
@@ -620,7 +743,8 @@ to a control run with the noise pre-filtered).
 * Injecting OpenAI `prompt_cache_key` into non-OpenAI-compatible custom APIs.
 * Deriving OpenAI `prompt_cache_key` from prompt content or stable-prefix hashes; use the Pi session id fallback instead.
 * Overwriting a non-empty user/Pi-provided `prompt_cache_key` or `promptCacheKey`.
-* Adapter selection by `provider` id, API type, base URL, or compat flags.
+* Adapter selection by `provider` id, API type, base URL, or compat flags. The only exception is that routing-provider identity resolution may decide which model object to inspect; adapter selection itself still uses the resolved model id/name and assistant message id/name tokens.
+* Importing router packages, reading router-specific config files, or depending on package-specific global singleton state instead of the versioned routing/cache-hints symbols.
 * Reverting footer stats to provider-family-only or unscoped provider/model
   buckets for normal updates; use v4 `sessions[sessionHash][provider/model]`
   persistence and in-memory `${sessionHash}:${provider}/${id}` keys for
