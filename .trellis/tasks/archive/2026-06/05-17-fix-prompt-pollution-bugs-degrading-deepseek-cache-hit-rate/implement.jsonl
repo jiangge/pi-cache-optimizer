@@ -1,0 +1,1 @@
+{"file": ".trellis/spec/frontend/cache-adapter-footer-stats.md", "reason": "Binding contract for extension.ts. Hardening optimizeSystemPrompt must preserve adapter selection rules, persisted stats schema, models.json auto-config behavior, and the ordering invariants (stable prefix lifted, dynamic remainder appended) declared here."}

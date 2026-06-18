@@ -1,0 +1,2 @@
+{"file":".trellis/spec/frontend/quality-guidelines.md","reason":"Verify cache adapter persistence/status contracts and validation matrix"}
+{"file":".trellis/tasks/05-14-provider-cache-adapters/research/provider-cache-semantics.md","reason":"Verify implementation stays within approved read-only provider adapter scope"}

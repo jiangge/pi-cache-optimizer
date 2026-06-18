@@ -1,0 +1,4 @@
+{"file":".trellis/spec/frontend/quality-guidelines.md","reason":"Project cache adapter persistence and footer status contracts"}
+{"file":".trellis/spec/frontend/type-safety.md","reason":"Runtime validation/type-safety expectations for extension data parsing"}
+{"file":".trellis/spec/guides/code-reuse-thinking-guide.md","reason":"Adapter abstraction and repeated provider normalization patterns"}
+{"file":".trellis/tasks/05-14-provider-cache-adapters/research/provider-cache-semantics.md","reason":"Provider cache semantics research guiding adapter implementation"}
