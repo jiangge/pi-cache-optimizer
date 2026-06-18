@@ -1,59 +1,45 @@
 # Component Guidelines
 
-> How components are built in this project.
+> This package does not define React/UI components.
 
 ---
 
 ## Overview
 
-<!--
-Document your project's component conventions here.
+`pi-cache-optimizer` is a Pi extension package. User interaction is performed through Pi extension APIs:
 
-Questions to answer:
-- What component patterns do you use?
-- How are props defined?
-- How do you handle composition?
-- What accessibility standards apply?
--->
+- `ctx.ui.setStatus(...)` for footer status
+- `ctx.ui.notify(...)` for notifications
+- optional `ctx.ui.select(...)` / confirmation helpers for command flows
+- `pi.registerCommand(...)` for `/cache-optimizer`
 
-(To be filled by the team)
+There are no JSX components, component props, CSS modules, Tailwind classes, or browser accessibility concerns in this repository.
 
 ---
 
-## Component Structure
+## UI Output Patterns
 
-<!-- Standard structure of a component file -->
+Even without components, user-facing output must follow these rules:
 
-(To be filled by the team)
-
----
-
-## Props Conventions
-
-<!-- How props should be defined and typed -->
-
-(To be filled by the team)
+- Keep footer status concise and deterministic.
+- Do not show secrets, prompts, payloads, response bodies, HTTP headers, API keys, or raw session ids.
+- Use platform-friendly paths from helpers such as `getModelsJsonDisplayPath()`.
+- For commands that can write files (`/cache-optimizer fix`), require explicit interactive confirmation and show a preview/risk notice first.
+- For advisory diagnostics, include copyable safe JSON snippets but never mutate `models.json` except through the confirmed fix flow.
 
 ---
 
-## Styling Patterns
+## Command Text Conventions
 
-<!-- How styles are applied (CSS modules, styled-components, Tailwind, etc.) -->
-
-(To be filled by the team)
-
----
-
-## Accessibility
-
-<!-- A11y requirements and patterns -->
-
-(To be filled by the team)
+- `/cache-optimizer doctor` should distinguish applicable fully configured models (`✅ Compat fully configured.`) from non-applicable models (`ℹ️ Compat check not applicable for this model.`).
+- `/cache-optimizer reset` must clarify that it resets only local stats, not upstream provider caches.
+- Runtime enable/disable notifications should describe current-process scope and feature states.
 
 ---
 
 ## Common Mistakes
 
-<!-- Component-related mistakes your team has made -->
-
-(To be filled by the team)
+- Treating this as a React app and adding component scaffolding.
+- Adding noisy startup warnings for non-actionable provider limitations.
+- Displaying raw session ids or hashes to users.
+- Showing credential-bearing `models.json` content instead of minimal compat snippets.

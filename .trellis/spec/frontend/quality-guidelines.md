@@ -1,114 +1,135 @@
 # Quality Guidelines
 
-> Code quality standards for frontend development.
+> Code quality standards for this Pi extension project.
 
 ---
 
 ## Overview
 
-<!--
-Document your project's quality standards here.
+This repository is a single-package Pi extension. Quality checks emphasize:
 
-Questions to answer:
-- What patterns are forbidden?
-- What linting rules do you enforce?
-- What are your testing requirements?
-- What code review standards apply?
--->
-
-(To be filled by the team)
+- TypeScript no-emit validation
+- task-level verification scripts for changed behavior
+- privacy/security review for user-facing diagnostics and persisted files
+- package dry-run checks before release
+- keeping README/spec docs aligned with behavior
 
 ---
 
-## Forbidden Patterns
+## Required Checks
 
-<!-- Patterns that should never be used and why -->
+Before committing runtime behavior changes, run the relevant subset and record task-specific results:
 
-(To be filled by the team)
+```bash
+bunx tsc --noEmit --pretty false
+git diff --check
+npm pack --dry-run
+```
+
+When a task has a verification script, run it too, for example:
+
+```bash
+bun .trellis/tasks/<task>/verify.ts
+```
+
+For Trellis task context files:
+
+```bash
+python3 ./.trellis/scripts/task.py validate .trellis/tasks/<task>
+```
 
 ---
 
 ## Required Patterns
 
-<!-- Patterns that must always be used -->
+- Update `.trellis/spec/frontend/cache-adapter-footer-stats.md` when changing cache stats, prompt optimization, compat diagnostics, persistence, or routing-provider behavior.
+- Keep `README.md` and `README.zh-CN.md` in sync for user-visible features or commands.
+- Add/update a task-level verification script for new parsing, migration, routing, prompt, or compat behavior.
+- Keep footer behavior truthful; never fake cache counters for transports that do not expose usage fields.
+- Prefer conservative fallback behavior over crashes in Pi hooks.
+- Commit Trellis archive moves after implementation commits so task history stays durable.
 
-(To be filled by the team)
+---
+
+## Forbidden Patterns
+
+- Logging or persisting API keys, prompts, payloads, headers, response bodies, raw session ids, or model outputs.
+- Writing `models.json` outside the explicit `/cache-optimizer fix` confirmation flow.
+- In-place writes to stats/config files when atomic temp + rename is required.
+- Adapter selection by provider id, API type, base URL, or compat flags.
+- Importing router packages or depending on package-specific router globals instead of optional versioned symbols.
+- Adding non-actionable startup warnings for provider limitations.
+- Leaving debug `console.log` / noisy diagnostics in normal hook paths.
 
 ---
 
 ## Testing Requirements
 
-<!-- What level of testing is expected -->
+Add or update tests/verification scripts when changing:
 
-(To be filled by the team)
+- adapter detection
+- usage normalization
+- persisted stats schema/migration
+- prompt rewrite/reorder behavior
+- JSONC compat fix editing
+- OpenAI-compatible `prompt_cache_key` fallback
+- routing-provider registry/cache-hints protocol
+- command output semantics
+
+Task verification should assert external behavior and protocol behavior, not private implementation details, unless the helper is deliberately exported under `__internals_for_tests`.
 
 ---
 
 ## Code Review Checklist
 
-<!-- What reviewers should check -->
-
-(To be filled by the team)
+- [ ] TypeScript check passes.
+- [ ] Task verification scripts pass.
+- [ ] `git diff --check` passes.
+- [ ] `npm pack --dry-run` passes when package contents may matter.
+- [ ] No secrets or prompt content are persisted/logged/displayed.
+- [ ] README/spec updates match behavior.
+- [ ] Unsupported models/transports fail safe and truthful.
+- [ ] Runtime disable/env opt-out gates still work.
 
 ## Scenario: Pi cache adapter footer stats
 
 ### 1. Scope / Trigger
 - Trigger: The Pi extension persists provider/model-scoped cache counters and displays footer status by active model.
-- Applies when modifying `extension.ts` cache stats, model-family detection, usage normalization, or state migration.
+- Applies when modifying `extension.ts`/`index.ts` cache stats, model-family detection, usage normalization, state migration, prompt rewrite, compat diagnostics, or routing-provider protocol behavior.
 
 ### 2. Signatures
-- Extension hooks: `session_start`, `model_select`, `before_agent_start`, `message_end`.
+- Extension hooks: `session_start`, `model_select`, `before_agent_start`, `before_provider_request`, `after_provider_response`, `message_end`.
 - State file: `~/.pi/agent/pi-cache-optimizer-stats.json` (legacy rename source: `~/.pi/agent/deepseek-cache-optimizer-stats.json`).
 - Status key: `pi-cache-stats` via `ctx.ui.setStatus(key, textOrUndefined)`.
-- OpenAI-family prompt cache key env: enabled by default; opt out with `PI_CACHE_OPTIMIZER_NO_OPENAI_CACHE_KEY=1` or `PI_CACHE_OPTIMIZER_OPENAI_CACHE_KEY=0`.
+- OpenAI-compatible prompt cache key env: enabled by default; opt out with `PI_CACHE_OPTIMIZER_NO_OPENAI_CACHE_KEY=1` or `PI_CACHE_OPTIMIZER_OPENAI_CACHE_KEY=0`.
 
 ### 3. Contracts
 - Persisted state must contain only counters and local dates; never API keys, prompts, messages, headers, or outputs.
-- Current state shape uses `version: 3` with `statsByModel` keyed by `${provider}/${id}` and `legacyFamily` for migrated/fallback provider-family counters.
+- Current state shape is versioned and session-scoped; normal updates use `${sessionHash}:${provider}/${id}` in memory and `sessions[sessionHash][provider/model]` on disk.
 - Adapter selection must use only model id/name plus assistant message `model`/`name`; never provider id, API type, base URL, thinking format, or compat flags.
-- Stable-prefix optimization may move stable instruction files such as `AGENTS.md`, `CLAUDE.md`, `GEMINI.md`, `CURSOR.md`, and `.trellis/spec/...` ahead of dynamic context; it must not persist or print their contents.
-- OpenAI-family id/name matches may receive a top-level `prompt_cache_key` from `ctx.sessionManager.getSessionId()` when the active model uses `openai-completions`/`openai-responses`, no effective key exists, and opt-out env vars are not set. Do not store or print the session id, and do not override an existing non-empty `prompt_cache_key` or `promptCacheKey`.
-- Old `version: 1` state migrates into `legacyFamily.deepseek`; old `version: 2` `statsByProvider` migrates into `legacyFamily` with empty `statsByModel`.
-- `/reload` resets persisted counters; Pi process restart restores persisted counters; local natural-day rollover resets all stale model and legacy family buckets on next status/update.
+- Stable-prefix optimization may move stable instruction files and compressed skill listings ahead of dynamic context; it must not persist or print their contents.
+- OpenAI-compatible payloads may receive a top-level `prompt_cache_key` from `ctx.sessionManager.getSessionId()` when the active/effective model uses `openai-completions`/`openai-responses`, no effective key exists, and opt-out env vars are not set.
+- Router/provider live registry data may be used for pre-message UX, but `message_end` stats identity is authoritative from assistant message metadata.
 
 ### 4. Validation & Error Matrix
 - Missing/corrupt state file -> fall back to empty in-memory counters and continue.
 - Persist write failure -> warn at most once and continue with in-memory counters.
 - Unsupported/ambiguous model -> clear footer status instead of guessing provider semantics.
-- Missing usage fields -> do not update counters for read-only non-DeepSeek adapters.
+- Missing usage fields -> preserve truthful zero/empty stats; do not synthesize cache hits.
+- Malformed routing registry snapshots -> warn/ignore; do not crash.
 
 ### 5. Good/Base/Bad Cases
-- Good: DeepSeek/OpenAI-family/Claude/Gemini model id/name with cache usage fields updates only the active `${provider}/${id}` model bucket.
-- Base: DeepSeek usage with no cache read increments total requests and records a miss, preserving legacy behavior.
-- Base: Small stable `AGENTS.md` or `.trellis/spec/...` context can move earlier for cacheability while dynamic task/session context remains later.
+- Good: DeepSeek/OpenAI-family/Claude/Gemini/model-family id/name match updates only the active session + provider/model bucket.
+- Good: A routed assistant message with real upstream metadata updates the upstream bucket, not the virtual router shell.
+- Base: A matched but unseen model shows 0/0 for the current session.
 - Bad: Generic OpenAI-compatible API metadata selects the OpenAI adapter when model id/name does not match an OpenAI-family token.
-- Bad: Two providers exposing the same model id (for example `otokapi/gpt-5.5` and `cafecode/gpt-5.5`) share footer counters.
+- Bad: Two providers exposing the same model id share footer counters.
 
 ### 6. Tests Required
-- Load extension through Pi/Jiti without type/runtime errors.
-- Simulate DeepSeek, OpenAI, Claude, Gemini, and unsupported proxy `message_end` events.
-- Assert provider/model counters stay separate and unsupported model status clears.
-- Assert v1 and v2 state migrate to v3 `legacyFamily` with empty `statsByModel`.
-- If OpenAI cache-key injection changes, assert it is enabled-by-default but opt-outable, id/name + OpenAI-compatible-api gated, session-id sourced, and does not override existing keys.
+- Load extension through Pi/Jiti or `tsc` without type/runtime errors.
+- Simulate supported and unsupported `message_end` events for changed adapters.
+- Assert provider/model/session counters stay separate.
+- Assert state migrations preserve valid data and drop malformed data.
+- Assert OpenAI cache-key injection is enabled-by-default but opt-outable, API-gated, session-id sourced, and does not override existing keys.
+- Assert routing-provider helpers use message metadata for final stats and registry data only for live UX.
 - Run `git diff --check` and `npm pack --dry-run` before release.
-
-### 7. Wrong vs Correct
-
-#### Wrong
-```typescript
-// Treats every OpenAI-shaped proxy as OpenAI-family cache support.
-if (model.api === "openai-completions") showOpenAIStats();
-
-// Aggregates two different proxy providers into the same footer bucket.
-statsByProvider.openai = addUsage(statsByProvider.openai, usage);
-```
-
-#### Correct
-```typescript
-// Adapter detection remains id/name-only and conservative; stats scoping uses
-// provider/id only after an adapter has matched.
-const adapter = selectAdapterForModel(model);
-const key = model ? `${model.provider}/${model.id}` : undefined;
-const stats = key ? statsByModel[key] : undefined;
-ctx.ui.setStatus(STATUS_KEY, adapter ? formatCacheStats(adapter, stats ?? emptyCacheStats()) : undefined);
-```
