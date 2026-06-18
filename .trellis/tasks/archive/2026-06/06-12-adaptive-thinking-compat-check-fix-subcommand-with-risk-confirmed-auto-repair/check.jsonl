@@ -1,0 +1,2 @@
+{"file": ".trellis/spec/frontend/cache-adapter-footer-stats.md", "reason": "Verify new check + fix subcommand follow existing adapter/diagnosis conventions"}
+{"file": ".trellis/tasks/06-12-adaptive-thinking-compat-check-fix-subcommand-with-risk-confirmed-auto-repair/prd.md", "reason": "Acceptance criteria: zero-write on reject, backup+atomic write, comment preservation byte-identical outside insert, no-UI refusal, JSONC scanner edge-case tests"}

@@ -1,0 +1,2 @@
+{"file": ".trellis/spec/frontend/cache-adapter-footer-stats.md", "reason": "Adapter selection + compat diagnosis conventions; new adaptive-thinking check must follow the existing describeMissingCacheCompatForModel/buildCompatDiagnosis architecture"}
+{"file": ".trellis/tasks/06-12-adaptive-thinking-compat-check-fix-subcommand-with-risk-confirmed-auto-repair/prd.md", "reason": "Full requirements, ADR decisions (scope=active model, coverage=all safe suggestions, comment-preserving JSONC surgical edit with dual fallbacks)"}
