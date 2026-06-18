@@ -1,0 +1,5 @@
+{"file":".trellis/spec/frontend/index.md","reason":"Quality-check entry point for the package/layer."}
+{"file":".trellis/spec/frontend/type-safety.md","reason":"Checklist for TypeScript validation expectations."}
+{"file":".trellis/spec/frontend/quality-guidelines.md","reason":"Checklist for lint/type/test/release-adjacent validation commands."}
+{"file":".trellis/spec/frontend/cache-adapter-footer-stats.md","reason":"Ensures validation review accounts for the cache optimizer extension contract."}
+{"file":".trellis/spec/guides/index.md","reason":"Shared guide for final validation and spec update decision."}

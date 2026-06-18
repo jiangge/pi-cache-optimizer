@@ -1,0 +1,5 @@
+{"file":".trellis/spec/frontend/index.md","reason":"Spec entry point for single-repo frontend/extension work and quality-check references."}
+{"file":".trellis/spec/frontend/type-safety.md","reason":"TypeScript validation task: captures local type-safety expectations and conventions."}
+{"file":".trellis/spec/frontend/quality-guidelines.md","reason":"Validation task: identifies required project checks including tsc, diff check, and packaging sanity."}
+{"file":".trellis/spec/frontend/cache-adapter-footer-stats.md","reason":"Primary contract for index.ts cache optimizer behavior touched by recent TypeScript validation."}
+{"file":".trellis/spec/guides/index.md","reason":"Shared Trellis thinking guide for validation and spec-sync decisions."}
