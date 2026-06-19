@@ -20,6 +20,7 @@ Pi extension for improving provider-side KV / prompt cache hit rates. It keeps s
 - [Anthropic adaptive thinking models](#anthropic-adaptive-thinking-models)
 - [Auto-repair with `/cache-optimizer fix`](#auto-repair-with-cache-optimizer-fix)
 - [Footer stats](#footer-stats)
+- [For router / virtual-channel extension authors](#for-router--virtual-channel-extension-authors)
 - [Uninstall](#uninstall)
 - [Verify effect](#verify-effect)
 - [License](#license)
@@ -217,8 +218,6 @@ Stats are read-only local counters stored at `~/.pi/agent/pi-cache-optimizer-sta
 
 Pi 0.79+ also includes a built-in footer `CH` marker for the latest prompt cache hit rate. This extension complements that marker with persisted, provider/model/session-scoped counters plus proxy compat diagnostics.
 
-For virtual routing providers, completed assistant message metadata is authoritative: if the message carries real upstream `provider`, `model` / `responseModel`, `api`, and usage, stats are attributed to that upstream provider/model instead of the virtual router shell. Router extensions may also publish a live route adapter under `Symbol.for("pi.routing.registry.v1")` so footer, doctor, compat, and reset flows can resolve the current upstream before the final assistant message exists. The cache optimizer also exposes query-scoped prompt/cache hints via `Symbol.for("pi.cache.hints.v1")` for routers that forward to inner `streamSimple` calls. Both protocols are optional and versioned; no router package import is required.
-
 Example footer:
 
 ```text
@@ -230,6 +229,113 @@ Format: `<label> <hit requests>/<total requests> · <cached input tokens>/<total
 Supported footer labels include: DS, Claude, OpenAI, Gemini, Kimi, Qwen, GLM, MiniMax, Mimo, Hunyuan, Mistral, Grok, Llama, Nemotron, Cohere, Yi, Doubao, ERNIE, Baichuan, StepFun, Spark, InternLM, Gemma, Phi, Jamba, Solar, Sonar, Nova, Reka, Falcon, DBRX, MPT, StableLM, Aquila, EXAONE, HyperCLOVA, Luminous, Hermes, Granite, Arctic, Pangu, SenseNova, Zhinao, MiniCPM, XVERSE, Orion, OpenChat, Vicuna, Wizard, Zephyr, Dolphin, OpenOrca, Starling, BLOOM, RWKV, and Aya.
 
 Adapter selection uses only model id/name (plus assistant message model/name on message end). Generic OpenAI-shaped APIs are not treated as OpenAI-family unless the model id/name matches a supported family.
+
+## For router / virtual-channel extension authors
+
+If your Pi extension provides a virtual routing provider (for example `router/auto`, `router/smart`, or a profile/channel that forwards to a real upstream), this extension can show cache stats for the real upstream provider/model instead of the virtual shell. Integration is optional, versioned, and does **not** require importing this package.
+
+### Minimum integration: final assistant message metadata
+
+For seamless final cache-stat attribution, relay the real upstream identity on completed assistant messages:
+
+```ts
+{
+  role: "assistant",
+  provider: "anthropic",              // real upstream provider
+  responseModel: "claude-opus-4-8",   // or model: "..."
+  api: "anthropic-messages",          // upstream Pi API id when known
+  usage: {
+    input: 1200,       // Pi-normalized uncached input tokens, if available
+    cacheRead: 8000,   // tokens read from provider prompt cache
+    cacheWrite: 500,   // tokens newly written to provider prompt cache
+  },
+}
+```
+
+`message_end` treats these assistant-message fields as authoritative. If `provider` + `model`/`responseModel` + cache usage are present, stats update the upstream bucket even when the active model is still `router/auto`. If upstream usage does not expose cache fields, leave them absent/zero; this extension will not fake cache hits.
+
+### Optional: live route registry for pre-response UX
+
+Final message metadata is enough for post-response stats. For pre-response flows — footer display before the first response, `/cache-optimizer doctor`, `/cache-optimizer compat`, `/cache-optimizer reset`, and OpenAI-compatible `prompt_cache_key` fallback — register a live route adapter under `Symbol.for("pi.routing.registry.v1")`.
+
+Protocol shape:
+
+```ts
+type PiRouteSnapshot = {
+  virtualProvider: string;
+  virtualModelId: string;
+  provider: string;
+  modelId: string;
+  api?: string;
+  canonicalModelId?: string;
+  routeLabel?: string;
+  status?: "planned" | "trying" | "selected" | "success" | "failed";
+  sessionIdHash?: string;
+  requestId?: string;
+  timestamp: number;
+};
+
+type PiRouterAdapterV1 = {
+  virtualProvider: string;
+  resolveActiveRoute(
+    virtualModelId: string,
+    hint?: { sessionIdHash?: string; requestId?: string },
+  ): PiRouteSnapshot | undefined;
+  resolveCandidateRoutes?(virtualModelId: string): PiRouteSnapshot[];
+  subscribe?(listener: (event: PiRouteSnapshot) => void): () => void;
+};
+```
+
+Registration pattern:
+
+```ts
+const ROUTING = Symbol.for("pi.routing.registry.v1");
+const registry = (globalThis as Record<symbol, unknown>)[ROUTING] as
+  | { version: 1; registerRouter(adapter: PiRouterAdapterV1): () => void }
+  | undefined;
+
+registry?.registerRouter({
+  virtualProvider: "router",
+  resolveActiveRoute(virtualModelId, hint) {
+    return {
+      virtualProvider: "router",
+      virtualModelId,
+      provider: "deepseek",
+      modelId: "deepseek-v4",
+      api: "openai-completions",
+      sessionIdHash: hint?.sessionIdHash,
+      timestamp: Date.now(),
+    };
+  },
+});
+```
+
+Do not overwrite an existing registry. If your extension loads before this optimizer, retry registration on `session_start` or create the same V1 registry shape only if no registry exists.
+
+### Optional: query-scoped cache hints
+
+Routers that forward to an inner Pi request path can read query-scoped hints from `Symbol.for("pi.cache.hints.v1")`:
+
+```ts
+const CACHE_HINTS = Symbol.for("pi.cache.hints.v1");
+const hints = (globalThis as Record<symbol, any>)[CACHE_HINTS]?.getHints?.({
+  sessionIdHash,
+  virtualProvider: "router",
+  virtualModelId: "auto",
+  upstreamProvider: "deepseek",
+  upstreamModelId: "deepseek-v4",
+  api: "openai-completions",
+});
+```
+
+When the query matches the current session/route, `hints` may contain `systemPrompt`, `promptCacheKey`, and `cacheRetention: "long"`. Treat these as advisory and sensitive: do not log them, do not expose prompt text, and do not overwrite an existing request-level `prompt_cache_key` / `promptCacheKey`.
+
+### Security and correctness rules
+
+- Do not import `pi-cache-optimizer`; use `Symbol.for(...)` discovery only.
+- Do not expose API keys, prompts, payloads, headers, response bodies, or model output in route snapshots or logs.
+- Use assistant-message metadata for final attribution; live registry data is advisory and may be stale by response time.
+- Preserve truthful usage. Missing cache usage should show as 0/under-reported, not as synthetic hits.
 
 ## Uninstall
 

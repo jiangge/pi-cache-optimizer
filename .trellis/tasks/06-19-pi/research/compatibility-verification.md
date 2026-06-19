@@ -11,7 +11,7 @@
 | Global `pi --version` | 0.79.7 |
 | Local `@earendil-works/pi-coding-agent` (`node_modules`) | 0.79.7 after local no-save sync |
 | Package peerDependency spec | `"*"` |
-| Package version | 2.6.6 |
+| Package version | 2.6.5 (rolled back; docs-only task should not release) |
 
 ## Quality checks
 
@@ -19,7 +19,7 @@
 |-------|--------|
 | `bunx tsc --noEmit --pretty false` | PASS (exit 0) |
 | `git diff --check` | PASS (no whitespace errors) |
-| `npm pack --dry-run` | PASS (5 files, 287.8 kB unpacked) |
+| `npm pack --dry-run` | PASS (5 files; package version 2.6.5) |
 | `python3 ./.trellis/scripts/task.py validate .trellis/tasks/06-19-pi` | PASS |
 
 Note: `./node_modules/.bin/tsc` was not available after the no-save local SDK sync, so the project-standard `bunx tsc --noEmit --pretty false` check from the spec was used.
@@ -69,6 +69,19 @@ npm install --package-lock=false --no-save @earendil-works/pi-coding-agent@0.79.
 
 This synced the local installed SDK used for inspection/validation to 0.79.7 without adding a tracked dependency or lockfile. No `package.json` change is needed because this package correctly declares the Pi host package as a peer dependency with `"*"`, per Pi package guidance, and imports it only for types.
 
+## Router / virtual-channel documentation
+
+README and README.zh-CN now include guidance for pi-router-like extensions:
+
+* Final stats attribution is driven by completed assistant message metadata (`provider`, `model` / `responseModel`, `api`, and real usage counters).
+* Optional pre-response UX can integrate through `Symbol.for("pi.routing.registry.v1")` live route adapters.
+* Optional forwarding/cache integration can read query-scoped hints from `Symbol.for("pi.cache.hints.v1")`.
+* Integrations should not import `pi-cache-optimizer` and must not expose prompts, API keys, payloads, headers, response bodies, or model output.
+
+## Version decision
+
+A prior standalone commit had bumped `package.json` from `2.6.5` to `2.6.6`. Per user direction, this docs-only compatibility work should not produce a release. The package version is therefore rolled back to `2.6.5`.
+
 ## Conclusion
 
-Minimal documentation updates were appropriate. No runtime code, ambient type, package manifest, or tracked dependency changes are required for Pi 0.79.7 compatibility.
+Documentation updates were appropriate. No runtime code, ambient type, or tracked dependency changes are required for Pi 0.79.7 compatibility. The only package manifest change is the version rollback to avoid publishing a README-only compatibility release.

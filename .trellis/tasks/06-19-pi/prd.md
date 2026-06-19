@@ -34,6 +34,8 @@
 * 运行项目现有质量检查（至少 TypeScript 类型检查）。
 * 检查 README/中文 README 中关于 Pi 安装/更新/缓存 footer 的表述是否因升级而过时。
 * 若存在必要调整，做最小修改并记录原因。
+* 仅 README 兼容说明更新不出版本；如果已有版本 bump，应回退。
+* README/中文 README 需要告知 pi-router 等第三方虚拟渠道扩展如何透传 metadata / 使用全局协议，以无缝获得本扩展 cache 统计支持。
 
 ## Acceptance Criteria (evolving)
 
@@ -41,6 +43,8 @@
 * [x] 如有修改，说明修改文件和理由。
 * [x] TypeScript 检查通过。
 * [x] 若本地 Pi SDK 版本与全局 Pi 不一致，处理或明确说明无需处理的原因。
+* [x] package version 回退到无需发版的版本。
+* [x] README/中文 README 包含第三方 router/virtual-channel 扩展作者集成说明。
 
 ## Definition of Done (team quality bar)
 
@@ -60,6 +64,8 @@
 * Inspected: `package.json`, `index.ts`, `tsconfig.json`, `types/pi-coding-agent.d.ts`.
 * Inspected Pi docs: README, `docs/extensions.md`, `docs/packages.md`, `docs/compaction.md`, `docs/sdk.md`, `CHANGELOG.md` (current local Pi docs/version 0.79.7).
 * Current task path: `.trellis/tasks/06-19-pi`.
-* Result: No runtime code, ambient type, package manifest, or tracked dependency change required for Pi 0.79.7.
-* Modified docs: `README.md`, `README.zh-CN.md` to document Pi 0.79.7 package-update semantics and Pi 0.79+ built-in `CH` footer relationship.
+* Result: No runtime code, ambient type, or tracked dependency change required for Pi 0.79.7.
+* Package manifest: `version` rolled back from `2.6.6` to `2.6.5` because this task only changes docs and should not trigger a release.
+* Modified docs: `README.md`, `README.zh-CN.md` to document Pi 0.79.7 package-update semantics, Pi 0.79+ built-in `CH` footer relationship, and router/virtual-channel extension integration requirements.
+* Router docs cover: authoritative assistant message metadata (`provider`, `model`/`responseModel`, `api`, usage), optional `Symbol.for("pi.routing.registry.v1")` live route registry, optional `Symbol.for("pi.cache.hints.v1")` query-scoped cache hints, no package imports, and prompt/secret safety.
 * Validation passed: `bunx tsc --noEmit --pretty false`, `git diff --check`, `npm pack --dry-run`, `python3 ./.trellis/scripts/task.py validate .trellis/tasks/06-19-pi`.

@@ -20,6 +20,7 @@
 - [Anthropic adaptive thinking 模型](#anthropic-adaptive-thinking-模型)
 - [使用 `/cache-optimizer fix` 自动修复](#使用-cache-optimizer-fix-自动修复)
 - [Footer 统计](#footer-统计)
+- [Router / Virtual-channel 扩展作者指南](#router--virtual-channel-扩展作者指南)
 - [卸载](#卸载)
 - [验证效果](#验证效果)
 - [License](#license)
@@ -217,8 +218,6 @@ Provider 级最小 override：
 
 Pi 0.79+ 已内置 footer `CH` 标记，用于显示最近一次 prompt cache hit rate。本扩展在此基础上补充持久化的 provider/model/session-scoped 计数，以及代理 compat 诊断。
 
-对于虚拟 routing provider，最终 assistant message 的 metadata 是权威来源：如果 message 携带真实上游 `provider`、`model` / `responseModel`、`api` 和 usage，统计会归因到真实上游 provider/model，而不是虚拟 router 外壳。Router extension 也可以在 `Symbol.for("pi.routing.registry.v1")` 下发布 live route adapter，让 footer、doctor、compat 和 reset 在最终 assistant message 出现前解析当前上游。本扩展还通过 `Symbol.for("pi.cache.hints.v1")` 暴露按查询过滤的 prompt/cache hints，供转发到内部 `streamSimple` 的 router 使用。两个协议都是可选、版本化的；不需要导入任何 router 包。
-
 示例 footer：
 
 ```text
@@ -230,6 +229,113 @@ OpenAI cache 3/10 · 0.002M/0.005M tok (40%) ⚠️ compat
 支持的 footer label 包括：DS、Claude、OpenAI、Gemini、Kimi、Qwen、GLM、MiniMax、Mimo、Hunyuan、Mistral、Grok、Llama、Nemotron、Cohere、Yi、Doubao、ERNIE、Baichuan、StepFun、Spark、InternLM、Gemma、Phi、Jamba、Solar、Sonar、Nova、Reka、Falcon、DBRX、MPT、StableLM、Aquila、EXAONE、HyperCLOVA、Luminous、Hermes、Granite、Arctic、Pangu、SenseNova、Zhinao、MiniCPM、XVERSE、Orion、OpenChat、Vicuna、Wizard、Zephyr、Dolphin、OpenOrca、Starling、BLOOM、RWKV、Aya。
 
 Adapter 选择只看模型 id/name（以及 message_end 时 assistant message 的 model/name）。仅使用 OpenAI-shaped API 不会被当作 OpenAI-family，除非模型 id/name 匹配受支持的家族。
+
+## Router / Virtual-channel 扩展作者指南
+
+如果你的 Pi 扩展提供虚拟 routing provider（例如 `router/auto`、`router/smart`，或会转发到真实上游的 profile/channel），本扩展可以为真实上游 provider/model 显示缓存统计，而不是把统计记到虚拟外壳上。集成是可选、版本化的，并且**不需要导入本包**。
+
+### 最小集成：最终 assistant message metadata
+
+要无缝获得最终缓存统计归因，请在完成的 assistant message 上透传真实上游身份：
+
+```ts
+{
+  role: "assistant",
+  provider: "anthropic",              // 真实上游 provider
+  responseModel: "claude-opus-4-8",   // 或 model: "..."
+  api: "anthropic-messages",          // 已知时填写上游 Pi API id
+  usage: {
+    input: 1200,       // Pi-normalized 未缓存 input tokens，如可用
+    cacheRead: 8000,   // 从 provider prompt cache 读取的 tokens
+    cacheWrite: 500,   // 本次新写入 provider prompt cache 的 tokens
+  },
+}
+```
+
+`message_end` 会把这些 assistant-message 字段视为权威来源。只要存在 `provider` + `model`/`responseModel` + cache usage，即使 active model 仍是 `router/auto`，统计也会更新真实上游桶。如果上游 usage 没有 cache 字段，请保持缺失或为 0；本扩展不会伪造 cache hit。
+
+### 可选：用于预响应 UX 的实时路由注册表
+
+最终 message metadata 足以支持响应后的统计。若要支持响应前流程——首次响应前的 footer 显示、`/cache-optimizer doctor`、`/cache-optimizer compat`、`/cache-optimizer reset` 和 OpenAI-compatible `prompt_cache_key` fallback——请在 `Symbol.for("pi.routing.registry.v1")` 下注册 live route adapter。
+
+协议形状：
+
+```ts
+type PiRouteSnapshot = {
+  virtualProvider: string;
+  virtualModelId: string;
+  provider: string;
+  modelId: string;
+  api?: string;
+  canonicalModelId?: string;
+  routeLabel?: string;
+  status?: "planned" | "trying" | "selected" | "success" | "failed";
+  sessionIdHash?: string;
+  requestId?: string;
+  timestamp: number;
+};
+
+type PiRouterAdapterV1 = {
+  virtualProvider: string;
+  resolveActiveRoute(
+    virtualModelId: string,
+    hint?: { sessionIdHash?: string; requestId?: string },
+  ): PiRouteSnapshot | undefined;
+  resolveCandidateRoutes?(virtualModelId: string): PiRouteSnapshot[];
+  subscribe?(listener: (event: PiRouteSnapshot) => void): () => void;
+};
+```
+
+注册模式：
+
+```ts
+const ROUTING = Symbol.for("pi.routing.registry.v1");
+const registry = (globalThis as Record<symbol, unknown>)[ROUTING] as
+  | { version: 1; registerRouter(adapter: PiRouterAdapterV1): () => void }
+  | undefined;
+
+registry?.registerRouter({
+  virtualProvider: "router",
+  resolveActiveRoute(virtualModelId, hint) {
+    return {
+      virtualProvider: "router",
+      virtualModelId,
+      provider: "deepseek",
+      modelId: "deepseek-v4",
+      api: "openai-completions",
+      sessionIdHash: hint?.sessionIdHash,
+      timestamp: Date.now(),
+    };
+  },
+});
+```
+
+不要覆盖已有 registry。如果你的扩展比本优化器更早加载，请在 `session_start` 时重试注册，或仅在 registry 不存在时创建同样的 V1 registry 形状。
+
+### 可选：按查询过滤的缓存提示
+
+会转发到内部 Pi 请求路径的 router，可以从 `Symbol.for("pi.cache.hints.v1")` 读取按查询过滤的提示：
+
+```ts
+const CACHE_HINTS = Symbol.for("pi.cache.hints.v1");
+const hints = (globalThis as Record<symbol, any>)[CACHE_HINTS]?.getHints?.({
+  sessionIdHash,
+  virtualProvider: "router",
+  virtualModelId: "auto",
+  upstreamProvider: "deepseek",
+  upstreamModelId: "deepseek-v4",
+  api: "openai-completions",
+});
+```
+
+当查询匹配当前 session/route 时，`hints` 可能包含 `systemPrompt`、`promptCacheKey` 和 `cacheRetention: "long"`。这些提示是参考信息且可能敏感：不要记录日志，不要暴露 prompt 文本，也不要覆盖已有 request-level `prompt_cache_key` / `promptCacheKey`。
+
+### 安全与正确性规则
+
+- 不要导入 `pi-cache-optimizer`；只使用 `Symbol.for(...)` 发现协议。
+- 不要在 route snapshot 或日志中暴露 API key、prompt、payload、headers、response body 或模型输出。
+- 最终归因使用 assistant-message metadata；live registry 只是参考信息，到响应完成时可能已经过期。
+- 保持 usage 真实。缺失 cache usage 时应该显示 0 或低报，而不是合成命中。
 
 ## 卸载
 
