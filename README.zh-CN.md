@@ -51,6 +51,8 @@ pi remove npm:pi-deepseek-cache-optimizer && pi install npm:pi-cache-optimizer
 
 安装、更新或移除后，在 Pi 中运行 `/reload`，让 extension hooks 刷新。
 
+Pi 0.79.7 及之后，`pi update` 默认只更新 Pi 本体。若要更新已安装的 Pi package（包括本扩展），请运行 `pi update --extensions`（只更新 packages）或 `pi update --all`（Pi 与 packages 一起更新）。
+
 ## 命令
 
 | 命令 | 作用 |
@@ -212,6 +214,8 @@ Provider 级最小 override：
 ## Footer 统计
 
 统计是只读本地计数，保存在 `~/.pi/agent/pi-cache-optimizer-stats.json`，按 Pi session + provider/model 隔离。文件只包含日期和数字计数，不包含 API key、prompt、payload、headers、响应或模型输出。
+
+Pi 0.79+ 已内置 footer `CH` 标记，用于显示最近一次 prompt cache hit rate。本扩展在此基础上补充持久化的 provider/model/session-scoped 计数，以及代理 compat 诊断。
 
 对于虚拟 routing provider，最终 assistant message 的 metadata 是权威来源：如果 message 携带真实上游 `provider`、`model` / `responseModel`、`api` 和 usage，统计会归因到真实上游 provider/model，而不是虚拟 router 外壳。Router extension 也可以在 `Symbol.for("pi.routing.registry.v1")` 下发布 live route adapter，让 footer、doctor、compat 和 reset 在最终 assistant message 出现前解析当前上游。本扩展还通过 `Symbol.for("pi.cache.hints.v1")` 暴露按查询过滤的 prompt/cache hints，供转发到内部 `streamSimple` 的 router 使用。两个协议都是可选、版本化的；不需要导入任何 router 包。
 

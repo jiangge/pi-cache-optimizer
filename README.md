@@ -51,6 +51,8 @@ pi remove npm:pi-deepseek-cache-optimizer && pi install npm:pi-cache-optimizer
 
 Run `/reload` in Pi after install/update/remove so extension hooks refresh.
 
+On Pi 0.79.7 and newer, `pi update` updates Pi itself only. To update installed Pi packages such as this extension, run `pi update --extensions` (packages only) or `pi update --all` (Pi + packages).
+
 ## Commands
 
 | Command | Effect |
@@ -212,6 +214,8 @@ If only one model should change, use `modelOverrides`:
 ## Footer stats
 
 Stats are read-only local counters stored at `~/.pi/agent/pi-cache-optimizer-stats.json` and scoped by Pi session + provider/model. They contain only dates and numeric counters — no API keys, prompts, payloads, headers, responses, or model output.
+
+Pi 0.79+ also includes a built-in footer `CH` marker for the latest prompt cache hit rate. This extension complements that marker with persisted, provider/model/session-scoped counters plus proxy compat diagnostics.
 
 For virtual routing providers, completed assistant message metadata is authoritative: if the message carries real upstream `provider`, `model` / `responseModel`, `api`, and usage, stats are attributed to that upstream provider/model instead of the virtual router shell. Router extensions may also publish a live route adapter under `Symbol.for("pi.routing.registry.v1")` so footer, doctor, compat, and reset flows can resolve the current upstream before the final assistant message exists. The cache optimizer also exposes query-scoped prompt/cache hints via `Symbol.for("pi.cache.hints.v1")` for routers that forward to inner `streamSimple` calls. Both protocols are optional and versioned; no router package import is required.
 
