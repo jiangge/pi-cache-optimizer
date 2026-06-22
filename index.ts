@@ -4715,6 +4715,291 @@ function locateModelInJsonc(
 }
 
 /**
+ * Scan produced by `analyzeModelsJsonForMissingEntry` when
+ * `locateModelInJsonc` cannot find the target provider/model.
+ */
+type MissingEntryDiagnosis =
+  | { scenario: "provider_missing"; providersEnd: number }
+  | { scenario: "model_missing"; modelsEnd: number; providerBrace: number; providerEndBrace: number }
+  | { scenario: "provider_without_models"; providerBrace: number; providerEndBrace: number };
+
+/**
+ * Light second-pass scan that determines *why* `locateModelInJsonc` failed.
+ * Returns structured diagnostic so the fix handler can compose targeted
+ * guidance and an optional surgical insertion for API-logged-in models
+ * (e.g. opencode go) that never appear in `models.json`.
+ */
+function analyzeModelsJsonForMissingEntry(
+  text: string,
+  providerLabel: string,
+  modelId: string,
+): MissingEntryDiagnosis | undefined {
+  const clean = stripJsoncComments(text);
+  const rootBrace = skipJsonWhitespace(clean, 0);
+  if (clean[rootBrace] !== "{") return undefined;
+
+  const providersKey = findJsonObjectKey(clean, rootBrace, "providers");
+  if (!providersKey) {
+    // Root has no "providers" key at all — we don't auto-create one.
+    return undefined;
+  }
+  const providersBrace = skipJsonWhitespace(clean, providersKey.valueStart);
+  if (clean[providersBrace] !== "{") return undefined;
+  const providersEnd = findMatchingBracket(clean, providersBrace);
+  if (providersEnd === undefined) return undefined;
+
+  const providerKey = findJsonObjectKey(clean, providersBrace, providerLabel);
+  if (!providerKey || providerKey.keyStart > providersEnd) {
+    return { scenario: "provider_missing", providersEnd };
+  }
+
+  // Provider exists. Check for a models array so we know where to append.
+  const providerBrace = skipJsonWhitespace(clean, providerKey.valueStart);
+  if (clean[providerBrace] !== "{") return undefined;
+  const providerEndBrace = findMatchingBracket(clean, providerBrace);
+  if (providerEndBrace === undefined || providerEndBrace > providersEnd) return undefined;
+
+  const modelsKey = findJsonObjectKey(clean, providerBrace, "models");
+  if (modelsKey && modelsKey.keyStart < providerEndBrace) {
+    let mScan = skipJsonWhitespace(clean, modelsKey.valueStart);
+    if (clean[mScan] === "[") {
+      const modelsEnd = findMatchingBracket(clean, mScan);
+      if (modelsEnd !== undefined && modelsEnd <= providerEndBrace) {
+        return { scenario: "model_missing", modelsEnd, providerBrace, providerEndBrace };
+      }
+    }
+  }
+
+  // Provider exists, but there's no discoverable models array — treat as
+  // a provider that needs one.
+  return { scenario: "provider_without_models", providerBrace, providerEndBrace };
+}
+
+/**
+ * Build a copyable manual-edit snippet for the missing entry. Used when the
+ * terminal is non-interactive or the user chooses to edit by hand.
+ * Returns a complete provider→model→compat JSON block that the user can
+ * paste into `models.json` under `providers`.
+ */
+function formatMissingEntryManualSnippet(
+  providerLabel: string,
+  modelId: string,
+  compatKeys: Record<string, unknown>,
+): string {
+  const lines: string[] = [];
+  const sorted = Object.entries(compatKeys).sort(([a], [b]) => a.localeCompare(b));
+  const compatItems = sorted.map(([k, v]) => `      ${JSON.stringify(k)}: ${JSON.stringify(v)}`);
+  lines.push(`"${providerLabel}": {`);
+  lines.push(`    "models": [`);
+  lines.push(`      {`);
+  lines.push(`        "id": ${JSON.stringify(modelId)},`);
+  lines.push(`        "compat": {`);
+  lines.push(compatItems.join(",\n"));
+  lines.push(`        }`);
+  lines.push(`      }`);
+  lines.push(`    ]`);
+  lines.push(`  }`);
+  return lines.join("\n");
+}
+
+/**
+ * Surgically insert the missing provider/model entry into the original
+ * JSONC text. Returns the modified text and placement descriptor.
+ *
+ * Handles three scenarios:
+ * - `model_missing`: append a new model object to the provider's `models` array.
+ * - `provider_missing`: append a new provider block to the root `providers` object.
+ * - `provider_without_models`: inject a `"models": [...]` key into the existing provider.
+ */
+function composeMissingEntryInsertion(
+  originalText: string,
+  diagnosis: MissingEntryDiagnosis,
+  providerLabel: string,
+  modelId: string,
+  compatKeys: Record<string, unknown>,
+): { modifiedText: string; placementLabel: string } {
+  // Resolve a sensible indentation step from an arbitrary byte offset in
+  // the original file.
+  const indentUnitAt = (offset: number): string => {
+    const ls = originalText.lastIndexOf("\n", offset);
+    const line = originalText.slice(ls < 0 ? 0 : ls + 1, offset);
+    const m = line.match(/^(\s+)/);
+    return m ? m[1] : "  ";
+  };
+
+  // Figure out the base indent from the insertion point's own line.
+  // Then derive inner indents (+1 and +2 levels).
+  const sorted = Object.entries(compatKeys).sort(([a], [b]) => a.localeCompare(b));
+  const formatCompactCompat = (indent: string): string => {
+    // Single-line compact when there's only one key, multi-line otherwise.
+    if (sorted.length === 1) {
+      const [k, v] = sorted[0];
+      return `{ ${JSON.stringify(k)}: ${JSON.stringify(v)} }`;
+    }
+    return (
+      "{\n" +
+      sorted.map(([k, v]) => `${indent}${JSON.stringify(k)}: ${JSON.stringify(v)}`).join(",\n") +
+      "\n" +
+      indent.slice(0, -2) +
+      "}"
+    );
+  };
+
+  if (diagnosis.scenario === "model_missing") {
+    // Append to the provider's models array, right before `]`.
+    const unit = indentUnitAt(diagnosis.modelsEnd);
+    const inner0 = unit + unit; // indent of model object's own keys
+    const inner1 = inner0 + unit; // indent of compat keys inside the model
+    const inner2 = inner1 + unit; // indent of compat values
+
+    // Determine whether the array is empty (need to skip the leading newline).
+    const arrayInterior = originalText.slice(
+      originalText.lastIndexOf("[", diagnosis.modelsEnd) + 1,
+      diagnosis.modelsEnd,
+    ).trim();
+    const hasExistingElements = arrayInterior.length > 0;
+
+    const compatBlock = formatCompactCompat(inner2);
+    const modelBlock = [
+      hasExistingElements ? "," : "",
+      inner0 + "{",
+      inner1 + `"id": ${JSON.stringify(modelId)},`,
+      inner1 + `"compat": ` + compatBlock,
+      inner0 + "}",
+      unit,
+    ].filter(Boolean).join("\n");
+
+    const insertionPoint = diagnosis.modelsEnd;
+    const prefix = originalText.slice(0, insertionPoint);
+    const suffix = originalText.slice(insertionPoint); // starts with `]`
+    return {
+      modifiedText: prefix + modelBlock + suffix,
+      placementLabel: `providers["${providerLabel}"] -> models -> (new entry for "${modelId}")`,
+    };
+  }
+
+  if (diagnosis.scenario === "provider_missing") {
+    // Append a new provider entry to the root `providers` object, right
+    // before its closing `}`.
+    const unit = indentUnitAt(diagnosis.providersEnd);
+    const inner0 = unit + unit;
+    const inner1 = inner0 + unit;
+    const inner2 = inner1 + unit;
+    const inner3 = inner2 + unit;
+
+    const compatBlock = formatCompactCompat(inner3);
+    const providersInterior = originalText.slice(
+      originalText.lastIndexOf("{", diagnosis.providersEnd) + 1,
+      diagnosis.providersEnd,
+    ).trim();
+    const hasExisting = providersInterior.length > 0;
+
+    const providerBlock = [
+      hasExisting ? "," : "",
+      inner0 + `"${providerLabel}": {`,
+      inner1 + `"models": [`,
+      inner2 + "{",
+      inner3 + `"id": ${JSON.stringify(modelId)},`,
+      inner3 + `"compat": ` + compatBlock,
+      inner2 + "}",
+      inner1 + "]",
+      inner0 + "}",
+      unit,
+    ].filter(Boolean).join("\n");
+
+    const insertionPoint = diagnosis.providersEnd;
+    const prefix = originalText.slice(0, insertionPoint);
+    const suffix = originalText.slice(insertionPoint);
+    return {
+      modifiedText: prefix + providerBlock + suffix,
+      placementLabel: `providers -> (new entry "${providerLabel}")`,
+    };
+  }
+
+  // `provider_without_models`: inject a models array key into the
+  // existing provider block, right after the provider's opening `{`.
+  const unit = indentUnitAt(diagnosis.providerBrace);
+  const inner0 = unit + unit;
+  const inner1 = inner0 + unit;
+  const inner2 = inner1 + unit;
+
+  const compatBlock = formatCompactCompat(inner2);
+  const afterBrace = diagnosis.providerBrace + 1;
+  const modelsBlock = [
+    "",
+    inner0 + `"models": [`,
+    inner1 + "{",
+    inner2 + `"id": ${JSON.stringify(modelId)},`,
+    inner2 + `"compat": ` + compatBlock,
+    inner1 + "}",
+    inner0 + "],",
+    unit,
+  ].join("\n");
+
+  return {
+    modifiedText: originalText.slice(0, afterBrace) + modelsBlock + originalText.slice(afterBrace),
+    placementLabel: `providers["${providerLabel}"] -> (new "models" array with "${modelId}")`,
+  };
+}
+
+/**
+ * Lightweight self-check for a newly inserted entry.
+ * Parses the modified text as JSONC and confirms:
+ *   1. The target model exists under the provider.
+ *   2. Every compat key has the expected value (merged provider+model).
+ * Returns null on success, an error string on failure.
+ */
+function selfCheckMissingEntryInsertion(
+  originalText: string,
+  modifiedText: string,
+  providerLabel: string,
+  modelId: string,
+  compatKeys: Record<string, unknown>,
+): string | null {
+  try {
+    const modParsed = parseJsonc(modifiedText);
+    const providers = asRecord(asRecord(modParsed)?.providers);
+    if (!providers) return "Modified file: providers object missing or invalid";
+    const provider = asRecord(providers[providerLabel]);
+    if (!provider) return `Modified file: provider "${providerLabel}" not found`;
+    const models = provider.models;
+    if (!Array.isArray(models)) return `Modified file: provider "${providerLabel}".models is not an array`;
+    const targetModel = models.find((m: unknown) => asRecord(m)?.id === modelId);
+    if (!targetModel || typeof targetModel !== "object")
+      return `Modified file: model "${modelId}" not found in provider after insertion`;
+
+    // Validate effective merged compat
+    const provCompatRaw = (provider as Record<string, unknown>).compat;
+    const provCompat = (provCompatRaw && typeof provCompatRaw === "object" && !Array.isArray(provCompatRaw))
+      ? provCompatRaw as Record<string, unknown>
+      : {};
+    const mdlCompatRaw = (targetModel as Record<string, unknown>).compat;
+    const mdlCompat = (mdlCompatRaw && typeof mdlCompatRaw === "object" && !Array.isArray(mdlCompatRaw))
+      ? mdlCompatRaw as Record<string, unknown>
+      : {};
+    const merged = { ...provCompat, ...mdlCompat };
+    for (const [k, v] of Object.entries(compatKeys)) {
+      if (!(k in merged)) return `Modified file: effective compat.${k} not found`;
+      if (merged[k] !== v) return `Modified file: effective compat.${k} wrong value`;
+    }
+
+    if (modifiedText.length < originalText.length)
+      return "Modified file: content is shorter than original (possible truncation)";
+
+    const modClean = stripJsoncComments(modifiedText);
+    const rootStart = skipJsonWhitespace(modClean, 0);
+    const rootEnd = findMatchingBracket(modClean, rootStart);
+    if (rootEnd === undefined) return "Modified file: root bracket mismatch";
+    if (skipJsonWhitespace(modClean, rootEnd + 1) !== modClean.length)
+      return "Modified file: trailing content after root object";
+
+    return null;
+  } catch (e) {
+    return `Self-check error: ${e instanceof Error ? e.message : String(e)}`;
+  }
+}
+
+/**
  * Deep-equal comparison of two values, used for post-write self-check.
  * Compares all keys recursively, allowing `extraKeys` to be present in `a` but not in `b`.
  */
@@ -6120,24 +6405,31 @@ export default function (pi: ExtensionAPI) {
         if (!cmdCtx.hasUI) {
           // No UI — refuse to write, show manual guidance instead.
           const compatResult = buildCompatDiagnosis(model);
-          if (compatResult) {
-            cmdCtx.ui.notify(
-              `❌ Non-interactive terminal detected. Auto-fix requires UI confirmation.\n\n` +
-              `Manual steps:\n` +
-              `1. Open ${getModelsJsonDisplayPath()} in your editor.\n` +
-              `2. Go to providers["${suggestion.providerLabel}"] -> models -> entry with id "${suggestion.modelId}" -> compat.\n` +
-              `3. Add the missing keys:\n${formatCompatKeysForInsertion(suggestion.compatKeys)}\n` +
-              `4. Save and run /reload.\n\n` +
-              compatResult,
-              "warning",
-            );
-          } else {
-            cmdCtx.ui.notify(
-              `❌ Non-interactive terminal detected. Auto-fix requires UI confirmation.\n` +
-              `Edit ${getModelsJsonDisplayPath()} manually and run /reload.`,
-              "warning",
+          const snippet = formatMissingEntryManualSnippet(
+            suggestion.providerLabel, suggestion.modelId, suggestion.compatKeys,
+          );
+          const manualLines = [
+            `❌ Non-interactive terminal detected. Auto-fix requires UI confirmation.`,
+            "",
+            `Edit ${getModelsJsonDisplayPath()} and run /reload.`,
+            "",
+            "If the provider/model already exists in models.json, add these compat keys under",
+            `providers["${suggestion.providerLabel}"] -> models -> entry with id "${suggestion.modelId}" -> compat:`,
+            formatCompatKeysForInsertion(suggestion.compatKeys),
+          ];
+          if (snippet.length > 0) {
+            manualLines.push(
+              "",
+              "If the provider/model is missing (common for API-logged-in channels such as",
+              `opencode go), add a minimal entry under "providers" (keep existing auth as-is):`,
+              "",
+              snippet,
             );
           }
+          if (compatResult) {
+            manualLines.push("", compatResult);
+          }
+          cmdCtx.ui.notify(manualLines.join("\n"), "warning");
           return;
         }
 
@@ -6150,17 +6442,119 @@ export default function (pi: ExtensionAPI) {
           return;
         }
 
-        // Locate the model entry
+        // Locate the model entry. API-logged-in providers (e.g. opencode go)
+        // may not appear in models.json at all.
         const location = locateModelInJsonc(originalText, suggestion.providerLabel, suggestion.modelId);
         if (!location) {
-          cmdCtx.ui.notify(
-            `❌ Could not locate model "${suggestion.modelId}" in ${getModelsJsonDisplayPath()}.\n` +
-            `The JSONC scanner could not confidently find the target entry.\n` +
-            `Manual edit required: open the file, find providers["${suggestion.providerLabel}"] -> models, and add:\n` +
-            `${formatCompatKeysForInsertion(suggestion.compatKeys)}\n` +
-            `Then run /reload.`,
-            "warning",
-          );
+          const diagnosis = analyzeModelsJsonForMissingEntry(originalText, suggestion.providerLabel, suggestion.modelId);
+          if (diagnosis && cmdCtx.hasUI) {
+            // Offer to create the missing entry.
+            const plan = composeMissingEntryInsertion(
+              originalText, diagnosis,
+              suggestion.providerLabel, suggestion.modelId, suggestion.compatKeys,
+            );
+            const checkError = selfCheckMissingEntryInsertion(
+              originalText, plan.modifiedText,
+              suggestion.providerLabel, suggestion.modelId, suggestion.compatKeys,
+            );
+            if (checkError !== null) {
+              // Fall through to manual guidance.
+              cmdCtx.ui.notify(
+                `❌ Self-check would fail for auto-created entry: ${checkError}\n` +
+                `Falling back to manual guidance. No changes were made.`,
+                "error",
+              );
+              // Continue to manual guidance below.
+            } else {
+              const keysPreview = JSON.stringify(suggestion.compatKeys, null, 2);
+              const ts = backupTimestamp();
+              const backupPath = `${MODELS_JSON_PATH}.backup-cache-optimizer-${ts}`;
+              const previewLines = [
+                `📝 Preview of changes to ${getModelsJsonDisplayPath()}:`,
+                ``,
+                `Location: ${plan.placementLabel}`,
+                `Compat JSON to write:`,
+                keysPreview,
+                ``,
+                `⚠️  Risk notice:`,
+                `  1. This creates a new entry in models.json. Existing auth (e.g. login API tokens) is not affected.`,
+                `  2. A timestamped backup will be written to: ${backupPath}`,
+                `  3. You must run /reload or restart Pi for the change to take effect.`,
+                `  4. If the file contains comments or unusual formatting, please verify the result after write.`,
+                ``,
+                `Apply these changes?`,
+              ];
+              const confirmed = await cmdCtx.ui.confirm("Cache Optimizer — Fix (new entry)", previewLines.join("\n"));
+              if (confirmed) {
+                try {
+                  await copyFile(MODELS_JSON_PATH, backupPath);
+                  const tempPath = `${MODELS_JSON_PATH}.${process.pid}.${Date.now()}.fix.tmp`;
+                  await writeFile(tempPath, plan.modifiedText, "utf8");
+                  await rename(tempPath, MODELS_JSON_PATH);
+
+                  const writtenText = await readFile(MODELS_JSON_PATH, "utf8");
+                  const postErr = selfCheckMissingEntryInsertion(
+                    originalText, writtenText,
+                    suggestion.providerLabel, suggestion.modelId, suggestion.compatKeys,
+                  );
+                  if (postErr !== null) {
+                    await copyFile(backupPath, MODELS_JSON_PATH);
+                    cmdCtx.ui.notify(
+                      `❌ Post-write self-check failed: ${postErr}\n` +
+                      `The backup at ${backupPath} has been restored. No changes applied.`,
+                      "error",
+                    );
+                    return;
+                  }
+                  cmdCtx.ui.notify(
+                    `✅ Fix applied to ${getModelsJsonDisplayPath()}.\n` +
+                    `Backup saved to: ${backupPath}\n` +
+                    `Run /reload or restart Pi for the change to take effect.`,
+                    "info",
+                  );
+                } catch (e) {
+                  cmdCtx.ui.notify(
+                    `❌ Write failed: ${e instanceof Error ? e.message : String(e)}`,
+                    "error",
+                  );
+                }
+                return;
+              }
+              cmdCtx.ui.notify("No changes were made. Canceled by user.", "info");
+              return;
+            }
+          }
+
+          // Non-interactive or no diagnosis: show manual guidance.
+          const snippet = diagnosis
+            ? formatMissingEntryManualSnippet(suggestion.providerLabel, suggestion.modelId, suggestion.compatKeys)
+            : formatCompatKeysForInsertion(suggestion.compatKeys);
+          const adviceLines: string[] = [];
+          if (!diagnosis) {
+            adviceLines.push(
+              `❌ Could not locate model "${suggestion.modelId}" or provider "${suggestion.providerLabel}" in ${getModelsJsonDisplayPath()}.`,
+              "",
+              "Providers that were added via Pi /login API (e.g. opencode go) do not have",
+              "entries in models.json. You can create a minimal compat-only entry by hand:",
+            );
+          } else if (diagnosis.scenario === "provider_missing") {
+            adviceLines.push(
+              `ℹ️ Provider "${suggestion.providerLabel}" does not exist in ${getModelsJsonDisplayPath()}.`,
+              `This is common for API-logged-in providers (e.g. /login ...).`,
+              "",
+              "Add the following minimal block under the \"providers\" key (keep your",
+              "existing authentication as-is):",
+            );
+          } else {
+            adviceLines.push(
+              `ℹ️ Model "${suggestion.modelId}" was not found in ${getModelsJsonDisplayPath()}`,
+              `under providers["${suggestion.providerLabel}"].`,
+              "",
+              "Add the following entry to the models array (keep existing auth):",
+            );
+          }
+          adviceLines.push("", snippet, "", "Then save and run /reload.");
+          cmdCtx.ui.notify(adviceLines.join("\n"), "warning");
           return;
         }
 

@@ -736,7 +736,7 @@ const statsKey = `${responseModel.provider}/${responseModel.id}`;
 
 ## Forbidden patterns
 
-* Writing `models.json` outside `/cache-optimizer fix`'s explicit preview + confirmation flow. The fix flow may create a timestamped backup and atomically replace `models.json`, but only to insert/repair safe `compat` keys or a missing `compat` object under an existing provider/model. It MUST NOT create/delete provider entries, model entries, API keys, credentials, or router slugs.
+* Writing `models.json` outside `/cache-optimizer fix`'s explicit preview + confirmation flow. The fix flow may create a timestamped backup and atomically replace `models.json`. For providers/models that already have entries in `models.json`, it only inserts/repairs safe `compat` keys or a missing `compat` object. For API-logged-in providers (e.g. opencode go) that have no `models.json` entry, it MAY offer to create a minimal entry (provider + model + compat only) with UI confirmation, backup, and atomic write; it MUST NOT create API keys, credentials, or router slugs under any scenario.
 * Reading or logging the value of `DEEPSEEK_API_KEY` (or any other API key env var).
 * Storing prompts, request payloads, response bodies, or HTTP headers in any
   on-disk file produced by this extension.
@@ -1201,6 +1201,10 @@ compat). It does NOT read or expose:
 | `/cache-optimizer` (no args) without UI | Text help lists `enable`, `disable`, `doctor`, `stats`, `compat`, `reset` subcommands plus runtime state |
 | Footer status for generic proxy after `/cache-optimizer fix` added `sendSessionAffinityHeaders` but `supportsLongCacheRetention` remains absent | No `⚠️ compat`; doctor/compat may still show optional long-retention guidance, but the model is considered safely configured |
 | Footer status when compat is fixed or model changes | `⚠️ compat` marker clears |
+| `/cache-optimizer fix` with API-logged-in model not in models.json (interactive UI) | Analyzes models.json, shows preview of new provider/model/compat entry, confirms, writes atomically with backup, self-checks, succeeds |
+| `/cache-optimizer fix` with API-logged-in model not in models.json (non-interactive) | Shows manual guidance with complete JSON snippet, keeps existing auth as-is, includes fallback for both missing-provider and missing-model scenarios |
+| `/cache-optimizer fix` creates new provider entry in models.json | Does NOT create API keys, credentials, baseUrl, or router slugs; only inserts minimal compat-only provider/model structure |
+| `/cache-optimizer fix` adds model to existing provider's models array | Appends model entry with id + compat to the existing models array, preserves all sibling models and provider-level configuration |
 | `/cache-optimizer doctor` with OpenRouter model | Output includes `🔀 Router/channel: OpenRouter detected` with routing fix suggestion and JSON example for `openRouterRouting` |
 | `/cache-optimizer doctor` with Vercel AI Gateway model | Output includes `🔀 Router/channel: Vercel AI Gateway detected` with `vercelGatewayRouting` suggestion |
 | `/cache-optimizer doctor` with LiteLLM/OneAPI/NewAPI/VoAPI model | Output includes `🔀 Router/channel: Self-hosted aggregation proxy detected` with sticky routing and prompt_cache_key guidance |

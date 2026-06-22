@@ -68,4 +68,5 @@
 * Package manifest: `version` rolled back from `2.6.6` to `2.6.5` because this task only changes docs and should not trigger a release.
 * Modified docs: `README.md`, `README.zh-CN.md` to document Pi 0.79.7 package-update semantics, Pi 0.79+ built-in `CH` footer relationship, and router/virtual-channel extension integration requirements.
 * Router docs cover: authoritative assistant message metadata (`provider`, `model`/`responseModel`, `api`, usage), optional `Symbol.for("pi.routing.registry.v1")` live route registry, optional `Symbol.for("pi.cache.hints.v1")` query-scoped cache hints, no package imports, and prompt/secret safety.
+* Enhanced `/cache-optimizer fix` to handle API-logged-in models (e.g. opencode go) that have no `models.json` entry: analyzes why the entry is missing, offers interactive creation of minimal compat-only provider/model entries with backup+atomic write+self-check, and shows complete manual-edit JSON guidance in non-interactive terminals.
 * Validation passed: `bunx tsc --noEmit --pretty false`, `git diff --check`, `npm pack --dry-run`, `python3 ./.trellis/scripts/task.py validate .trellis/tasks/06-19-pi`.
