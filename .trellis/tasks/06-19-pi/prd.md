@@ -69,4 +69,21 @@
 * Modified docs: `README.md`, `README.zh-CN.md` to document Pi 0.79.7 package-update semantics, Pi 0.79+ built-in `CH` footer relationship, and router/virtual-channel extension integration requirements.
 * Router docs cover: authoritative assistant message metadata (`provider`, `model`/`responseModel`, `api`, usage), optional `Symbol.for("pi.routing.registry.v1")` live route registry, optional `Symbol.for("pi.cache.hints.v1")` query-scoped cache hints, no package imports, and prompt/secret safety.
 * Enhanced `/cache-optimizer fix` to handle API-logged-in models (e.g. opencode go) that have no `models.json` entry: analyzes why the entry is missing, offers interactive creation of minimal compat-only provider/model entries with backup+atomic write+self-check, and shows complete manual-edit JSON guidance in non-interactive terminals.
+
+### Simplified prompt_cache_retention logic (2026-06-22)
+
+* **Problem discovered**: User reported 400 errors with `opencode-go/glm-5.2` due to `prompt_cache_retention` parameter. Investigation revealed this affects 400+ third-party `openai-completions` models in Pi's `models.generated.js` - Pi defaults `supportsLongCacheRetention` to `true`, but most third-party APIs don't support the parameter.
+* **Root cause**: Pi's default `supportsLongCacheRetention: true` is wrong for almost all third-party OpenAI-compatible APIs. The old whitelist approach (scan models.json on startup, build allowlist) was complex and had startup overhead.
+* **Simplified solution implemented**:
+  1. Removed whitelist scanning (`explicitLongRetentionModels` Set + `refreshLongRetentionAllowlist` function).
+  2. Added `hasExplicitLongRetentionOptIn(model)` - checks models.json synchronously for explicit opt-in (handles provider-level and model-level compat, model-level takes precedence).
+  3. Simplified `before_provider_request` logic to 4 gates:
+     - Gate 1: Official OpenAI → keep `prompt_cache_retention`
+     - Gate 2: Explicit user opt-in (models.json has `supportsLongCacheRetention: true`) → keep
+     - Gate 3: 400 history → strip (belt-and-suspenders)
+     - Gate 4: All other cases → strip (safe default)
+  4. Enhanced `describeMissingOpenAICompatibleProxyCompat` to detect missing `supportsLongCacheRetention` (not just `sendSessionAffinityHeaders`).
+  5. Enhanced `buildSafeOpenAIProxyCompatSuggestion` to suggest `supportsLongCacheRetention: false` as safe default.
+* **Edge cases validated**: Provider-level vs model-level compat (model wins), user's `h-e/glm-5.2` has provider `true` + model `false` → correctly uses `false`.
+* **Benefits**: ~80% less code, no startup delay, first-run safe (no 400 before whitelist builds), doctor/compat/fix now detect the actual problem.
 * Validation passed: `bunx tsc --noEmit --pretty false`, `git diff --check`, `npm pack --dry-run`, `python3 ./.trellis/scripts/task.py validate .trellis/tasks/06-19-pi`.

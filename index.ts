@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import { copyFile, mkdir, readFile, rename, unlink, writeFile } from "node:fs/promises";
+import { readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import type { BuildSystemPromptOptions, ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
@@ -958,12 +959,12 @@ function getNonNegativeNumber(record: UnknownRecord, key: string): number | unde
  */
 function getCompat(model: PiModel | undefined): CacheCompat {
   if (!model) return {} as CacheCompat;
-  
+
   // Pi merges provider.compat with model.compat (model wins on conflicts)
   // We approximate this by reading from ctx.model which should already have merged compat
   // However, for safety, we check both levels if available
   const modelCompat = (model.compat ?? {}) as CacheCompat;
-  
+
   // Note: ctx.model from Pi should already contain merged compat,
   // but we document the two-level structure for clarity
   return modelCompat;
@@ -1941,6 +1942,12 @@ function describeMissingOpenAICompatibleProxyCompat(model: PiModel): string[] {
     missing.push("sendSessionAffinityHeaders");
   }
 
+  // Check supportsLongCacheRetention: if it's true (Pi default) or undefined,
+  // third-party APIs likely don't support it → should be explicitly set to false
+  if (compat.supportsLongCacheRetention !== false) {
+    missing.push("supportsLongCacheRetention");
+  }
+
   return missing;
 }
 
@@ -1962,6 +1969,9 @@ function buildSafeOpenAIProxyCompatSuggestion(missing: string[]): Record<string,
   const suggestion: Record<string, boolean> = {};
   if (missing.includes("sendSessionAffinityHeaders")) {
     suggestion.sendSessionAffinityHeaders = true;
+  }
+  if (missing.includes("supportsLongCacheRetention")) {
+    suggestion.supportsLongCacheRetention = false;  // Safe default for third-party APIs
   }
   return suggestion;
 }
@@ -5292,7 +5302,7 @@ function selfCheckFix(
     if (models.length === 0) {
       return `Modified file: provider "${providerLabel}".models is empty`;
     }
-    
+
     // Step 4: Find and validate target model
     const targetModel = models.find((m: Record<string, unknown>) => m.id === modelId);
     if (!targetModel || typeof targetModel !== 'object') {
@@ -5310,7 +5320,7 @@ function selfCheckFix(
     if (!origProvider || !origTargetModelRecord) {
       return `Original file: provider/model "${providerLabel}/${modelId}" not found`;
     }
-    
+
     // Step 5: Compute the EFFECTIVE merged compat (provider-level + model-level),
     // mirroring Pi's mergeCompat behavior (model wins on conflicts). The fix may
     // have written either level, so validation must check the merged result.
@@ -5334,7 +5344,7 @@ function selfCheckFix(
         return `Modified file: effective compat.${k} has wrong value: expected ${JSON.stringify(v)}, got ${JSON.stringify(mergedCompat[k])}`;
       }
     }
-    
+
     // Step 7: Validate original structure is preserved (no accidental deletions/changes)
 
     function isSubset(origVal: unknown, modVal: unknown, path = ''): boolean {
@@ -5381,12 +5391,12 @@ function selfCheckFix(
     if (!isSubset(origParsed, modParsed)) {
       return "Modified file: original structure was altered (data loss detected)";
     }
-    
+
     // Step 8: Basic format sanity checks
     if (modified.length < original.length) {
       return "Modified file: content is shorter than original (possible truncation)";
     }
-    
+
     // Step 9: Validate root bracket integrity with the same string/comment-aware
     // scanner used for edits. Do not count raw braces: comments or strings may
     // legitimately contain unmatched `{` / `}` bytes.
@@ -6084,38 +6094,54 @@ export default function (pi: ExtensionAPI) {
   // in models.json. Only these models receive prompt_cache_retention in requests.
   // API-logged-in providers (e.g. opencode go) without explicit compat are
   // proactively stripped to prevent 400 errors.
-  const explicitLongRetentionModels = new Set<string>();
-
-  async function refreshLongRetentionAllowlist(): Promise<void> {
+  /**
+   * Check whether a model has an EXPLICIT supportsLongCacheRetention config
+   * in models.json (either at provider-level or model-level).
+   * Returns:
+   *   - true if explicitly set to true
+   *   - false if explicitly set to false OR not in models.json
+   *   - undefined if in models.json but the field is not explicitly set
+   *
+   * This distinguishes between:
+   *   - User explicit opt-in (true) → trust the user, send prompt_cache_retention
+   *   - User explicit opt-out (false) → strip
+   *   - No explicit config (undefined/false) → strip (safe default)
+   */
+  function hasExplicitLongRetentionOptIn(model: PiModel): boolean {
     try {
-      const text = await readFile(MODELS_JSON_PATH, "utf8");
+      const text = readFileSync(MODELS_JSON_PATH, "utf8");
       const parsed = parseJsonc(text);
-      const providers = asRecord(asRecord(parsed)?.providers) ?? {};
-      for (const [provLabel, provEntry] of Object.entries(providers)) {
-        const prov = asRecord(provEntry);
-        const provComp = asRecord(prov?.compat);
-        const provLong = provComp?.supportsLongCacheRetention === true;
-        const models = prov?.models;
-        if (Array.isArray(models)) {
-          for (const m of models) {
-            const mr = asRecord(m);
-            if (mr?.id) {
-              const mc = asRecord(mr.compat);
-              const key = `${provLabel}/${mr.id}`;
-              if (mc?.supportsLongCacheRetention === true || provLong) {
-                explicitLongRetentionModels.add(key);
-              }
-            }
+      const providers = asRecord(asRecord(parsed)?.providers);
+      if (!providers) return false;
+
+      const prov = asRecord(providers[model.provider]);
+      if (!prov) return false;  // Not in models.json
+
+      // Check model-level first (higher priority in Pi's merge logic)
+      const models = prov.models;
+      if (Array.isArray(models)) {
+        const modelEntry = models.find(m => asRecord(m)?.id === model.id);
+        if (modelEntry) {
+          const modelCompat = asRecord(asRecord(modelEntry)?.compat);
+          if (modelCompat?.supportsLongCacheRetention !== undefined) {
+            return modelCompat.supportsLongCacheRetention === true;
           }
         }
       }
+
+      // Check provider-level
+      const provCompat = asRecord(prov.compat);
+      if (provCompat?.supportsLongCacheRetention !== undefined) {
+        return provCompat.supportsLongCacheRetention === true;
+      }
+
+      return false;  // In models.json but no explicit supportsLongCacheRetention
     } catch {
-      // File missing/unreadable — no explicit entries, safe default.
+      return false;  // File missing/unreadable → safe default
     }
   }
 
   pi.on("session_start", async (event, ctx) => {
-    await refreshLongRetentionAllowlist();
     await restoreCacheStats(event.reason, ctx);
     await publishStatus(ctx);
   });
@@ -6239,24 +6265,31 @@ export default function (pi: ExtensionAPI) {
 
   pi.on("before_provider_request", (event, ctx) => {
     // ── Safety: strip prompt_cache_retention from payload for models that
-    // do NOT have an explicit supportsLongCacheRetention config in
-    // models.json. Pi may ship a default compat (e.g. opencode-go) that
-    // says long retention is supported, but the actual endpoint rejects
-    // the parameter with "Extra inputs are not permitted". Only the
-    // user's explicit opt-in (via models.json) authorises sending it.
+    // do NOT have an explicit supportsLongCacheRetention: true opt-in in
+    // models.json. This prevents 400 errors from third-party OpenAI-compatible
+    // APIs that don't support the parameter.
     //
-    // Also strips for models with a previously recorded 400 (belt + suspenders).
+    // Only official OpenAI or models with explicit user opt-in are allowed
+    // to send prompt_cache_retention.
     if (runtimeOptimizerEnabled) {
       const payload = event.payload as UnknownRecord;
       if (payload && typeof payload.prompt_cache_retention === 'string') {
         const rModel = resolveRouteModel(ctx.model, ctx) ?? ctx.model;
         if (rModel) {
-          const mk = modelKey(rModel);
-          const supportsLong = getCompat(rModel).supportsLongCacheRetention === true;
-          // Proactive gate: model says it supports long retention but has no
-          // explicit opt-in → strip. Reactive gate: 400 already observed.
-          if (promptCacheRetention400Models.has(mk) ||
-              (supportsLong && !explicitLongRetentionModels.has(mk))) {
+          // Gate 1: Official OpenAI → always keep
+          if (isOfficialOpenAIBaseUrl(rModel)) {
+            // keep
+          }
+          // Gate 2: Explicit user opt-in (models.json has supportsLongCacheRetention: true) → keep
+          else if (hasExplicitLongRetentionOptIn(rModel)) {
+            // keep (user explicitly wants it)
+          }
+          // Gate 3: 400 history → strip (even if user opted in, API doesn't support it)
+          else if (promptCacheRetention400Models.has(modelKey(rModel))) {
+            delete payload.prompt_cache_retention;
+          }
+          // Gate 4: All other cases → strip (safe default for third-party APIs)
+          else {
             delete payload.prompt_cache_retention;
           }
         }
@@ -6693,7 +6726,7 @@ export default function (pi: ExtensionAPI) {
           `Placement: ${decision.placement} level — ${decision.reason}`,
           `Compat JSON to write:`,
           keysPreview,
-          ``, 
+          ``,
           `⚠️  Risk notice:`,
           scopeRiskLine,
           `  2. A timestamped backup will be written to: ${backupPath}`,
@@ -6881,13 +6914,13 @@ export default function (pi: ExtensionAPI) {
               `Placement: ${menuDecision.placement} level — ${menuDecision.reason}`,
               `Compat JSON to write:`,
               keysPreview,
-              ``, 
+              ``,
               `⚠️  Risk notice:`,
               menuScopeRiskLine,
               `  2. A timestamped backup will be written to: ${backupPath}`,
               `  3. You must restart Pi / run /reload for the change to take effect.`,
               `  4. If the file contains comments, verify the result after write.`,
-              ``, 
+              ``,
               `Apply these changes?`,
             ];
 
