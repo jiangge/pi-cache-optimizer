@@ -6395,7 +6395,23 @@ export default function (pi: ExtensionAPI) {
           return;
         }
 
-        const suggestion = buildFixSuggestion(model);
+        let suggestion = buildFixSuggestion(model);
+
+        // If no regular missing compat flags but the model has a recorded
+        // prompt_cache_retention 400 (Pi sent `prompt_cache_retention` and
+        // the provider rejected it), offer to override
+        // `supportsLongCacheRetention` to false in models.json.
+        if (!suggestion && isPromptCacheRetention400Applicable(model) && promptCacheRetention400Models.has(modelKey(model))) {
+          const key = modelKey(model);
+          const slashIdx = key.indexOf("/");
+          const providerLabel = slashIdx > 0 ? key.slice(0, slashIdx) : key;
+          suggestion = {
+            providerLabel,
+            modelId: model.id,
+            compatKeys: { supportsLongCacheRetention: false },
+          };
+        }
+
         if (!suggestion) {
           const key = modelKey(model);
           cmdCtx.ui.notify(`✅ Nothing to fix for "${key}". Compat already configured.`, "info");
@@ -6412,11 +6428,20 @@ export default function (pi: ExtensionAPI) {
             `❌ Non-interactive terminal detected. Auto-fix requires UI confirmation.`,
             "",
             `Edit ${getModelsJsonDisplayPath()} and run /reload.`,
+          ];
+          if (promptCacheRetention400Models.has(modelKey(model))) {
+            manualLines.push(
+              "",
+              "💡 This model returned HTTP 400 for prompt_cache_retention.",
+              "Create or edit the entry below to override supportsLongCacheRetention to false.",
+            );
+          }
+          manualLines.push(
             "",
             "If the provider/model already exists in models.json, add these compat keys under",
             `providers["${suggestion.providerLabel}"] -> models -> entry with id "${suggestion.modelId}" -> compat:`,
             formatCompatKeysForInsertion(suggestion.compatKeys),
-          ];
+          );
           if (snippet.length > 0) {
             manualLines.push(
               "",
@@ -6481,9 +6506,17 @@ export default function (pi: ExtensionAPI) {
                 `  2. A timestamped backup will be written to: ${backupPath}`,
                 `  3. You must run /reload or restart Pi for the change to take effect.`,
                 `  4. If the file contains comments or unusual formatting, please verify the result after write.`,
-                ``,
-                `Apply these changes?`,
               ];
+              if (promptCacheRetention400Models.has(modelKey(model))) {
+                previewLines.push(
+                  "",
+                  "💡  This fix overrides supportsLongCacheRetention to false because",
+                  "a 400 prompt_cache_retention error was observed for this model.",
+                  "After applying and reloading, Pi will no longer send the",
+                  "prompt_cache_retention parameter to this provider.",
+                );
+              }
+              previewLines.push("", `Apply these changes?`);
               const confirmed = await cmdCtx.ui.confirm("Cache Optimizer — Fix (new entry)", previewLines.join("\n"));
               if (confirmed) {
                 try {
@@ -6603,9 +6636,17 @@ export default function (pi: ExtensionAPI) {
           `  2. A timestamped backup will be written to: ${backupPath}`,
           `  3. You must restart Pi / run /reload for the change to take effect.`,
           `  4. If the file contains comments or unusual formatting, please verify the result after write.`,
-          ``, 
-          `Apply these changes?`,
         ];
+        if (promptCacheRetention400Models.has(modelKey(model))) {
+          previewLines.push(
+            "",
+            "💡  This fix overrides supportsLongCacheRetention to false because",
+            "a 400 prompt_cache_retention error was observed for this model.",
+            "After applying and reloading, Pi will no longer send the",
+            "prompt_cache_retention parameter to this provider.",
+          );
+        }
+        previewLines.push("", `Apply these changes?`);
 
         const confirmed = await cmdCtx.ui.confirm("Cache Optimizer — Fix", previewLines.join("\n"));
         if (!confirmed) {
