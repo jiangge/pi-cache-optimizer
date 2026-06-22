@@ -6078,7 +6078,6 @@ export default function (pi: ExtensionAPI) {
 
   pi.on("session_start", async (event, ctx) => {
     await restoreCacheStats(event.reason, ctx);
-    if (runtimeOptimizerEnabled) notifyCacheCompatIfNeeded(resolveRouteModel(ctx.model, ctx) ?? ctx.model, ctx, warnedModels);
     await publishStatus(ctx);
   });
 
@@ -6200,6 +6199,23 @@ export default function (pi: ExtensionAPI) {
   });
 
   pi.on("before_provider_request", (event, ctx) => {
+    // ── Safety: strip prompt_cache_retention from the payload for models
+    // that previously returned HTTP 400 for this parameter. Pi sends
+    // prompt_cache_retention when PI_CACHE_RETENTION=long AND the model's
+    // compat has supportsLongCacheRetention: true. Some API-logged-in
+    // providers (e.g. opencode go + glm-5.2) ship that default but the
+    // actual endpoint rejects the parameter. Once a 400 is recorded,
+    // subsequent requests strip it automatically — no manual fix needed.
+    if (runtimeOptimizerEnabled) {
+      const payload = event.payload as UnknownRecord;
+      if (payload && typeof payload.prompt_cache_retention === 'string') {
+        const rModel = resolveRouteModel(ctx.model, ctx) ?? ctx.model;
+        if (rModel && promptCacheRetention400Models.has(modelKey(rModel))) {
+          delete payload.prompt_cache_retention;
+        }
+      }
+    }
+
     if (!shouldInjectOpenAIPromptCacheKey()) return undefined;
     const requestModel = resolveRouteModel(ctx.model, ctx) ?? ctx.model;
     if (!isOpenAICompatibleApi(requestModel?.api)) return undefined;
