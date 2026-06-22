@@ -1942,11 +1942,12 @@ function describeMissingOpenAICompatibleProxyCompat(model: PiModel): string[] {
     missing.push("sendSessionAffinityHeaders");
   }
 
-  // Check supportsLongCacheRetention: if it's true (Pi default) or undefined,
-  // third-party APIs likely don't support it → should be explicitly set to false
-  if (compat.supportsLongCacheRetention !== false) {
-    missing.push("supportsLongCacheRetention");
-  }
+  // NOTE: supportsLongCacheRetention is intentionally NOT checked here.
+  // Per spec, it is optional/risky advisory text only and must NOT trigger
+  // the ⚠️ compat marker. The before_provider_request hook proactively
+  // strips prompt_cache_retention for models without explicit opt-in,
+  // so 400 errors are prevented regardless of this compat flag.
+  // Doctor/compat may mention it as optional guidance separately.
 
   return missing;
 }
@@ -1970,9 +1971,9 @@ function buildSafeOpenAIProxyCompatSuggestion(missing: string[]): Record<string,
   if (missing.includes("sendSessionAffinityHeaders")) {
     suggestion.sendSessionAffinityHeaders = true;
   }
-  if (missing.includes("supportsLongCacheRetention")) {
-    suggestion.supportsLongCacheRetention = false;  // Safe default for third-party APIs
-  }
+  // supportsLongCacheRetention is NOT suggested here — per spec it is
+  // optional/risky and must not appear in the copyable safe snippet.
+  // The proactive stripping in before_provider_request handles 400 prevention.
   return suggestion;
 }
 
@@ -6090,22 +6091,19 @@ export default function (pi: ExtensionAPI) {
 
   ensureRoutingRegistry();
 
-  // Set of provider/model keys that have explicit supportsLongCacheRetention: true
-  // in models.json. Only these models receive prompt_cache_retention in requests.
-  // API-logged-in providers (e.g. opencode go) without explicit compat are
-  // proactively stripped to prevent 400 errors.
   /**
-   * Check whether a model has an EXPLICIT supportsLongCacheRetention config
-   * in models.json (either at provider-level or model-level).
-   * Returns:
-   *   - true if explicitly set to true
-   *   - false if explicitly set to false OR not in models.json
-   *   - undefined if in models.json but the field is not explicitly set
+   * Check whether a model has an EXPLICIT supportsLongCacheRetention: true
+   * opt-in in models.json (either at provider-level or model-level).
+   * Model-level compat takes precedence over provider-level (mirrors Pi's
+   * mergeCompat behaviour: model wins on conflicts).
    *
-   * This distinguishes between:
-   *   - User explicit opt-in (true) → trust the user, send prompt_cache_retention
-   *   - User explicit opt-out (false) → strip
-   *   - No explicit config (undefined/false) → strip (safe default)
+   * Returns true ONLY when the user explicitly opted in. Returns false for:
+   *   - Explicit false (opt-out)
+   *   - In models.json but field absent (Pi defaults to true — unsafe)
+   *   - Not in models.json at all (API-logged-in providers)
+   *   - File missing/unreadable
+   *
+   * The caller strips prompt_cache_retention when this returns false.
    */
   function hasExplicitLongRetentionOptIn(model: PiModel): boolean {
     try {
@@ -6115,7 +6113,7 @@ export default function (pi: ExtensionAPI) {
       if (!providers) return false;
 
       const prov = asRecord(providers[model.provider]);
-      if (!prov) return false;  // Not in models.json
+      if (!prov) return false;
 
       // Check model-level first (higher priority in Pi's merge logic)
       const models = prov.models;
@@ -6135,9 +6133,9 @@ export default function (pi: ExtensionAPI) {
         return provCompat.supportsLongCacheRetention === true;
       }
 
-      return false;  // In models.json but no explicit supportsLongCacheRetention
+      return false;
     } catch {
-      return false;  // File missing/unreadable → safe default
+      return false;
     }
   }
 
@@ -6265,31 +6263,32 @@ export default function (pi: ExtensionAPI) {
 
   pi.on("before_provider_request", (event, ctx) => {
     // ── Safety: strip prompt_cache_retention from payload for models that
-    // do NOT have an explicit supportsLongCacheRetention: true opt-in in
-    // models.json. This prevents 400 errors from third-party OpenAI-compatible
-    // APIs that don't support the parameter.
+    // are not authorised to send it. Pi defaults supportsLongCacheRetention
+    // to true for all openai-completions models, but most third-party APIs
+    // reject the parameter with 400 “Extra inputs are not permitted”.
     //
-    // Only official OpenAI or models with explicit user opt-in are allowed
-    // to send prompt_cache_retention.
+    // Gate order (first match wins):
+    //   1. Official OpenAI          → keep (trusted to support it)
+    //   2. 400 history              → strip (empirical evidence overrides user config)
+    //   3. Explicit opt-in in models.json → keep (user explicitly wants it)
+    //   4. Everything else          → strip (safe default for third-party APIs)
+    //
+    // Gate 2 before Gate 3 is critical: if a user explicitly opted in but
+    // the API returned 400, we must strip — otherwise the 400 repeats forever.
     if (runtimeOptimizerEnabled) {
       const payload = event.payload as UnknownRecord;
       if (payload && typeof payload.prompt_cache_retention === 'string') {
         const rModel = resolveRouteModel(ctx.model, ctx) ?? ctx.model;
         if (rModel) {
-          // Gate 1: Official OpenAI → always keep
           if (isOfficialOpenAIBaseUrl(rModel)) {
-            // keep
-          }
-          // Gate 2: Explicit user opt-in (models.json has supportsLongCacheRetention: true) → keep
-          else if (hasExplicitLongRetentionOptIn(rModel)) {
-            // keep (user explicitly wants it)
-          }
-          // Gate 3: 400 history → strip (even if user opted in, API doesn't support it)
-          else if (promptCacheRetention400Models.has(modelKey(rModel))) {
+            // Gate 1: Official OpenAI → keep
+          } else if (promptCacheRetention400Models.has(modelKey(rModel))) {
+            // Gate 2: 400 history → strip (overrides user opt-in)
             delete payload.prompt_cache_retention;
-          }
-          // Gate 4: All other cases → strip (safe default for third-party APIs)
-          else {
+          } else if (hasExplicitLongRetentionOptIn(rModel)) {
+            // Gate 3: Explicit user opt-in → keep
+          } else {
+            // Gate 4: Safe default → strip
             delete payload.prompt_cache_retention;
           }
         }

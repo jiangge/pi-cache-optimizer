@@ -87,3 +87,15 @@
 * **Edge cases validated**: Provider-level vs model-level compat (model wins), user's `h-e/glm-5.2` has provider `true` + model `false` → correctly uses `false`.
 * **Benefits**: ~80% less code, no startup delay, first-run safe (no 400 before whitelist builds), doctor/compat/fix now detect the actual problem.
 * Validation passed: `bunx tsc --noEmit --pretty false`, `git diff --check`, `npm pack --dry-run`, `python3 ./.trellis/scripts/task.py validate .trellis/tasks/06-19-pi`.
+
+### Deep review fixes (2026-06-22)
+
+* **Critical bug fixed — Gate ordering**: The original 4-gate logic checked explicit opt-in (Gate 2) BEFORE 400 history (Gate 3). This meant if a user explicitly opted in but the API returned 400, the 400 history was never reached — `prompt_cache_retention` was kept forever, causing infinite 400 loops. Fixed by reordering: Gate 2 is now 400 history (strip), Gate 3 is explicit opt-in (keep). This ensures empirical evidence (400) overrides user config.
+* **Spec violation fixed — `⚠️ compat` marker**: The original change added `supportsLongCacheRetention` to `describeMissingOpenAICompatibleProxyCompat`, which would trigger `⚠️ compat` for all third-party proxies without `supportsLongCacheRetention: false`. This violated the spec which states `supportsLongCacheRetention` is optional/risky advisory only and must NOT keep `⚠️ compat` active. Reverted both `describeMissingOpenAICompatibleProxyCompat` and `buildSafeOpenAIProxyCompatSuggestion` — the existing `describeOptionalOpenAICompatibleProxyCompat` already handles advisory text correctly.
+* **Code quality fixes**: Removed stale comment block describing the deleted Set; fixed docstring that claimed to return `undefined` (function only returns `boolean`); cleaned up trailing whitespace.
+* **Verify script improved**: Switched from real `models.json` (which had parsing issues with simplified JSONC parser) to deterministic mock data. Added 6 gate-ordering tests that verify 400 history takes precedence over explicit opt-in.
+* **Final architecture (4-layer defense)**:
+  1. Layer 1: Proactive stripping in `before_provider_request` Gate 4 → prevents 400 for models without opt-in.
+  2. Layer 2: 400 detection (`after_provider_response`) + Gate 2 → catches 400 for models WITH opt-in that's wrong, strips on next request.
+  3. Layer 3: `/cache-optimizer fix` 400-specific path → offers `supportsLongCacheRetention: false` for 400 models.
+  4. Layer 4: `doctor`/`compat` advisory via `describeOptionalOpenAICompatibleProxyCompat` → informs user about `supportsLongCacheRetention` without triggering `⚠️ compat`.

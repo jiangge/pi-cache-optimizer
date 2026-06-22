@@ -1,15 +1,85 @@
 #!/usr/bin/env bun
 /**
  * Verification script for the simplified prompt_cache_retention logic.
- * Tests the new hasExplicitLongRetentionOptIn function and validates
- * that the logic correctly handles all edge cases.
+ *
+ * Tests hasExplicitLongRetentionOptIn logic with MOCK models.json data
+ * (not the real file) for deterministic, reproducible results.
+ *
+ * Also documents the 4-gate before_provider_request logic and verifies
+ * the gate ordering is correct (400 history BEFORE explicit opt-in).
  */
 
-import { readFileSync } from "node:fs";
-import { join } from "node:path";
-import { homedir } from "node:os";
+// ─── Mock models.json data ───────────────────────────────────────────
 
-// Mock types
+const MOCK_MODELS_JSON: Record<string, unknown> = {
+  providers: {
+    // Provider with supportsLongCacheRetention: true, no model override
+    "hello": {
+      compat: {
+        thinkingFormat: "deepseek",
+        sendSessionAffinityHeaders: true,
+        supportsLongCacheRetention: true,
+      },
+      models: [
+        { id: "deepseek-v4-flash" },
+        { id: "deepseek-v4-pro" },
+      ],
+    },
+    // Provider with supportsLongCacheRetention: true, model overrides to false
+    "h-e": {
+      compat: {
+        supportsLongCacheRetention: true,
+      },
+      models: [
+        {
+          id: "glm-5.2",
+          compat: {
+            supportsLongCacheRetention: false,
+          },
+        },
+      ],
+    },
+    // Provider with NO supportsLongCacheRetention (field absent)
+    "atm-temp": {
+      compat: {
+        sendSessionAffinityHeaders: true,
+      },
+      models: [
+        { id: "glm-5.2" },
+      ],
+    },
+    // Provider with supportsLongCacheRetention: false (explicit opt-out)
+    "hyb-ds": {
+      compat: {
+        supportsLongCacheRetention: false,
+      },
+      models: [
+        { id: "deepseek-v4" },
+      ],
+    },
+    // Provider with model-level true, no provider-level
+    "custom-prov": {
+      models: [
+        {
+          id: "model-a",
+          compat: {
+            supportsLongCacheRetention: true,
+          },
+        },
+        {
+          id: "model-b",
+          compat: {
+            supportsLongCacheRetention: false,
+          },
+        },
+        { id: "model-c" }, // no compat
+      ],
+    },
+  },
+};
+
+// ─── Replicated logic from index.ts ──────────────────────────────────
+
 type PiModel = {
   provider: string;
   id: string;
@@ -17,60 +87,43 @@ type PiModel = {
   baseUrl?: string;
 };
 
-// Simple JSONC parser (strip comments)
-function parseJsonc(text: string): unknown {
-  // Remove // comments
-  text = text.replace(/\/\/.*$/gm, '');
-  // Remove /* */ comments
-  text = text.replace(/\/\*[\s\S]*?\*\//g, '');
-  // Remove trailing commas
-  text = text.replace(/,(\s*[}\]])/g, '$1');
-  return JSON.parse(text);
-}
-
 function asRecord(value: unknown): Record<string, unknown> | undefined {
   return value && typeof value === "object" && !Array.isArray(value)
     ? (value as Record<string, unknown>)
     : undefined;
 }
 
-// Replicate the new logic
-function hasExplicitLongRetentionOptIn(model: PiModel): boolean {
-  try {
-    const MODELS_JSON_PATH = join(homedir(), ".pi", "agent", "models.json");
-    const text = readFileSync(MODELS_JSON_PATH, "utf8");
-    const parsed = parseJsonc(text);
-    const providers = asRecord(asRecord(parsed)?.providers);
-    if (!providers) return false;
+function hasExplicitLongRetentionOptIn(
+  model: PiModel,
+  mockData: Record<string, unknown>,
+): boolean {
+  const providers = asRecord(asRecord(mockData)?.providers);
+  if (!providers) return false;
 
-    const prov = asRecord(providers[model.provider]);
-    if (!prov) return false;  // Not in models.json
+  const prov = asRecord(providers[model.provider]);
+  if (!prov) return false;
 
-    // Check model-level first (higher priority in Pi's merge logic)
-    const models = prov.models;
-    if (Array.isArray(models)) {
-      const modelEntry = models.find(m => asRecord(m)?.id === model.id);
-      if (modelEntry) {
-        const modelCompat = asRecord(asRecord(modelEntry)?.compat);
-        if (modelCompat?.supportsLongCacheRetention !== undefined) {
-          return modelCompat.supportsLongCacheRetention === true;
-        }
+  const models = prov.models;
+  if (Array.isArray(models)) {
+    const modelEntry = models.find(m => asRecord(m)?.id === model.id);
+    if (modelEntry) {
+      const modelCompat = asRecord(asRecord(modelEntry)?.compat);
+      if (modelCompat?.supportsLongCacheRetention !== undefined) {
+        return modelCompat.supportsLongCacheRetention === true;
       }
     }
-
-    // Check provider-level
-    const provCompat = asRecord(prov.compat);
-    if (provCompat?.supportsLongCacheRetention !== undefined) {
-      return provCompat.supportsLongCacheRetention === true;
-    }
-
-    return false;  // In models.json but no explicit supportsLongCacheRetention
-  } catch {
-    return false;  // File missing/unreadable → safe default
   }
+
+  const provCompat = asRecord(prov.compat);
+  if (provCompat?.supportsLongCacheRetention !== undefined) {
+    return provCompat.supportsLongCacheRetention === true;
+  }
+
+  return false;
 }
 
-// Test cases
+// ─── Test cases for hasExplicitLongRetentionOptIn ────────────────────
+
 const testCases: Array<{
   name: string;
   model: PiModel;
@@ -78,71 +131,184 @@ const testCases: Array<{
   reason: string;
 }> = [
   {
-    name: "opencode-go/glm-5.2 (user's problem case)",
-    model: { provider: "opencode-go", id: "glm-5.2", api: "openai-completions" },
-    expected: false,
-    reason: "In models.json but only has sendSessionAffinityHeaders, no supportsLongCacheRetention → should strip"
-  },
-  {
-    name: "h-e/glm-5.2 (edge case: provider true, model false)",
-    model: { provider: "h-e", id: "glm-5.2", api: "openai-completions" },
-    expected: false,
-    reason: "Model-level false overrides provider-level true → should strip"
-  },
-  {
-    name: "hello/deepseek-v4-flash (provider has true)",
+    name: "hello/deepseek-v4-flash (provider true, no model override)",
     model: { provider: "hello", id: "deepseek-v4-flash", api: "openai-completions" },
     expected: true,
-    reason: "Provider-level true, no model override → user opted in, should keep"
+    reason: "Provider-level true, no model-level → user opted in, keep",
   },
   {
-    name: "deepseek/deepseek-v4-pro (provider has true)",
-    model: { provider: "deepseek", id: "deepseek-v4-pro", api: "openai-completions" },
+    name: "hello/deepseek-v4-pro (provider true, no model override)",
+    model: { provider: "hello", id: "deepseek-v4-pro", api: "openai-completions" },
     expected: true,
-    reason: "Provider-level true → user opted in, should keep"
+    reason: "Provider-level true → user opted in, keep",
   },
   {
-    name: "atm-temp/glm-5.2 (no supportsLongCacheRetention)",
+    name: "h-e/glm-5.2 (provider true, model false — conflict)",
+    model: { provider: "h-e", id: "glm-5.2", api: "openai-completions" },
+    expected: false,
+    reason: "Model-level false overrides provider-level true → strip",
+  },
+  {
+    name: "atm-temp/glm-5.2 (provider has compat but no supportsLongCacheRetention)",
     model: { provider: "atm-temp", id: "glm-5.2", api: "openai-completions" },
     expected: false,
-    reason: "In models.json but no supportsLongCacheRetention field → should strip"
+    reason: "In models.json but supportsLongCacheRetention absent → strip",
   },
   {
-    name: "hyb-ds/some-model (provider has false)",
+    name: "hyb-ds/deepseek-v4 (provider false — explicit opt-out)",
     model: { provider: "hyb-ds", id: "deepseek-v4", api: "openai-completions" },
     expected: false,
-    reason: "Provider-level false → user opted out, should strip"
+    reason: "Provider-level false → user opted out, strip",
   },
   {
-    name: "nonexistent-provider/model",
+    name: "custom-prov/model-a (model-level true, no provider-level)",
+    model: { provider: "custom-prov", id: "model-a", api: "openai-completions" },
+    expected: true,
+    reason: "Model-level true, no provider compat → user opted in, keep",
+  },
+  {
+    name: "custom-prov/model-b (model-level false, no provider-level)",
+    model: { provider: "custom-prov", id: "model-b", api: "openai-completions" },
+    expected: false,
+    reason: "Model-level false → user opted out, strip",
+  },
+  {
+    name: "custom-prov/model-c (no compat at all)",
+    model: { provider: "custom-prov", id: "model-c", api: "openai-completions" },
+    expected: false,
+    reason: "In models.json but no compat at all → strip",
+  },
+  {
+    name: "nonexistent-provider/model (not in models.json)",
     model: { provider: "nonexistent", id: "model-1", api: "openai-completions" },
     expected: false,
-    reason: "Not in models.json → safe default, should strip"
-  }
+    reason: "Not in models.json → safe default, strip",
+  },
 ];
 
-console.log("=== Simplified Logic Verification ===\n");
+// ─── Gate ordering verification ──────────────────────────────────────
+
+/**
+ * Replicates the 4-gate before_provider_request logic.
+ * Returns true if prompt_cache_retention should be KEPT, false if stripped.
+ */
+function shouldKeepPromptCacheRetention(
+  isOfficialOpenAI: boolean,
+  has400History: boolean,
+  hasExplicitOptIn: boolean,
+): boolean {
+  // Gate 1: Official OpenAI → keep
+  if (isOfficialOpenAI) return true;
+  // Gate 2: 400 history → strip (overrides user opt-in!)
+  if (has400History) return false;
+  // Gate 3: Explicit user opt-in → keep
+  if (hasExplicitOptIn) return true;
+  // Gate 4: Safe default → strip
+  return false;
+}
+
+const gateTestCases: Array<{
+  name: string;
+  isOfficialOpenAI: boolean;
+  has400History: boolean;
+  hasExplicitOptIn: boolean;
+  expectedKeep: boolean;
+  reason: string;
+}> = [
+  {
+    name: "Official OpenAI (always keep)",
+    isOfficialOpenAI: true,
+    has400History: false,
+    hasExplicitOptIn: false,
+    expectedKeep: true,
+    reason: "Gate 1: Official OpenAI → keep regardless of other flags",
+  },
+  {
+    name: "Official OpenAI with 400 history (still keep — trusted)",
+    isOfficialOpenAI: true,
+    has400History: true,
+    hasExplicitOptIn: false,
+    expectedKeep: true,
+    reason: "Gate 1: Official OpenAI → keep (400 detection shouldn't fire for official OpenAI anyway)",
+  },
+  {
+    name: "Third-party with explicit opt-in, no 400 (keep)",
+    isOfficialOpenAI: false,
+    has400History: false,
+    hasExplicitOptIn: true,
+    expectedKeep: true,
+    reason: "Gate 3: User explicitly opted in → keep",
+  },
+  {
+    name: "Third-party with explicit opt-in AND 400 history (strip!)",
+    isOfficialOpenAI: false,
+    has400History: true,
+    hasExplicitOptIn: true,
+    expectedKeep: false,
+    reason: "Gate 2 BEFORE Gate 3: 400 overrides user opt-in — prevents infinite 400 loop",
+  },
+  {
+    name: "Third-party without opt-in, no 400 (strip — safe default)",
+    isOfficialOpenAI: false,
+    has400History: false,
+    hasExplicitOptIn: false,
+    expectedKeep: false,
+    reason: "Gate 4: No opt-in → strip (prevents 400 for 400+ third-party models)",
+  },
+  {
+    name: "Third-party without opt-in, with 400 history (strip)",
+    isOfficialOpenAI: false,
+    has400History: true,
+    hasExplicitOptIn: false,
+    expectedKeep: false,
+    reason: "Gate 2: 400 history → strip",
+  },
+];
+
+// ─── Run tests ───────────────────────────────────────────────────────
+
+console.log("=== hasExplicitLongRetentionOptIn Tests ===\n");
 
 let passed = 0;
 let failed = 0;
 
 for (const test of testCases) {
-  const result = hasExplicitLongRetentionOptIn(test.model);
+  const result = hasExplicitLongRetentionOptIn(test.model, MOCK_MODELS_JSON);
   const status = result === test.expected ? "✅ PASS" : "❌ FAIL";
 
-  if (result === test.expected) {
-    passed++;
-  } else {
+  console.log(`${status} ${test.name}`);
+  console.log(`  Expected: ${test.expected}, Got: ${result}`);
+  if (result !== test.expected) {
+    console.log(`  Reason: ${test.reason}`);
     failed++;
-    console.log(`${status} ${test.name}`);
-    console.log(`  Expected: ${test.expected}, Got: ${result}`);
-    console.log(`  Reason: ${test.reason}\n`);
+  } else {
+    passed++;
+  }
+}
+
+console.log(`\n=== Gate Ordering Tests ===\n`);
+
+for (const test of gateTestCases) {
+  const result = shouldKeepPromptCacheRetention(
+    test.isOfficialOpenAI,
+    test.has400History,
+    test.hasExplicitOptIn,
+  );
+  const status = result === test.expectedKeep ? "✅ PASS" : "❌ FAIL";
+
+  console.log(`${status} ${test.name}`);
+  console.log(`  Expected keep: ${test.expectedKeep}, Got: ${result}`);
+  if (result !== test.expectedKeep) {
+    console.log(`  Reason: ${test.reason}`);
+    failed++;
+  } else {
+    passed++;
   }
 }
 
 console.log(`\n=== Summary ===`);
-console.log(`Passed: ${passed}/${testCases.length}`);
-console.log(`Failed: ${failed}/${testCases.length}`);
+console.log(`Passed: ${passed}/${testCases.length + gateTestCases.length}`);
+console.log(`Failed: ${failed}/${testCases.length + gateTestCases.length}`);
 
 if (failed > 0) {
   console.log("\n❌ Some tests failed!");
