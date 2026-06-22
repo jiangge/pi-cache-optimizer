@@ -1984,6 +1984,10 @@ function hasPromptCacheRetentionUnsupportedSignal(headers: Record<string, string
     "unknown parameter",
     "not supported",
     "unsupported field",
+    "extra inputs",
+    "not permitted",
+    "unrecognized",
+    "bad request",
   ].some((needle) => normalized.includes(needle));
 }
 
@@ -6076,7 +6080,42 @@ export default function (pi: ExtensionAPI) {
 
   ensureRoutingRegistry();
 
+  // Set of provider/model keys that have explicit supportsLongCacheRetention: true
+  // in models.json. Only these models receive prompt_cache_retention in requests.
+  // API-logged-in providers (e.g. opencode go) without explicit compat are
+  // proactively stripped to prevent 400 errors.
+  const explicitLongRetentionModels = new Set<string>();
+
+  async function refreshLongRetentionAllowlist(): Promise<void> {
+    try {
+      const text = await readFile(MODELS_JSON_PATH, "utf8");
+      const parsed = parseJsonc(text);
+      const providers = asRecord(asRecord(parsed)?.providers) ?? {};
+      for (const [provLabel, provEntry] of Object.entries(providers)) {
+        const prov = asRecord(provEntry);
+        const provComp = asRecord(prov?.compat);
+        const provLong = provComp?.supportsLongCacheRetention === true;
+        const models = prov?.models;
+        if (Array.isArray(models)) {
+          for (const m of models) {
+            const mr = asRecord(m);
+            if (mr?.id) {
+              const mc = asRecord(mr.compat);
+              const key = `${provLabel}/${mr.id}`;
+              if (mc?.supportsLongCacheRetention === true || provLong) {
+                explicitLongRetentionModels.add(key);
+              }
+            }
+          }
+        }
+      }
+    } catch {
+      // File missing/unreadable — no explicit entries, safe default.
+    }
+  }
+
   pi.on("session_start", async (event, ctx) => {
+    await refreshLongRetentionAllowlist();
     await restoreCacheStats(event.reason, ctx);
     await publishStatus(ctx);
   });
@@ -6199,19 +6238,27 @@ export default function (pi: ExtensionAPI) {
   });
 
   pi.on("before_provider_request", (event, ctx) => {
-    // ── Safety: strip prompt_cache_retention from the payload for models
-    // that previously returned HTTP 400 for this parameter. Pi sends
-    // prompt_cache_retention when PI_CACHE_RETENTION=long AND the model's
-    // compat has supportsLongCacheRetention: true. Some API-logged-in
-    // providers (e.g. opencode go + glm-5.2) ship that default but the
-    // actual endpoint rejects the parameter. Once a 400 is recorded,
-    // subsequent requests strip it automatically — no manual fix needed.
+    // ── Safety: strip prompt_cache_retention from payload for models that
+    // do NOT have an explicit supportsLongCacheRetention config in
+    // models.json. Pi may ship a default compat (e.g. opencode-go) that
+    // says long retention is supported, but the actual endpoint rejects
+    // the parameter with "Extra inputs are not permitted". Only the
+    // user's explicit opt-in (via models.json) authorises sending it.
+    //
+    // Also strips for models with a previously recorded 400 (belt + suspenders).
     if (runtimeOptimizerEnabled) {
       const payload = event.payload as UnknownRecord;
       if (payload && typeof payload.prompt_cache_retention === 'string') {
         const rModel = resolveRouteModel(ctx.model, ctx) ?? ctx.model;
-        if (rModel && promptCacheRetention400Models.has(modelKey(rModel))) {
-          delete payload.prompt_cache_retention;
+        if (rModel) {
+          const mk = modelKey(rModel);
+          const supportsLong = getCompat(rModel).supportsLongCacheRetention === true;
+          // Proactive gate: model says it supports long retention but has no
+          // explicit opt-in → strip. Reactive gate: 400 already observed.
+          if (promptCacheRetention400Models.has(mk) ||
+              (supportsLong && !explicitLongRetentionModels.has(mk))) {
+            delete payload.prompt_cache_retention;
+          }
         }
       }
     }
