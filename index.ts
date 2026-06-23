@@ -5393,12 +5393,15 @@ function selfCheckFix(
       return "Modified file: original structure was altered (data loss detected)";
     }
 
-    // Step 8: Basic format sanity checks
-    if (modified.length < original.length) {
-      return "Modified file: content is shorter than original (possible truncation)";
-    }
+    // Note: we intentionally do NOT enforce `modified.length >= original.length`.
+    // The surgical editor may replace an existing compat value with a shorter one
+    // (e.g. `false` -> `true`), which legitimately shrinks the file by a byte.
+    // Real data loss / truncation is already caught by Step 7's isSubset
+    // (every original key still present) and Step 8's root-bracket integrity
+    // check below — a surviving length heuristic would false-positive on every
+    // such value repair. (Tracked: the mofas glm-5.2 self-check failure path.)
 
-    // Step 9: Validate root bracket integrity with the same string/comment-aware
+    // Step 8: Validate root bracket integrity with the same string/comment-aware
     // scanner used for edits. Do not count raw braces: comments or strings may
     // legitimately contain unmatched `{` / `}` bytes.
     const modifiedClean = stripJsoncComments(modified);
