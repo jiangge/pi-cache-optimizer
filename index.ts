@@ -4833,6 +4833,19 @@ function composeMissingEntryInsertion(
   modelId: string,
   compatKeys: Record<string, unknown>,
 ): { modifiedText: string; placementLabel: string } {
+  // Comments preserve length when stripped (`stripJsoncComments` replaces
+  // comment bytes 1-for-1 with spaces), so offsets derived from the
+  // comment-stripped text map cleanly back to the original. However,
+  // `lastIndexOf("{", pos)` / `lastIndexOf("[", pos)` must NOT be run
+  // against the raw original: a comment like `// add [more] here with a {
+  // brace` would surface `[` / `{` bytes that have no structural meaning,
+  // contaminating the `hasExisting`/`hasExistingElements` decision below
+  // and producing a stray leading comma. Run the structural searches
+  // against the comment-stripped version; keep the indentation lookups
+  // (which only care about newlines + leading whitespace) on the
+  // original since comments never contain forward-scan-relevant bytes.
+  const cleanText = stripJsoncComments(originalText);
+
   // Resolve a sensible indentation step from an arbitrary byte offset in
   // the original file.
   const indentUnitAt = (offset: number): string => {
@@ -4867,9 +4880,11 @@ function composeMissingEntryInsertion(
     const inner1 = inner0 + unit; // indent of compat keys inside the model
     const inner2 = inner1 + unit; // indent of compat values
 
-    // Determine whether the array is empty (need to skip the leading newline).
-    const arrayInterior = originalText.slice(
-      originalText.lastIndexOf("[", diagnosis.modelsEnd) + 1,
+    // Determine whether the array is empty (need to skip the leading comma).
+    // Search for the models `[` on the comment-stripped text so a `[` inside
+    // a comment cannot be mistaken for the array opener.
+    const arrayInterior = cleanText.slice(
+      cleanText.lastIndexOf("[", diagnosis.modelsEnd) + 1,
       diagnosis.modelsEnd,
     ).trim();
     const hasExistingElements = arrayInterior.length > 0;
@@ -4903,8 +4918,10 @@ function composeMissingEntryInsertion(
     const inner3 = inner2 + unit;
 
     const compatBlock = formatCompactCompat(inner3);
-    const providersInterior = originalText.slice(
-      originalText.lastIndexOf("{", diagnosis.providersEnd) + 1,
+    // Search for the providers `{` on the comment-stripped text so a `{`
+    // inside a comment cannot be mistaken for the providers object opener.
+    const providersInterior = cleanText.slice(
+      cleanText.lastIndexOf("{", diagnosis.providersEnd) + 1,
       diagnosis.providersEnd,
     ).trim();
     const hasExisting = providersInterior.length > 0;
@@ -5279,6 +5296,7 @@ function selfCheckFix(
   providerLabel: string,
   modelId: string,
   compatKeys: Record<string, unknown>,
+  placement: "provider" | "model" = "model",
 ): string | null {
   try {
     // Step 1: Parse both versions as JSONC (comments + trailing commas allowed).
@@ -5371,7 +5389,18 @@ function selfCheckFix(
           } else {
             const origCompat = origObj[key] as Record<string, unknown>;
             const modCompat = modObj[key] as Record<string, unknown>;
-            const mayRepairThisCompat = origObj === origProvider || origObj === origTargetModelRecord;
+            // Only the compat object at the level ACTUALLY edited may have
+            // its values repaired by this fix. The un-edited level must
+            // remain byte/structure-equivalent, so its same-name keys stay
+            // under full validation. Using a disjunction OR (provider ||
+            // target) here would silently skip validation at the un-edited
+            // level, masking corruption (e.g. a buggy editor accidentally
+            // breaking provider.compat.sendSessionAffinityHeaders while
+            // the fix was a model-level repair). Track placement — only
+            // the placement-resolved object's own compat may be exempt.
+            const mayRepairThisCompat =
+              (placement === "provider" && origObj === origProvider) ||
+              (placement === "model" && origObj === origTargetModelRecord);
             for (const ck of Object.keys(origCompat)) {
               if (!(ck in modCompat)) return false;
               // The fix may repair an existing wrong compat value (for example
@@ -5676,6 +5705,9 @@ export const __internals_for_tests = {
   locateModelInJsonc,
   composeFixInsertion,
   selfCheckFix,
+  analyzeModelsJsonForMissingEntry,
+  composeMissingEntryInsertion,
+  selfCheckMissingEntryInsertion,
   decideFixPlacement,
   chooseFixPlacement,
   findExistingCompatKeysInJsonc,
@@ -6695,7 +6727,7 @@ export default function (pi: ExtensionAPI) {
         const modifiedText = composeFixInsertion(originalText, location, suggestion.compatKeys, decision.placement);
 
         // Self-check
-        const checkError = selfCheckFix(originalText, modifiedText, suggestion.providerLabel, suggestion.modelId, suggestion.compatKeys);
+        const checkError = selfCheckFix(originalText, modifiedText, suggestion.providerLabel, suggestion.modelId, suggestion.compatKeys, decision.placement);
         if (checkError !== null) {
           cmdCtx.ui.notify(
             `❌ Self-check failed before write: ${checkError}\n` +
@@ -6764,7 +6796,7 @@ export default function (pi: ExtensionAPI) {
 
           // Post-write self-check (read back)
           const writtenText = await readFile(MODELS_JSON_PATH, "utf8");
-          const postCheckError = selfCheckFix(originalText, writtenText, suggestion.providerLabel, suggestion.modelId, suggestion.compatKeys);
+          const postCheckError = selfCheckFix(originalText, writtenText, suggestion.providerLabel, suggestion.modelId, suggestion.compatKeys, decision.placement);
           if (postCheckError !== null) {
             // Restore from backup
             await copyFile(backupPath, MODELS_JSON_PATH);
@@ -6893,7 +6925,7 @@ export default function (pi: ExtensionAPI) {
 
             const menuDecision = chooseFixPlacement(originalText, location, suggestion.compatKeys, suggestion.providerLabel);
             const modifiedText = composeFixInsertion(originalText, location, suggestion.compatKeys, menuDecision.placement);
-            const checkError = selfCheckFix(originalText, modifiedText, suggestion.providerLabel, suggestion.modelId, suggestion.compatKeys);
+            const checkError = selfCheckFix(originalText, modifiedText, suggestion.providerLabel, suggestion.modelId, suggestion.compatKeys, menuDecision.placement);
             if (checkError !== null) {
               cmdCtx.ui.notify(`❌ Self-check failed: ${checkError}\nNo changes made.`, "error");
               return;
@@ -6939,7 +6971,7 @@ export default function (pi: ExtensionAPI) {
               await rename(tempPath, MODELS_JSON_PATH);
 
               const writtenText = await readFile(MODELS_JSON_PATH, "utf8");
-              const postCheck = selfCheckFix(originalText, writtenText, suggestion.providerLabel, suggestion.modelId, suggestion.compatKeys);
+              const postCheck = selfCheckFix(originalText, writtenText, suggestion.providerLabel, suggestion.modelId, suggestion.compatKeys, menuDecision.placement);
               if (postCheck !== null) {
                 await copyFile(backupPath, MODELS_JSON_PATH);
                 cmdCtx.ui.notify(`❌ Post-write check failed: ${postCheck}\nBackup restored.`, "error");
