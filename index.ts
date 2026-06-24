@@ -247,6 +247,7 @@ type ContextWithOptionalModelRegistry = Pick<ExtensionContext, "sessionManager">
 
 type CacheStatsState = {
   statsByModel: Record<string, CacheStats>;
+  totalsByModel: Record<string, CacheStats>;
   legacyFamily: Partial<Record<CacheProviderId, CacheStats>>;
   lastRoutedModelBySession?: Record<string, PersistedRoutedModelRef>;
 };
@@ -273,6 +274,14 @@ type PersistedCacheStatsV4 = {
 type PersistedCacheStatsV5 = {
   version: 5;
   sessions: Record<string, Record<string, CacheStats>>;
+  legacyFamily: Partial<Record<CacheProviderId, CacheStats>>;
+  lastRoutedModelBySession?: Record<string, PersistedRoutedModelRef>;
+};
+
+type PersistedCacheStatsV6 = {
+  version: 6;
+  sessions: Record<string, Record<string, CacheStats>>;
+  totalsByModel: Record<string, CacheStats>;
   legacyFamily: Partial<Record<CacheProviderId, CacheStats>>;
   lastRoutedModelBySession?: Record<string, PersistedRoutedModelRef>;
 };
@@ -3426,6 +3435,49 @@ function parseCacheStats(value: unknown): CacheStats | undefined {
   };
 }
 
+function cloneCacheStats(stats: CacheStats): CacheStats {
+  return { ...stats };
+}
+
+function addCacheStatsTotals(target: CacheStats, source: CacheStats): void {
+  target.totalRequests += source.totalRequests;
+  target.hitRequests += source.hitRequests;
+  target.cachedInputTokens += source.cachedInputTokens;
+  target.cacheWriteInputTokens += source.cacheWriteInputTokens;
+  target.totalInputTokens += source.totalInputTokens;
+}
+
+function mergeCacheStatsForTotal(existing: CacheStats | undefined, incoming: CacheStats): CacheStats {
+  if (!existing) return cloneCacheStats(incoming);
+  if (incoming.day > existing.day) return cloneCacheStats(incoming);
+  if (incoming.day < existing.day) return existing;
+  addCacheStatsTotals(existing, incoming);
+  return existing;
+}
+
+function deriveTotalsByModelFromSessionStats(statsByModel: Record<string, CacheStats>): Record<string, CacheStats> {
+  const totals: Record<string, CacheStats> = {};
+  for (const [fullKey, stats] of Object.entries(statsByModel)) {
+    totals[modelKeyFromSessionKey(fullKey)] = mergeCacheStatsForTotal(
+      totals[modelKeyFromSessionKey(fullKey)],
+      stats,
+    );
+  }
+  return totals;
+}
+
+function parsePersistedTotalsByModel(value: unknown): Record<string, CacheStats> | undefined {
+  const record = asRecord(value);
+  if (!record) return undefined;
+
+  const totals: Record<string, CacheStats> = {};
+  for (const [modelKeyStr, rawStats] of Object.entries(record)) {
+    const stats = parseCacheStats(rawStats);
+    if (stats) totals[modelKeyStr] = stats;
+  }
+  return totals;
+}
+
 function parsePersistedRoutedModelRef(value: unknown): PersistedRoutedModelRef | undefined {
   const record = asRecord(value);
   const provider = record?.provider;
@@ -3459,6 +3511,7 @@ function buildExactRouterStatusEntry(
   sessionHash: string | undefined,
   statsByModel: Record<string, CacheStats>,
   lastRoutedModel: PersistedRoutedModelRef | undefined,
+  totalsByModel: Record<string, CacheStats> = {},
 ): { model: PiModel; adapter: CacheProviderAdapter; stats: CacheStats } | undefined {
   if (!sessionHash || !lastRoutedModel) return undefined;
 
@@ -3467,17 +3520,20 @@ function buildExactRouterStatusEntry(
   if (!adapter) return undefined;
 
   const key = makeSessionModelKey(sessionHash, lastRoutedModel.provider, lastRoutedModel.id);
-  return { model, adapter, stats: statsByModel[key] ?? emptyCacheStats() };
+  return { model, adapter, stats: totalsByModel[modelKey(model)] ?? statsByModel[key] ?? emptyCacheStats() };
 }
 
 function parsePersistedCacheStats(value: unknown): CacheStatsState | undefined {
   const record = asRecord(value);
   if (!record) return undefined;
 
-  // version 4/5: session-scoped stats + legacy family fallback.
+  // version 4/5/6: session-scoped stats + legacy family fallback.
   // v5 additionally persists the last actual routed model per session so
   // router/auto can restore the exact upstream footer after /reload.
-  if (record.version === 4 || record.version === 5) {
+  // v6 adds provider/model totals used for footer continuity across Pi
+  // process/terminal restarts, while retaining session buckets for migration
+  // and best-effort preservation of older data.
+  if (record.version === 4 || record.version === 5 || record.version === 6) {
     const legacyFamily: Partial<Record<CacheProviderId, CacheStats>> = {};
     const rawFamily = asRecord(record.legacyFamily);
     if (rawFamily) {
@@ -3514,7 +3570,10 @@ function parsePersistedCacheStats(value: unknown): CacheStatsState | undefined {
       }
     }
 
-    return { statsByModel, legacyFamily, lastRoutedModelBySession };
+    const parsedTotals = parsePersistedTotalsByModel(record.totalsByModel);
+    const totalsByModel = parsedTotals ?? deriveTotalsByModelFromSessionStats(statsByModel);
+
+    return { statsByModel, totalsByModel, legacyFamily, lastRoutedModelBySession };
   }
 
   // version 3: migrate to v4/v5 semantics by wrapping statsByModel into sessions
@@ -3537,7 +3596,7 @@ function parsePersistedCacheStats(value: unknown): CacheStatsState | undefined {
       }
     }
 
-    return { statsByModel, legacyFamily };
+    return { statsByModel, totalsByModel: deriveTotalsByModelFromSessionStats(statsByModel), legacyFamily };
   }
 
   // version 2: migrate statsByProvider into legacyFamily
@@ -3550,13 +3609,13 @@ function parsePersistedCacheStats(value: unknown): CacheStatsState | undefined {
         if (stats) legacyFamily[id] = stats;
       }
     }
-    return { statsByModel: {}, legacyFamily };
+    return { statsByModel: {}, totalsByModel: {}, legacyFamily };
   }
 
   // version 1: single DeepSeek stats -> migrate to legacyFamily.deepseek
   if (record.version === 1) {
     const migrated = parseCacheStats(record.stats);
-    return migrated ? { statsByModel: {}, legacyFamily: { deepseek: migrated } } : undefined;
+    return migrated ? { statsByModel: {}, totalsByModel: {}, legacyFamily: { deepseek: migrated } } : undefined;
   }
 
   return undefined;
@@ -3711,6 +3770,20 @@ function mergeCacheSessions(
   return sessions;
 }
 
+function mergeCacheTotals(
+  existingTotalsByModel: Record<string, CacheStats>,
+  stateTotalsByModel: Record<string, CacheStats>,
+  options: { deleteModelKeys?: string[]; replaceTotals?: boolean } = {},
+): Record<string, CacheStats> {
+  const totals = options.replaceTotals
+    ? { ...stateTotalsByModel }
+    : { ...existingTotalsByModel, ...stateTotalsByModel };
+  for (const key of options.deleteModelKeys ?? []) {
+    delete totals[key];
+  }
+  return totals;
+}
+
 function mergeLastRoutedModels(
   existingLastRoutedModelBySession: Record<string, PersistedRoutedModelRef>,
   state: CacheStatsState,
@@ -3737,11 +3810,16 @@ function mergeLastRoutedModels(
   return merged;
 }
 
-async function writePersistedCacheStats(state: CacheStatsState, currentSessionHash?: string): Promise<void> {
+async function writePersistedCacheStats(
+  state: CacheStatsState,
+  currentSessionHash?: string,
+  options: { deleteModelKeys?: string[]; replaceTotals?: boolean } = {},
+): Promise<void> {
   await mkdir(STATE_DIR, { recursive: true });
 
   // Read existing file to preserve other sessions' data.
   let existingSessions: Record<string, Record<string, CacheStats>> = {};
+  let existingTotalsByModel: Record<string, CacheStats> = {};
   let existingLastRoutedModelBySession: Record<string, PersistedRoutedModelRef> = {};
   try {
     const raw = await readFile(STATE_FILE_PATH, "utf8");
@@ -3758,6 +3836,7 @@ async function writePersistedCacheStats(state: CacheStatsState, currentSessionHa
           existingSessions[hash][modelKey] = stats;
         }
       }
+      existingTotalsByModel = { ...(parsed.totalsByModel ?? {}) };
       existingLastRoutedModelBySession = { ...(parsed.lastRoutedModelBySession ?? {}) };
     }
   } catch {
@@ -3765,15 +3844,17 @@ async function writePersistedCacheStats(state: CacheStatsState, currentSessionHa
   }
 
   const sessions = mergeCacheSessions(existingSessions, state, currentSessionHash);
+  const totalsByModel = mergeCacheTotals(existingTotalsByModel, state.totalsByModel, options);
   const lastRoutedModelBySession = mergeLastRoutedModels(
     existingLastRoutedModelBySession,
     state,
     currentSessionHash,
   );
 
-  const payload: PersistedCacheStatsV5 = {
-    version: 5,
+  const payload: PersistedCacheStatsV6 = {
+    version: 6,
     sessions,
+    totalsByModel,
     legacyFamily: state.legacyFamily,
     ...(Object.keys(lastRoutedModelBySession).length > 0 ? { lastRoutedModelBySession } : {}),
   };
@@ -5660,6 +5741,8 @@ export const __internals_for_tests = {
   emptyAllCacheStats,
   parseCacheStats,
   parsePersistedCacheStats,
+  deriveTotalsByModelFromSessionStats,
+  parsePersistedTotalsByModel,
   // Recent sample / stats output / diagnosis helpers
   MAX_RECENT_SAMPLES,
   buildStatsOutput,
@@ -5691,6 +5774,7 @@ export const __internals_for_tests = {
   getCacheHintsService,
   // Persistence helpers (for reload/reset tests)
   mergeCacheSessions,
+  mergeCacheTotals,
   mergeLastRoutedModels,
   writePersistedCacheStats,
   readPersistedCacheStats,
@@ -5730,10 +5814,13 @@ export default function (pi: ExtensionAPI) {
   const promptCacheRetention400Models = new Set<string>();
   const warnedPromptCacheRetention400Models = new Set<string>();
   let cacheStatsByModel: Record<string, CacheStats> = {};
+  let cacheStatsTotalsByModel: Record<string, CacheStats> = {};
   let cacheStatsLegacyFamily: Partial<Record<CacheProviderId, CacheStats>> = emptyAllCacheStats();
   let lastStatusText: string | undefined;
   let persistenceWarningShown = false;
   let persistTimer: ReturnType<typeof setTimeout> | null = null;
+  let replacePersistedTotalsOnNextWrite = false;
+  const pendingDeletedTotalModelKeys = new Set<string>();
   let integrityNotificationShown = false;
   let currentSessionId = "";
   let currentSessionHash = "";
@@ -5824,6 +5911,7 @@ export default function (pi: ExtensionAPI) {
   function getCacheStatsState(): CacheStatsState {
     return {
       statsByModel: cacheStatsByModel,
+      totalsByModel: cacheStatsTotalsByModel,
       legacyFamily: cacheStatsLegacyFamily,
       ...(currentSessionHashSet && lastActualRoutedModel
         ? { lastRoutedModelBySession: { [currentSessionHash]: lastActualRoutedModel } }
@@ -5831,16 +5919,15 @@ export default function (pi: ExtensionAPI) {
     };
   }
 
-  /** Look up active stats for a model, falling back to legacy family. */
+  /** Look up visible cumulative stats for a model, falling back to legacy family. */
   function getStatsForModel(model: PiModel | undefined, adapter: CacheProviderAdapter): CacheStats {
     if (model) {
-      const key = sessionModelKey(model);
-      const existing = cacheStatsByModel[key];
+      const key = modelKey(model);
+      const existing = cacheStatsTotalsByModel[key];
       if (existing) return existing;
     }
 
-    // Fallback: legacy family bucket — used when model key is unknown
-    // or this model hasn't been seen yet in this session.
+    // Fallback: legacy family bucket — used when model key is unknown.
     const family = cacheStatsLegacyFamily[adapter.id];
     if (family) return family;
 
@@ -5849,7 +5936,7 @@ export default function (pi: ExtensionAPI) {
     return created;
   }
 
-  /** Get or create a stats entry for the given model key. */
+  /** Get or create a session-scoped stats entry for the given key. */
   function getOrCreateStatsByModelKey(key: string): CacheStats {
     const existing = cacheStatsByModel[key];
     if (existing) return existing;
@@ -5859,10 +5946,27 @@ export default function (pi: ExtensionAPI) {
     return created;
   }
 
+  /** Get or create the cumulative provider/model stats entry shown in the footer. */
+  function getOrCreateTotalStatsForModel(model: PiModel): CacheStats {
+    const key = modelKey(model);
+    const existing = cacheStatsTotalsByModel[key];
+    if (existing) return existing;
+
+    const created = emptyCacheStats();
+    cacheStatsTotalsByModel[key] = created;
+    return created;
+  }
+
   function resetStatsForModel(model: PiModel): void {
-    const sk = sessionModelKey(model);
-    delete cacheStatsByModel[sk];
-    recentSamplesByModelKey.delete(sk);
+    const displayKey = modelKey(model);
+    for (const key of Object.keys(cacheStatsByModel)) {
+      if (modelKeyFromSessionScoped(key) === displayKey) delete cacheStatsByModel[key];
+    }
+    delete cacheStatsTotalsByModel[displayKey];
+    pendingDeletedTotalModelKeys.add(displayKey);
+    for (const key of Array.from(recentSamplesByModelKey.keys())) {
+      if (modelKeyFromSessionScoped(key) === displayKey) recentSamplesByModelKey.delete(key);
+    }
     lastStatusText = undefined;
   }
 
@@ -5871,6 +5975,8 @@ export default function (pi: ExtensionAPI) {
     for (const key of Object.keys(cacheStatsByModel)) {
       if (key.startsWith(prefix)) delete cacheStatsByModel[key];
     }
+    cacheStatsTotalsByModel = {};
+    replacePersistedTotalsOnNextWrite = true;
     for (const key of Array.from(recentSamplesByModelKey.keys())) {
       if (key.startsWith(prefix)) recentSamplesByModelKey.delete(key);
     }
@@ -5880,7 +5986,16 @@ export default function (pi: ExtensionAPI) {
 
   async function persistCacheStats(ctx?: ExtensionContext): Promise<void> {
     try {
-      await writePersistedCacheStats(getCacheStatsState(), currentSessionHashSet ? currentSessionHash : undefined);
+      await writePersistedCacheStats(
+        getCacheStatsState(),
+        currentSessionHashSet ? currentSessionHash : undefined,
+        {
+          deleteModelKeys: Array.from(pendingDeletedTotalModelKeys),
+          replaceTotals: replacePersistedTotalsOnNextWrite,
+        },
+      );
+      pendingDeletedTotalModelKeys.clear();
+      replacePersistedTotalsOnNextWrite = false;
     } catch (error) {
       console.warn(`${LOG_PREFIX}: failed to persist cache stats`, error);
       if (!persistenceWarningShown) {
@@ -5930,6 +6045,15 @@ export default function (pi: ExtensionAPI) {
       }
     }
 
+    // Roll over cumulative provider/model totals.
+    for (const key of Object.keys(cacheStatsTotalsByModel)) {
+      const stats = cacheStatsTotalsByModel[key];
+      if (stats && stats.day !== day) {
+        cacheStatsTotalsByModel[key] = emptyCacheStats(day);
+        changed = true;
+      }
+    }
+
     // Roll over legacy family entries.
     for (const id of CACHE_PROVIDER_IDS) {
       const stats = cacheStatsLegacyFamily[id];
@@ -5962,6 +6086,7 @@ export default function (pi: ExtensionAPI) {
         persisted,
         currentSessionHashSet ? currentSessionHash : undefined,
       );
+      cacheStatsTotalsByModel = persisted?.totalsByModel ?? {};
       cacheStatsLegacyFamily = persisted?.legacyFamily ?? emptyAllCacheStats();
       lastActualRoutedModel = currentSessionHashSet
         ? persisted?.lastRoutedModelBySession?.[currentSessionHash]
@@ -5979,6 +6104,7 @@ export default function (pi: ExtensionAPI) {
       persisted,
       currentSessionHashSet ? currentSessionHash : undefined,
     );
+    cacheStatsTotalsByModel = persisted?.totalsByModel ?? {};
     cacheStatsLegacyFamily = persisted?.legacyFamily ?? emptyAllCacheStats();
     lastActualRoutedModel = currentSessionHashSet
       ? persisted?.lastRoutedModelBySession?.[currentSessionHash]
@@ -5996,15 +6122,9 @@ export default function (pi: ExtensionAPI) {
    * meaningful footer content on session_start after reload.
    */
   function findBestRouterModelStats(): { adapter: CacheProviderAdapter; stats: CacheStats } | undefined {
-    if (!currentSessionHash) return undefined;
-    const prefix = `${currentSessionHash}:`;
     let best: { adapter: CacheProviderAdapter; stats: CacheStats; total: number } | undefined;
 
-    for (const [key, stats] of Object.entries(cacheStatsByModel)) {
-      if (!key.startsWith(prefix)) continue;
-
-      // Extract provider/id from key like "abc123:run-claude/claude-opus-4-8"
-      const modelKeyPart = key.slice(prefix.length);
+    for (const [modelKeyPart, stats] of Object.entries(cacheStatsTotalsByModel)) {
       const slashIdx = modelKeyPart.indexOf("/");
       if (slashIdx < 0 || slashIdx >= modelKeyPart.length - 1) continue;
       const modelId = modelKeyPart.slice(slashIdx + 1);
@@ -6058,6 +6178,7 @@ export default function (pi: ExtensionAPI) {
         currentSessionHashSet ? currentSessionHash : undefined,
         cacheStatsByModel,
         lastActualRoutedModel,
+        cacheStatsTotalsByModel,
       ) ?? findBestRouterModelStats();
       if (realEntry) {
         const statsText = formatCacheStats(realEntry.adapter, realEntry.stats);
@@ -6068,11 +6189,10 @@ export default function (pi: ExtensionAPI) {
     }
 
     if (adapter) {
-      // Display session-scoped stats. A model that has never been used
-      // in this session shows 0/0. The message_end hook populates
-      // cacheStatsByModel[sessionModelKey(displayModel)] on first use.
-      const sk = displayModel ? sessionModelKey(displayModel) : undefined;
-      const stats = sk ? cacheStatsByModel[sk] : undefined;
+      // Display provider/model cumulative stats. A model that has never
+      // been used locally shows 0/0. The message_end hook updates both the
+      // current session bucket and this restart-persistent totals bucket.
+      const stats = displayModel ? cacheStatsTotalsByModel[modelKey(displayModel)] : undefined;
       const statsText = formatCacheStats(adapter, stats ?? emptyCacheStats());
       statusText = runtimeOptimizerEnabled ? statsText : `Cache Optimizer disabled · ${statsText}`;
     }
@@ -6406,6 +6526,7 @@ export default function (pi: ExtensionAPI) {
     if (statsModel) {
       const sk = sessionModelKey(statsModel);
       addUsageToCacheStats(getOrCreateStatsByModelKey(sk), usage);
+      addUsageToCacheStats(getOrCreateTotalStatsForModel(statsModel), usage);
     } else {
       addUsageToCacheStats(getStatsForModel(undefined, adapter), usage);
     }
@@ -6424,7 +6545,7 @@ export default function (pi: ExtensionAPI) {
   //   stats   — show active model stats bucket, recent trend, usage
   //   compat  — show compat suggestion with file path
   //   fix     — auto-fix compat issues (writes models.json, requires UI)
-  //   reset   — reset current session model stats bucket (local only)
+  //   reset   — reset current provider/model footer stats bucket (local only)
   //   (no args) — interactive menu (with UI) or help summary
   // ────────────────────────────────────────────────────────────────
   pi.registerCommand("cache-optimizer", {
@@ -6440,13 +6561,13 @@ export default function (pi: ExtensionAPI) {
         resetCurrentSessionStats();
         await flushPersistCacheStats(cmdCtx as unknown as ExtensionContext);
         await publishStatus(cmdCtx as unknown as ExtensionContext, model);
-        cmdCtx.ui.notify(`✅ Pi Cache Optimizer enabled for this Pi process. Current-session stats were reset for before/after comparison.\n${formatOptimizerRuntimeMode()}`, "info");
+        cmdCtx.ui.notify(`✅ Pi Cache Optimizer enabled for this Pi process. Local footer stats were reset for before/after comparison.\n${formatOptimizerRuntimeMode()}`, "info");
       } else if (subcommand === "disable") {
         setRuntimeOptimizerEnabled(false);
         resetCurrentSessionStats();
         await flushPersistCacheStats(cmdCtx as unknown as ExtensionContext);
         await publishStatus(cmdCtx as unknown as ExtensionContext, model);
-        cmdCtx.ui.notify(`⏸️ Pi Cache Optimizer disabled for this Pi process. Current-session stats were reset and will keep collecting while disabled for comparison.\n${formatOptimizerRuntimeMode()}`, "warning");
+        cmdCtx.ui.notify(`⏸️ Pi Cache Optimizer disabled for this Pi process. Local footer stats were reset and will keep collecting while disabled for comparison.\n${formatOptimizerRuntimeMode()}`, "warning");
       } else if (subcommand === "doctor") {
         if (!model) {
           cmdCtx.ui.notify("No active model selected. Select a model first with /model or pi --model.", "warning");
@@ -6455,7 +6576,7 @@ export default function (pi: ExtensionAPI) {
         const diagnosis = buildDoctorDiagnosis(model, { promptCacheRetention400: promptCacheRetention400Models.has(modelKey(model)) });
         const adapter = selectAdapterForModel(model);
         const sk = model ? sessionModelKey(model) : undefined;
-        const statsState = sk ? cacheStatsByModel[sk] : undefined;
+        const statsState = model ? cacheStatsTotalsByModel[modelKey(model)] : undefined;
         const samples = sk ? getRecentSamples(sk) : [];
         const lowHitLines = buildLowHitDiagnosis(model, adapter, statsState, samples);
         const fullDiagnosis = lowHitLines.length > 0
@@ -6469,7 +6590,7 @@ export default function (pi: ExtensionAPI) {
         }
         const adapter = selectAdapterForModel(model);
         const sk = model ? sessionModelKey(model) : undefined;
-        const statsState = sk ? cacheStatsByModel[sk] : undefined;
+        const statsState = model ? cacheStatsTotalsByModel[modelKey(model)] : undefined;
         const samples = sk ? getRecentSamples(sk) : [];
         const output = buildStatsOutput(model, adapter, statsState, samples);
         cmdCtx.ui.notify(output, "info");
@@ -6502,7 +6623,7 @@ export default function (pi: ExtensionAPI) {
 
         const displayKey = modelKey(model);
 
-        // Reset session-scoped stats for the effective active model. If the
+        // Reset local footer stats for the effective active model. If the
         // selected model is a virtual router and the protocol exposes a live
         // route, this clears the real upstream bucket, not the router shell.
         resetStatsForModel(model);
@@ -6514,9 +6635,9 @@ export default function (pi: ExtensionAPI) {
         await publishStatus(cmdCtx as unknown as ExtensionContext, model);
 
         cmdCtx.ui.notify(
-          `✅ Reset local session cache stats for "${displayKey}". ` +
+          `✅ Reset local footer cache stats for "${displayKey}". ` +
           "Upstream provider prompt cache was not modified. " +
-          "New requests will start a fresh stats bucket for this Pi session.",
+          "New requests will start a fresh local stats bucket for this provider/model.",
           "info",
         );
       } else if (subcommand === "fix") {
@@ -6831,7 +6952,7 @@ export default function (pi: ExtensionAPI) {
             "Stats — Show cache stats and trend",
             "Compat — Show compat suggestion",
             "Fix — Auto-fix compat issues (writes models.json)",
-            "Reset — Reset local session stats",
+            "Reset — Reset local provider/model stats",
             "Cancel",
           ];
           const choice = await cmdCtx.ui.select("Cache Optimizer", menuOptions);
@@ -6840,13 +6961,13 @@ export default function (pi: ExtensionAPI) {
             resetCurrentSessionStats();
             await flushPersistCacheStats(cmdCtx as unknown as ExtensionContext);
             await publishStatus(cmdCtx as unknown as ExtensionContext, model);
-            cmdCtx.ui.notify(`✅ Pi Cache Optimizer enabled for this Pi process. Current-session stats were reset for before/after comparison.\n${formatOptimizerRuntimeMode()}`, "info");
+            cmdCtx.ui.notify(`✅ Pi Cache Optimizer enabled for this Pi process. Local footer stats were reset for before/after comparison.\n${formatOptimizerRuntimeMode()}`, "info");
           } else if (choice === menuOptions[1]) {
             setRuntimeOptimizerEnabled(false);
             resetCurrentSessionStats();
             await flushPersistCacheStats(cmdCtx as unknown as ExtensionContext);
             await publishStatus(cmdCtx as unknown as ExtensionContext, model);
-            cmdCtx.ui.notify(`⏸️ Pi Cache Optimizer disabled for this Pi process. Current-session stats were reset and will keep collecting while disabled for comparison.\n${formatOptimizerRuntimeMode()}`, "warning");
+            cmdCtx.ui.notify(`⏸️ Pi Cache Optimizer disabled for this Pi process. Local footer stats were reset and will keep collecting while disabled for comparison.\n${formatOptimizerRuntimeMode()}`, "warning");
           } else if (choice === menuOptions[2]) {
             if (!model) {
               cmdCtx.ui.notify("No active model selected. Select a model first with /model or pi --model.", "warning");
@@ -6854,7 +6975,7 @@ export default function (pi: ExtensionAPI) {
               const diagnosis = buildDoctorDiagnosis(model, { promptCacheRetention400: promptCacheRetention400Models.has(modelKey(model)) });
               const adapter = selectAdapterForModel(model);
               const sk = model ? sessionModelKey(model) : undefined;
-              const statsState = sk ? cacheStatsByModel[sk] : undefined;
+              const statsState = model ? cacheStatsTotalsByModel[modelKey(model)] : undefined;
               const samples = sk ? getRecentSamples(sk) : [];
               const lowHitLines = buildLowHitDiagnosis(model, adapter, statsState, samples);
               const fullDiagnosis = lowHitLines.length > 0
@@ -6868,7 +6989,7 @@ export default function (pi: ExtensionAPI) {
             } else {
               const adapter = selectAdapterForModel(model);
               const sk = model ? sessionModelKey(model) : undefined;
-              const statsState = sk ? cacheStatsByModel[sk] : undefined;
+              const statsState = model ? cacheStatsTotalsByModel[modelKey(model)] : undefined;
               const samples = sk ? getRecentSamples(sk) : [];
               const output = buildStatsOutput(model, adapter, statsState, samples);
               cmdCtx.ui.notify(output, "info");
@@ -7003,7 +7124,7 @@ export default function (pi: ExtensionAPI) {
                 await flushPersistCacheStats(cmdCtx as unknown as ExtensionContext);
                 await publishStatus(cmdCtx as unknown as ExtensionContext, model);
                 cmdCtx.ui.notify(
-                  `✅ Reset local session cache stats for "${displayKey}". ` +
+                  `✅ Reset local footer cache stats for "${displayKey}". ` +
                   "Upstream provider prompt cache was not modified.",
                   "info",
                 );
@@ -7023,7 +7144,7 @@ export default function (pi: ExtensionAPI) {
         diagnosis.push("  stats   — Show active model stats bucket and recent trend");
         diagnosis.push("  compat  — Show compat suggestion with edit location");
         diagnosis.push("  fix     — Auto-fix compat issues (writes models.json, requires UI)");
-        diagnosis.push("  reset   — Reset local session stats for current model (does not affect upstream)");
+        diagnosis.push("  reset   — Reset local provider/model stats for current model (does not affect upstream)");
         diagnosis.push("");
         diagnosis.push(formatOptimizerRuntimeMode());
         diagnosis.push("");

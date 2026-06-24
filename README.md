@@ -33,7 +33,7 @@ Pi extension for improving provider-side KV / prompt cache hit rates. It keeps s
 - Adds a session-id `prompt_cache_key` fallback for `openai-completions` / `openai-responses` payloads when no effective key exists.
 - Warns once for third-party OpenAI-compatible proxies missing cache/session-affinity compat flags.
 - Detects Anthropic adaptive thinking models (opus-4.6+, sonnet-4.6+, fable-5+) missing `forceAdaptiveThinking: true` compat.
-- Shows session-scoped footer stats for supported model families.
+- Shows restart-persistent provider/model footer stats for supported model families.
 - Supports optional router-extension integration through versioned global protocols (`Symbol.for("pi.routing.registry.v1")` and `Symbol.for("pi.cache.hints.v1")`) without importing router packages.
 
 Caching is provider-side and best-effort. Third-party proxies and router extensions can still hide cache usage, reject unsupported parameters, or route requests across multiple upstreams.
@@ -59,12 +59,12 @@ On Pi 0.79.7 and newer, `pi update` updates Pi itself only. To update installed 
 | Command | Effect |
 |---|---|
 | `/cache-optimizer` | Interactive menu when UI supports it; otherwise prints help and current state. |
-| `/cache-optimizer enable` | Enables runtime optimizations for the current Pi process, resets current-session stats, and starts a fresh “enabled” measurement. |
-| `/cache-optimizer disable` | Disables optimization for the current Pi process, resets current-session stats, and keeps collecting footer stats in disabled comparison mode. Run `/reload` or restart Pi to return to startup behavior. |
+| `/cache-optimizer enable` | Enables runtime optimizations for the current Pi process, resets local footer stats, and starts a fresh “enabled” measurement. |
+| `/cache-optimizer disable` | Disables optimization for the current Pi process, resets local footer stats, and keeps collecting footer stats in disabled comparison mode. Run `/reload` or restart Pi to return to startup behavior. |
 | `/cache-optimizer doctor` | Shows active model/provider/API/base URL/compat plus low-hit diagnosis. |
 | `/cache-optimizer compat` | Shows copyable compat advice for the active model, if applicable. |
-| `/cache-optimizer stats` | Shows today's session-scoped counters and recent trend for the active model. |
-| `/cache-optimizer reset` | Resets only local stats for the active session + model; upstream provider cache is not modified. |
+| `/cache-optimizer stats` | Shows today's local provider/model counters and recent trend for the active model. |
+| `/cache-optimizer reset` | Resets local footer stats for the active provider/model; upstream provider cache is not modified. |
 | `/cache-optimizer fix` | Auto-repairs safe compat issues for the active model (adaptive thinking, DeepSeek reasoning, OpenAI proxy session affinity). Shows preview + risk warning, requires confirmation. **Only modifies `models.json` after explicit user approval.** |
 
 `enable` / `disable` are current-process switches. For a persistent opt-out, use environment variables below.
@@ -214,9 +214,9 @@ If only one model should change, use `modelOverrides`:
 
 ## Footer stats
 
-Stats are read-only local counters stored at `~/.pi/agent/pi-cache-optimizer-stats.json` and scoped by Pi session + provider/model. They contain only dates and numeric counters — no API keys, prompts, payloads, headers, responses, or model output.
+Stats are read-only local counters stored at `~/.pi/agent/pi-cache-optimizer-stats.json` and keyed by provider/model, so the same channel/model keeps today's footer counters after a Pi process or terminal restart. The file also keeps hashed session buckets for migration/reload bookkeeping. It contains only dates and numeric counters — no API keys, prompts, payloads, headers, responses, or model output.
 
-Pi 0.79+ also includes a built-in footer `CH` marker for the latest prompt cache hit rate. This extension complements that marker with persisted, provider/model/session-scoped counters plus proxy compat diagnostics.
+Pi 0.79+ also includes a built-in footer `CH` marker for the latest prompt cache hit rate. This extension complements that marker with persisted provider/model counters plus proxy compat diagnostics.
 
 Example footer:
 

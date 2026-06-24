@@ -26,7 +26,7 @@
 
 ## Open Questions
 
-* 无。版本号不需要更新：本次只有 README 兼容说明调整，没有 runtime/package API 行为变更。
+* 无。当前新增 footer stats restart-continuity 是 runtime/persistence behavior change，已 bump package version 到 `2.6.11`。
 
 ## Requirements (evolving)
 
@@ -43,7 +43,7 @@
 * [x] 如有修改，说明修改文件和理由。
 * [x] TypeScript 检查通过。
 * [x] 若本地 Pi SDK 版本与全局 Pi 不一致，处理或明确说明无需处理的原因。
-* [x] package version 回退到无需发版的版本。
+* [x] README-only 阶段曾回退 package version；当前 runtime/persistence 修复已 bump 到 `2.6.11`。
 * [x] README/中文 README 包含第三方 router/virtual-channel 扩展作者集成说明。
 
 ## Definition of Done (team quality bar)
@@ -99,3 +99,18 @@
   2. Layer 2: 400 detection (`after_provider_response`) + Gate 2 → catches 400 for models WITH opt-in that's wrong, strips on next request.
   3. Layer 3: `/cache-optimizer fix` 400-specific path → offers `supportsLongCacheRetention: false` for 400 models.
   4. Layer 4: `doctor`/`compat` advisory via `describeOptionalOpenAICompatibleProxyCompat` → informs user about `supportsLongCacheRetention` without triggering `⚠️ compat`.
+
+### Footer stats restart-continuity fix (2026-06-24)
+
+* **Confirmed user-reported issue**: Current v5 stats design scoped footer counters by Pi `sessionId` hash. A terminal/process restart creates a new session hash, so the same provider/model restored an empty current-session bucket and footer restarted at 0/0 even though older buckets remained on disk.
+* **Root cause**: `restoreCacheStats()` called `filterRestorableStatsForSession()` and loaded only `sessions[currentSessionHash]`; `publishStatus()`, `/cache-optimizer stats`, and doctor low-hit diagnosis read only the current session bucket.
+* **Fix implemented**:
+  1. Added persisted v6 `totalsByModel: Record<provider/model, CacheStats>` as the authoritative footer/display bucket that survives process/terminal restart.
+  2. Kept `sessions[sessionHash][provider/model]` for migration, reload compatibility, and router metadata; `message_end` now updates both current-session bucket and `totalsByModel`.
+  3. v4/v5/v3 migration derives `totalsByModel` from existing session/model buckets; v6 with empty `totalsByModel` is authoritative so reset tombstones are not resurrected from old session buckets.
+  4. `/cache-optimizer reset` clears the active provider/model visible total and matching in-memory session entries; enable/disable reset local footer totals for before/after comparison.
+  5. Router footer fallback can restore from `totalsByModel` when a new session has no current-session bucket.
+* **Docs/spec updated**: `README.md`, `README.zh-CN.md`, and `.trellis/spec/frontend/cache-adapter-footer-stats.md` now describe restart-persistent provider/model footer stats and v6 schema.
+* **Version**: `package.json` bumped to `2.6.11` because this is a runtime persistence/schema behavior change.
+* **New verification**: `.trellis/tasks/06-19-pi/verify-restart-stats-continuity.ts` asserts v5 derivation, v6 tombstone behavior, total merge/delete behavior, and router total restore.
+* Validation passed: `bunx tsc --noEmit --pretty false`, `bun .trellis/tasks/06-19-pi/verify-simplified-logic.ts`, `bun .trellis/tasks/06-19-pi/verify-fix-selfcheck.ts`, `bun .trellis/tasks/06-19-pi/verify-restart-stats-continuity.ts`, `git diff --check`, `npm pack --dry-run`.

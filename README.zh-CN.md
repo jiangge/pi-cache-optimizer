@@ -33,7 +33,7 @@
 - 对 `openai-completions` / `openai-responses` 请求，在没有有效 key 时使用 Pi session id 补 `prompt_cache_key`。
 - 对缺少缓存 / session-affinity compat 的第三方 OpenAI-compatible 代理给出一次性提醒。
 - 检测 Anthropic adaptive thinking 模型（opus-4.6+、sonnet-4.6+、fable-5+）是否缺少 `forceAdaptiveThinking: true` compat。
-- 为支持的模型家族显示按 session 隔离的底部缓存统计。
+- 为支持的模型家族显示可跨 Pi 进程 / 终端重启延续的 provider/model footer 缓存统计。
 - 通过版本化全局协议（`Symbol.for("pi.routing.registry.v1")` 与 `Symbol.for("pi.cache.hints.v1")`）支持可选的 router extension 集成，而不导入任何 router 包。
 
 缓存是 provider 侧的 best-effort 行为。第三方代理和 router extension 仍可能隐藏缓存 usage、拒绝不支持的参数，或把请求路由到多个上游。
@@ -59,12 +59,12 @@ Pi 0.79.7 及之后，`pi update` 默认只更新 Pi 本体。若要更新已安
 | 命令 | 作用 |
 |---|---|
 | `/cache-optimizer` | UI 支持时打开交互菜单；否则打印帮助和当前状态。 |
-| `/cache-optimizer enable` | 在当前 Pi 进程中开启运行时优化，清零当前 session 统计，并开始新的“开启状态”测量。 |
-| `/cache-optimizer disable` | 在当前 Pi 进程中关闭优化，清零当前 session 统计，并继续以 disabled 对比模式采集 footer 统计。运行 `/reload` 或重启 Pi 后回到启动时行为。 |
+| `/cache-optimizer enable` | 在当前 Pi 进程中开启运行时优化，清零本地 footer 统计，并开始新的“开启状态”测量。 |
+| `/cache-optimizer disable` | 在当前 Pi 进程中关闭优化，清零本地 footer 统计，并继续以 disabled 对比模式采集 footer 统计。运行 `/reload` 或重启 Pi 后回到启动时行为。 |
 | `/cache-optimizer doctor` | 显示当前模型 / provider / API / base URL / compat 与低命中诊断。 |
 | `/cache-optimizer compat` | 对当前模型显示可复制的 compat 建议（如适用）。 |
-| `/cache-optimizer stats` | 显示当前模型今天的 session-scoped 统计和近期趋势。 |
-| `/cache-optimizer reset` | 只重置当前 session + 当前模型的本地统计；不会修改上游 provider 缓存。 |
+| `/cache-optimizer stats` | 显示当前模型今天的本地 provider/model 统计和近期趋势。 |
+| `/cache-optimizer reset` | 重置当前 provider/model 的本地 footer 统计；不会修改上游 provider 缓存。 |
 | `/cache-optimizer fix` | 为当前模型自动修复安全的 compat 问题（adaptive thinking、DeepSeek reasoning、OpenAI proxy session affinity）。展示预览 + 风险提示，需要用户确认。**仅在用户明确批准后才修改 `models.json`。** |
 
 `enable` / `disable` 是当前进程内开关。若要持久关闭某些能力，请使用下面的环境变量。
@@ -214,9 +214,9 @@ Provider 级最小 override：
 
 ## Footer 统计
 
-统计是只读本地计数，保存在 `~/.pi/agent/pi-cache-optimizer-stats.json`，按 Pi session + provider/model 隔离。文件只包含日期和数字计数，不包含 API key、prompt、payload、headers、响应或模型输出。
+统计是只读本地计数，保存在 `~/.pi/agent/pi-cache-optimizer-stats.json`，按 provider/model 作为 footer 展示维度，因此同一个渠道/模型在 Pi 进程或终端重启后会延续今天的统计。文件也保留 hashed session buckets，用于迁移和 reload 记录。文件只包含日期和数字计数，不包含 API key、prompt、payload、headers、响应或模型输出。
 
-Pi 0.79+ 已内置 footer `CH` 标记，用于显示最近一次 prompt cache hit rate。本扩展在此基础上补充持久化的 provider/model/session-scoped 计数，以及代理 compat 诊断。
+Pi 0.79+ 已内置 footer `CH` 标记，用于显示最近一次 prompt cache hit rate。本扩展在此基础上补充持久化的 provider/model 计数，以及代理 compat 诊断。
 
 示例 footer：
 
