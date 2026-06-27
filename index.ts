@@ -1717,6 +1717,51 @@ function keyForModelExt(model: { provider: string; id: string }): string {
   return `${model.provider}/${model.id}`;
 }
 
+/**
+ * For direct (non-virtual-routing) providers, the upstream API may normalize or
+ * rename the model id echoed in its response (e.g. a request to
+ * `zai-org/GLM-5.2-FP8` returns a message whose `model` field is
+ * `GLM5.2-FP8`). Writing stats under the echoed name fragments the bucket
+ * away from the active-model key the footer reads (`totalsByModel[ctx.model]`),
+ * so the footer shows 0% even when the backend is hitting cache.
+ *
+ * When the response-derived statsModel differs from the active context model
+ * only in name (same provider + same cache adapter), consolidate stats back to
+ * the active model identity. Virtual routing providers are excluded — their
+ * message-local metadata is authoritative for router correctness (spec:
+ * `message_end` MUST prefer assistant message metadata).
+ *
+ * Never merges across providers or across adapters, so genuinely different
+ * models are never combined.
+ */
+function consolidateDirectProviderStatsModel(
+  statsModel: PiModel | undefined,
+  ctxModel: PiModel | undefined,
+  ctx?: Pick<ExtensionContext, "sessionManager">,
+): PiModel | undefined {
+  if (!statsModel || !ctxModel) return statsModel;
+  // Virtual routing providers keep message-local stats identity.
+  if (isVirtualRoutingModel(ctxModel, ctx)) return statsModel;
+  // Only consolidate within the same provider.
+  if (statsModel.provider !== ctxModel.provider) return statsModel;
+  // Only consolidate when both resolve to the same cache adapter object, so
+  // genuinely different models sharing a provider (or sharing the same adapter
+  // family id, e.g. GPT and GLM both report family id "openai") are never
+  // merged. `selectAdapterForModel` returns the precise adapter object, so
+  // object identity is the correct criterion.
+  const statsAdapter = selectAdapterForModel(statsModel);
+  const ctxAdapter = selectAdapterForModel(ctxModel);
+  if (!statsAdapter || !ctxAdapter || statsAdapter !== ctxAdapter) return statsModel;
+  // No drift — nothing to consolidate.
+  if (statsModel.id === ctxModel.id) return statsModel;
+  // Consolidate: pin stats to the active-model identity the footer reads.
+  return {
+    ...statsModel,
+    id: ctxModel.id,
+    name: ctxModel.name || ctxModel.id,
+  };
+}
+
 function usageRecordFromAssistant(message: unknown): UnknownRecord | undefined {
   return asRecord(getAssistantRecord(message)?.usage);
 }
@@ -5715,6 +5760,7 @@ export const __internals_for_tests = {
   getAssistantMessageModelTokenValues,
   getCompat,
   modelKey,
+  consolidateDirectProviderStatsModel,
   // Platform-friendly path helpers
   getModelsJsonDisplayPath,
   buildProviderCompatOverride,
@@ -6498,7 +6544,17 @@ export default function (pi: ExtensionAPI) {
     // Completed message metadata is request-local and authoritative for virtual
     // routing providers. Use it whenever it supplies provider/model identity;
     // fall back to the active context model for direct providers.
-    const statsModel = modelFromAssistantMessage(event.message, ctx.model) ?? ctx.model;
+    let statsModel = modelFromAssistantMessage(event.message, ctx.model) ?? ctx.model;
+    // For direct (non-virtual-routing) providers, the upstream API may echo a
+    // normalized/renamed model id in its response (e.g. request
+    // `zai-org/GLM-5.2-FP8` but the message carries `GLM5.2-FP8`). Writing
+    // stats under the echoed name fragments the bucket away from the
+    // active-model key the footer reads, showing 0% even when the backend is
+    // hitting cache. When the response model drifts from the active model only
+    // in name (same provider, same cache adapter), consolidate stats back to
+    // the active model id. Virtual routing providers keep message-local
+    // identity (router correctness).
+    statsModel = consolidateDirectProviderStatsModel(statsModel, ctx.model, ctx);
     let routedModelChanged = false;
     if (isVirtualRoutingModel(ctx.model, ctx) && statsModel && !isVirtualRoutingModel(statsModel, ctx)) {
       const nextRoutedModel: PersistedRoutedModelRef = {

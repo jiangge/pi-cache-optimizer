@@ -384,6 +384,22 @@ and removing `_nosession`.
 * `message_end` updates both `statsByModel[sessionHash:provider/id]` and
   `totalsByModel[provider/id]` for the active model. It falls back to
   `legacyFamily[adapter.id]` only when no model identity is available.
+  Assistant message metadata (`provider`, `model`/`responseModel`, `api`) is
+  authoritative for final stats identity — this keeps virtual routing providers
+  correct (the active model may be a router shell while the message carries the
+  real upstream model). For **direct (non-virtual-routing) providers**, however,
+  some OpenAI-compatible APIs normalize or rename the model id echoed in the
+  response (e.g. a request to `zai-org/GLM-5.2-FP8` returns a message whose
+  `model` field is `GLM5.2-FP8` or `glm-5.2`). Writing stats under the echoed
+  name fragments the bucket away from the active-model key the footer reads
+  (`totalsByModel[ctx.model]`), so the footer shows 0% even when the backend is
+  hitting cache. To prevent this, `message_end` consolidates stats back to the
+  active model identity when the response-derived model drifts from the active
+  model **only in name**: same provider, same cache adapter object, but a
+  different id. The consolidation (`consolidateDirectProviderStatsModel`) runs
+  after `modelFromAssistantMessage` and never merges across providers or across
+  adapters, so genuinely different models are never combined. Virtual routing
+  providers are excluded — their message-local identity always wins.
 * Footer text remains provider-family labelled. The counters shown are the
   local provider/model totals for the current day, not only the current process
   session bucket.
@@ -416,6 +432,8 @@ and removing `_nosession`.
 | Active model is `router/auto`, exact last routed model exists but its provider/model total was reset/removed | `/reload` still restores that exact model's footer label with empty same-day stats (`0/0`, `0M/0M`). |
 | Active model is a virtual routing provider registered under `Symbol.for("pi.routing.registry.v1")` | Footer, doctor, compat, prompt-cache-key fallback, and reset resolve the live upstream provider/model when the registry returns a valid route snapshot. |
 | A virtual routing provider relays assistant message `provider` + `model`/`responseModel` + `api` metadata | `message_end` stats use the message-local upstream identity, even if the active model is a router shell or the live registry has changed. |
+| Direct (non-virtual-routing) provider echoes a different/renamed model id in its response (e.g. request `zai-org/GLM-5.2-FP8` but message carries `GLM5.2-FP8`), same provider + same adapter | `message_end` consolidates stats to the active-model id (`ctx.model.id`); the footer shows the merged real hit rate instead of a fragmented 0% bucket. |
+| Direct provider echoes a model id that maps to a DIFFERENT adapter (e.g. `gpt-5.5` while active is a GLM model), or a different provider | No consolidation — stats stay under the response identity so genuinely different models are never merged. |
 | A router extension queries `Symbol.for("pi.cache.hints.v1")` while optimizer is enabled | Returns query-scoped optimized system prompt / prompt cache key / long-retention hint only when the query matches the latest session/route hint; existing request-level keys still remain authoritative. |
 | Non-GPT OpenAI-compatible model (Kimi, Qwen, GLM, MiniMax, Mimo, Hunyuan, Mistral, Grok, Llama, Nemotron, Cohere, Yi) with `openai-completions` API | Selected adapter shows the corresponding footer label; compat warning fires for non-official base URLs missing cache/session-affinity flags. |
 | Model id/name contains both GPT-family and non-GPT tokens (e.g. `kimi-gpt-4`) | GPT adapter takes precedence (earlier in `CACHE_PROVIDER_ADAPTERS`). Footer shows `OpenAI cache`, stats are still keyed by provider/model. |
@@ -527,6 +545,12 @@ task-level verification script that asserts:
 * Sequential write preservation: a write for the current session preserves other
   existing session buckets visible in the persisted file, while tests must not
   assume inter-process locking or serializable concurrent writes.
+* Direct-provider response model name drift: when a direct (non-virtual-routing)
+  provider echoes a different/renamed model id in its response but the response
+  model shares the active model's provider and cache adapter object, stats are
+  consolidated onto the active-model id; a drifted id mapping to a different
+  adapter or a different provider is NOT consolidated; virtual routing
+  providers are never consolidated (message-local identity wins).
 * `/cache-optimizer reset` on a model not matching an adapter shows a friendly
   no-op message.
 * Local-day rollover resets session-scoped stats, `totalsByModel`, and `legacyFamily` entries.
