@@ -3922,6 +3922,22 @@ function isPromptCacheRetention400Applicable(model: PiModel): boolean {
 }
 
 /**
+ * Whether the 403 sendSessionAffinityHeaders diagnostic applies to a model.
+ *
+ * Pi's openai-completions / openai-responses adapters send three custom HTTP
+ * headers (session_id, x-client-request-id, x-session-affinity) when
+ * `sendSessionAffinityHeaders` is enabled. Some third-party proxies / CDNs /
+ * WAFs block these custom headers and return HTTP 403 "Your request was
+ * blocked". This guard returns true only for OpenAI-compatible APIs whose
+ * merged compat currently enables session-affinity headers, so the 403
+ * monitoring and doctor/fix paths can advise disabling the flag.
+ */
+function isSessionAffinity403Applicable(model: PiModel): boolean {
+  if (!isOpenAICompatibleApi(model.api)) return false;
+  return getCompat(model).sendSessionAffinityHeaders === true;
+}
+
+/**
  * Detect router / channel profiles from a PiModel and return diagnostic notes.
  *
  * This function is advisory only — it does NOT participate in adapter selection,
@@ -4118,7 +4134,7 @@ function getCompatCheckNotApplicableLines(model: PiModel): string[] {
   return ["ℹ️ Compat check not applicable for this model."];
 }
 
-function buildDoctorDiagnosis(model: PiModel, options: { promptCacheRetention400?: boolean } = {}): string {
+function buildDoctorDiagnosis(model: PiModel, options: { promptCacheRetention400?: boolean; sessionAffinity403?: boolean } = {}): string {
   const lines: string[] = [];
   lines.push(`Provider: ${model.provider}`);
   lines.push(`Model:    ${model.id}`);
@@ -4174,6 +4190,25 @@ function buildDoctorDiagnosis(model: PiModel, options: { promptCacheRetention400
       lines.push(`   ${getPromptCacheRetentionUnsupportedHint()}`);
     } else {
       lines.push(`ℹ️ Long retention is enabled. ${getPromptCacheRetentionUnsupportedHint()}`);
+    }
+  }
+
+  // ── Session affinity 403 diagnostics ──
+  // Advises the user when sendSessionAffinityHeaders is enabled, since some
+  // third-party proxies / CDNs / WAFs block Pi's custom session-affinity HTTP
+  // headers (session_id, x-client-request-id, x-session-affinity) and return
+  // 403. If a 403 was already observed for this model, show a stronger hint.
+  if (isSessionAffinity403Applicable(model)) {
+    lines.push("");
+    if (options.sessionAffinity403) {
+      lines.push("⚠️  A 403 response was observed while sendSessionAffinityHeaders is enabled.");
+      lines.push("   The proxy/CDN likely blocks Pi's custom session-affinity headers (session_id,");
+      lines.push("   x-client-request-id, x-session-affinity). Run /cache-optimizer fix to");
+      lines.push(`   set sendSessionAffinityHeaders: false in ${getModelsJsonDisplayPath()}.`);
+    } else {
+      lines.push("ℹ️ Session affinity headers are enabled. Some CDNs/WAFs block custom headers");
+      lines.push("   (session_id, x-client-request-id, x-session-affinity) and return 403. If you");
+      lines.push("   see 403 errors, run /cache-optimizer fix to set sendSessionAffinityHeaders: false.");
     }
   }
 
@@ -4366,6 +4401,13 @@ function buildCompatDiagnosis(model: PiModel): string | undefined {
       lines.push("✅ Compat fully configured.");
       if (isPromptCacheRetention400Applicable(model)) {
         lines.push(getPromptCacheRetentionUnsupportedHint());
+      }
+      // Advisory for 403 session-affinity header blocking (only when enabled).
+      if (isSessionAffinity403Applicable(model)) {
+        lines.push(
+          "ℹ️ Session affinity headers are enabled. If you see 403 \"blocked\" errors,",
+          "   the proxy/CDN may be blocking Pi's custom headers. Set sendSessionAffinityHeaders: false.",
+        );
       }
       appendOptionalOpenAIProxyCompatAdviceLines(lines, optionalOpenAIProxyCompat);
     } else {
@@ -5643,6 +5685,7 @@ export const __internals_for_tests = {
   isOfficialOpenAIBaseUrl,
   isCompatCheckApplicable,
   isPromptCacheRetention400Applicable,
+  isSessionAffinity403Applicable,
   hasPromptCacheRetentionUnsupportedSignal,
   // Non-GPT OpenAI-compatible model detection
   isKimiLikeModel,
@@ -5859,6 +5902,8 @@ export default function (pi: ExtensionAPI) {
   const warnedModels = new Set<string>();
   const promptCacheRetention400Models = new Set<string>();
   const warnedPromptCacheRetention400Models = new Set<string>();
+  const sendSessionAffinityHeaders403Models = new Set<string>();
+  const warnedSendSessionAffinityHeaders403Models = new Set<string>();
   let cacheStatsByModel: Record<string, CacheStats> = {};
   let cacheStatsTotalsByModel: Record<string, CacheStats> = {};
   let cacheStatsLegacyFamily: Partial<Record<CacheProviderId, CacheStats>> = emptyAllCacheStats();
@@ -6506,20 +6551,48 @@ export default function (pi: ExtensionAPI) {
   pi.on("after_provider_response", (event, ctx) => {
     const model = resolveRouteModel(ctx.model, ctx) ?? ctx.model;
     if (!runtimeOptimizerEnabled || !model) return;
-    if (event.status !== 400) return;
-    if (!isPromptCacheRetention400Applicable(model)) return;
-    if (!hasPromptCacheRetentionUnsupportedSignal(event.headers)) return;
 
-    const key = modelKey(model);
-    promptCacheRetention400Models.add(key);
-    if (warnedPromptCacheRetention400Models.has(key)) return;
-    warnedPromptCacheRetention400Models.add(key);
-    ctx.ui.notify(
-      `⚠️ ${LOG_PREFIX}: ${key} returned HTTP 400 while supportsLongCacheRetention is enabled. ` +
-      getPromptCacheRetentionUnsupportedHint() +
-      ` Run /cache-optimizer doctor for the exact edit location.`,
-      "warning",
-    );
+    // ── 400: prompt_cache_retention unsupported ──
+    if (event.status === 400) {
+      if (!isPromptCacheRetention400Applicable(model)) return;
+      if (!hasPromptCacheRetentionUnsupportedSignal(event.headers)) return;
+
+      const key = modelKey(model);
+      promptCacheRetention400Models.add(key);
+      if (warnedPromptCacheRetention400Models.has(key)) return;
+      warnedPromptCacheRetention400Models.add(key);
+      ctx.ui.notify(
+        `⚠️ ${LOG_PREFIX}: ${key} returned HTTP 400 while supportsLongCacheRetention is enabled. ` +
+        getPromptCacheRetentionUnsupportedHint() +
+        ` Run /cache-optimizer doctor for the exact edit location.`,
+        "warning",
+      );
+      return;
+    }
+
+    // ── 403: sendSessionAffinityHeaders blocked by CDN/WAF ──
+    //
+    // Pi's openai-completions/responses adapters send three custom HTTP
+    // headers (session_id, x-client-request-id, x-session-affinity) when
+    // sendSessionAffinityHeaders is enabled. Some third-party proxies /
+    // CDNs / WAFs block these custom headers and return 403. We record a
+    // one-time per-session notification and surface it in doctor/fix so the
+    // user can disable the flag for the blocked model.
+    if (event.status === 403) {
+      if (!isSessionAffinity403Applicable(model)) return;
+
+      const key403 = modelKey(model);
+      sendSessionAffinityHeaders403Models.add(key403);
+      if (warnedSendSessionAffinityHeaders403Models.has(key403)) return;
+      warnedSendSessionAffinityHeaders403Models.add(key403);
+      ctx.ui.notify(
+        `⚠️ ${LOG_PREFIX}: ${key403} returned HTTP 403 while sendSessionAffinityHeaders is enabled. ` +
+        `The proxy/CDN may be blocking Pi's custom session-affinity headers (session_id, x-client-request-id, x-session-affinity). ` +
+        `Run /cache-optimizer doctor for details and /cache-optimizer fix to set sendSessionAffinityHeaders: false.`,
+        "warning",
+      );
+      return;
+    }
   });
 
   pi.on("message_end", async (event, ctx) => {
@@ -6641,7 +6714,7 @@ export default function (pi: ExtensionAPI) {
           cmdCtx.ui.notify("No active model selected. Select a model first with /model or pi --model.", "warning");
           return;
         }
-        const diagnosis = buildDoctorDiagnosis(model, { promptCacheRetention400: promptCacheRetention400Models.has(modelKey(model)) });
+        const diagnosis = buildDoctorDiagnosis(model, { promptCacheRetention400: promptCacheRetention400Models.has(modelKey(model)), sessionAffinity403: sendSessionAffinityHeaders403Models.has(modelKey(model)) });
         const adapter = selectAdapterForModel(model);
         const sk = model ? sessionModelKey(model) : undefined;
         const statsState = model ? cacheStatsTotalsByModel[modelKey(model)] : undefined;
@@ -6731,6 +6804,21 @@ export default function (pi: ExtensionAPI) {
           };
         }
 
+        // If no regular missing compat flags but the model has a recorded
+        // 403 while sendSessionAffinityHeaders was enabled (Pi sent custom
+        // session-affinity HTTP headers and the proxy/CDN blocked them), offer
+        // to override `sendSessionAffinityHeaders` to false in models.json.
+        if (!suggestion && isSessionAffinity403Applicable(model) && sendSessionAffinityHeaders403Models.has(modelKey(model))) {
+          const key = modelKey(model);
+          const slashIdx = key.indexOf("/");
+          const providerLabel = slashIdx > 0 ? key.slice(0, slashIdx) : key;
+          suggestion = {
+            providerLabel,
+            modelId: model.id,
+            compatKeys: { sendSessionAffinityHeaders: false },
+          };
+        }
+
         if (!suggestion) {
           const key = modelKey(model);
           cmdCtx.ui.notify(`✅ Nothing to fix for "${key}". Compat already configured.`, "info");
@@ -6753,6 +6841,13 @@ export default function (pi: ExtensionAPI) {
               "",
               "💡 This model returned HTTP 400 for prompt_cache_retention.",
               "Create or edit the entry below to override supportsLongCacheRetention to false.",
+            );
+          }
+          if (sendSessionAffinityHeaders403Models.has(modelKey(model))) {
+            manualLines.push(
+              "",
+              "💡 This model returned HTTP 403 while sendSessionAffinityHeaders was enabled.",
+              "Create or edit the entry below to override sendSessionAffinityHeaders to false.",
             );
           }
           manualLines.push(
@@ -7040,7 +7135,7 @@ export default function (pi: ExtensionAPI) {
             if (!model) {
               cmdCtx.ui.notify("No active model selected. Select a model first with /model or pi --model.", "warning");
             } else {
-              const diagnosis = buildDoctorDiagnosis(model, { promptCacheRetention400: promptCacheRetention400Models.has(modelKey(model)) });
+              const diagnosis = buildDoctorDiagnosis(model, { promptCacheRetention400: promptCacheRetention400Models.has(modelKey(model)), sessionAffinity403: sendSessionAffinityHeaders403Models.has(modelKey(model)) });
               const adapter = selectAdapterForModel(model);
               const sk = model ? sessionModelKey(model) : undefined;
               const statsState = model ? cacheStatsTotalsByModel[modelKey(model)] : undefined;

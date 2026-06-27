@@ -565,6 +565,7 @@ task-level verification script that asserts:
   returns correct results for id/name matches and non-matches, assistant message
   matching is role-gated, and compat warnings use the broadened
   `describeMissingOpenAICompatibleProxyCompat`.
+* 403 session-affinity header detection: `isSessionAffinity403Applicable` returns true only for OpenAI-compatible APIs (`openai-completions` / `openai-responses`) with merged compat `sendSessionAffinityHeaders === true`; returns false for custom transports (`kiro-api`, `anthropic-messages`) and for merged `false`/missing values; the `after_provider_response` 403 path records a one-time model-scoped warning and surfaces it in doctor/fix; existing 400 `prompt_cache_retention` behavior and all prior verify scripts remain green.
 
 ---
 
@@ -1053,6 +1054,12 @@ The output MUST NOT include API keys, secrets, prompts, payloads, headers, or mo
 If a previous `after_provider_response` saw HTTP 400 for this model while
 `supportsLongCacheRetention` was enabled, doctor includes a stronger hint to remove/avoid
 that flag if the provider error text is `Unsupported parameter: prompt_cache_retention`.
+Likewise, if a previous `after_provider_response` saw HTTP 403 for this model while
+`sendSessionAffinityHeaders` was enabled (`sendSessionAffinityHeaders403Models`), doctor includes
+a stronger hint to set `sendSessionAffinityHeaders: false` because the proxy/CDN likely blocks
+Pi's custom session-affinity headers (session_id, x-client-request-id, x-session-affinity). When
+the flag is enabled but no 403 has been observed yet, doctor shows an advisory note about
+potential CDN/WAF blocking.
 
 ### `/cache-optimizer stats`
 
@@ -1257,6 +1264,10 @@ compat). It does NOT read or expose:
 | Router/channel diagnostics do not affect adapter selection | An OpenRouter Llama model still selects the Llama adapter, not an "OpenRouter" adapter |
 | Diagnostic text must not expose API keys, prompts, payloads, or model output | All router/channel output uses only provider, api, baseUrl, compat metadata |
 | Third-party OpenAI-compatible proxy (`openai-completions` or `openai-responses`) returns HTTP 400 while `supportsLongCacheRetention` is enabled | Extension records a one-time model-scoped warning and `/cache-optimizer doctor` surfaces the `prompt_cache_retention` recovery hint |
+| Third-party OpenAI-compatible proxy returns HTTP 403 while `sendSessionAffinityHeaders` is enabled | Extension records a one-time model-scoped warning (`sendSessionAffinityHeaders403Models`) and `/cache-optimizer doctor` surfaces the session-affinity 403 hint with `/cache-optimizer fix` offering `sendSessionAffinityHeaders: false` |
+| `/cache-optimizer doctor` with session-affinity enabled but no 403 observed | Shows advisory text that some CDNs/WAFs block custom headers (session_id, x-client-request-id, x-session-affinity) and return 403 |
+| `/cache-optimizer fix` with 403-observed OpenAI-compatible model | Offers `sendSessionAffinityHeaders: false` as the compat-key suggestion (mirror of the 400 `supportsLongCacheRetention: false` path) |
+| `/cache-optimizer compat` with fully-configured model where `sendSessionAffinityHeaders` is enabled | Shows `✅ Compat fully configured.` plus an advisory line about potential CDN/WAF 403 blocking of custom session-affinity headers |
 | `/cache-optimizer stats` with model matching an adapter | Output includes model key, request counts, token counts, hit rate, recent trend |
 | `/cache-optimizer stats` with unseen model bucket | Shows 0/0, not legacy family aggregates |
 | `/cache-optimizer stats` with unsupported model (no adapter) | Shows friendly message "No cache-adapter-matched model active" |

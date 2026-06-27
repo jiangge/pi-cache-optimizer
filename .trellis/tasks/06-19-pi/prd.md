@@ -133,3 +133,19 @@
 * **models.json**: NOT changed — the compat config was already correct (model-level `sendSessionAffinityHeaders: true`, `supportsLongCacheRetention: false`, `thinkingFormat: "zai"`; merged compat satisfies the proxy check, no `⚠️ compat`).
 * **Version**: `package.json` bumped to `2.6.13` because this is a runtime footer-display behavior change.
 * **Validation**: `bunx tsc --noEmit --pretty false`, new `verify-direct-provider-stats-consolidation.ts` (18 tests), all 3 existing verify scripts (41 tests) still pass, `git diff --check`, `npm pack --dry-run`.
+
+### 403 session-affinity header detection (2026-06-27)
+
+* **Problem discovered**: User reported mofas/glm-5.2 returning `403 Your request was blocked`. Root cause: `sendSessionAffinityHeaders: true` causes Pi's `openai-completions` adapter to send three custom HTTP headers (`session_id`, `x-client-request-id`, `x-session-affinity`), which mofas's CDN/WAF blocks with 403. The extension previously only monitored HTTP 400 (`prompt_cache_retention` unsupported) and gave NO diagnostic for 403 — doctor/compat even said "✅ Compat fully configured" and the generic proxy diagnostic recommended enabling the very flag that caused the block.
+* **Fix implemented**: Mirrors the existing 400 monitoring pattern.
+  1. New `sendSessionAffinityHeaders403Models` + `warnedSendSessionAffinityHeaders403Models` module Sets (next to `promptCacheRetention400Models`).
+  2. New `isSessionAffinity403Applicable(model)` guard: returns true only for `openai-completions`/`openai-responses` APIs with merged compat `sendSessionAffinityHeaders === true`.
+  3. Restructured `after_provider_response` to handle both 400 and 403 in separate `if` blocks (the existing `if (event.status !== 400) return;` early-exit was replaced with explicit `if (event.status === 400) { ... return; }` and `if (event.status === 403) { ... return; }` blocks). Existing 400 behavior is byte-for-byte preserved.
+  4. `buildDoctorDiagnosis` now accepts `sessionAffinity403?: boolean` and shows either a strong 403-observed hint (recommends `/cache-optimizer fix`) or an advisory note (when the flag is enabled but no 403 yet) about CDN/WAF blocking of custom headers.
+  5. All `buildDoctorDiagnosis` call sites pass `sessionAffinity403: sendSessionAffinityHeaders403Models.has(modelKey(model))`.
+  6. `/cache-optimizer fix` adds a 403-specific suggestion path offering `sendSessionAffinityHeaders: false`, mirroring the 400 `supportsLongCacheRetention: false` path. Non-interactive manual guidance likewise mentions the 403 case.
+  7. `/cache-optimizer compat` adds an advisory line when `sendSessionAffinityHeaders` is enabled.
+  8. `isSessionAffinity403Applicable` exported via `__internals_for_tests`.
+* **models.json fix**: mofas/glm-5.2 and mofas/deepseek-v4-pro both given model-level `sendSessionAffinityHeaders: false` + `supportsLongCacheRetention: false` (provider-level retained; model-level overrides take precedence). `/reload` or restart applies.
+* **Version**: `package.json` bumped to `2.6.14` because this is a new runtime diagnostic + fix-path behavior.
+* **Validation**: `bunx tsc --noEmit --pretty false`, new `verify-403-detection.ts` (10 tests), all 4 existing verify scripts (59 tests) still pass, `git diff --check`, `npm pack --dry-run`.
