@@ -3944,6 +3944,22 @@ function isSessionAffinity403Applicable(model: PiModel): boolean {
 }
 
 /**
+ * Whether an OpenAI SDK header/User-Agent 403 diagnostic applies.
+ *
+ * Some third-party OpenAI-compatible proxies/CDNs/WAFs allow a plain curl
+ * request but block the OpenAI JS SDK's default request fingerprint, especially
+ * its `User-Agent: OpenAI/JS ...` and `X-Stainless-*` headers. This is distinct
+ * from session-affinity header blocking: it applies when session-affinity
+ * headers are NOT enabled but the model still uses a non-official
+ * OpenAI-compatible proxy transport.
+ */
+function isOpenAISdkHeader403Applicable(model: PiModel): boolean {
+  if (!isOpenAICompatibleProxyApi(model.api)) return false;
+  if (isOfficialOpenAIBaseUrl(model)) return false;
+  return getCompat(model).sendSessionAffinityHeaders !== true;
+}
+
+/**
  * Detect router / channel profiles from a PiModel and return diagnostic notes.
  *
  * This function is advisory only — it does NOT participate in adapter selection,
@@ -4140,7 +4156,7 @@ function getCompatCheckNotApplicableLines(model: PiModel): string[] {
   return ["ℹ️ Compat check not applicable for this model."];
 }
 
-function buildDoctorDiagnosis(model: PiModel, options: { promptCacheRetention400?: boolean; sessionAffinity403?: boolean } = {}): string {
+function buildDoctorDiagnosis(model: PiModel, options: { promptCacheRetention400?: boolean; sessionAffinity403?: boolean; openAISdkHeader403?: boolean } = {}): string {
   const lines: string[] = [];
   lines.push(`Provider: ${model.provider}`);
   lines.push(`Model:    ${model.id}`);
@@ -4215,6 +4231,20 @@ function buildDoctorDiagnosis(model: PiModel, options: { promptCacheRetention400
       lines.push("ℹ️ Session affinity headers are enabled. Some CDNs/WAFs block custom headers");
       lines.push("   (session_id, x-client-request-id, x-session-affinity) and return 403. If you");
       lines.push("   see 403 errors, run /cache-optimizer fix to set sendSessionAffinityHeaders: false.");
+    }
+  } else if (isOpenAISdkHeader403Applicable(model)) {
+    lines.push("");
+    if (options.openAISdkHeader403) {
+      lines.push("⚠️  A 403 response was observed while sendSessionAffinityHeaders is not enabled.");
+      lines.push("   The proxy/CDN may be blocking the OpenAI JS SDK request fingerprint");
+      lines.push("   (for example User-Agent: OpenAI/JS ... or X-Stainless-* headers). This");
+      lines.push("   is provider/WAF-specific; /cache-optimizer fix will not auto-write headers.");
+      lines.push(`   Manual workaround: add a provider-level headers.User-Agent override in ${getModelsJsonDisplayPath()}`);
+      lines.push("   only after testing the value with the affected provider.");
+    } else {
+      lines.push("ℹ️ If 403 persists after disabling sendSessionAffinityHeaders, some CDNs/WAFs");
+      lines.push("   may block the OpenAI JS SDK User-Agent / X-Stainless-* headers. Test the");
+      lines.push("   provider manually before adding a provider-level headers.User-Agent override.");
     }
   }
 
@@ -4408,11 +4438,18 @@ function buildCompatDiagnosis(model: PiModel): string | undefined {
       if (isPromptCacheRetention400Applicable(model)) {
         lines.push(getPromptCacheRetentionUnsupportedHint());
       }
-      // Advisory for 403 session-affinity header blocking (only when enabled).
+      // Advisory for 403 session-affinity header blocking (only when enabled),
+      // or OpenAI SDK header/User-Agent blocking after session affinity is disabled.
       if (isSessionAffinity403Applicable(model)) {
         lines.push(
           "ℹ️ Session affinity headers are enabled. If you see 403 \"blocked\" errors,",
           "   the proxy/CDN may be blocking Pi's custom headers. Set sendSessionAffinityHeaders: false.",
+        );
+      } else if (isOpenAISdkHeader403Applicable(model)) {
+        lines.push(
+          "ℹ️ If 403 persists with sendSessionAffinityHeaders disabled, the proxy/CDN may",
+          "   be blocking the OpenAI JS SDK User-Agent / X-Stainless-* headers. Test a",
+          "   provider-level headers.User-Agent override manually; /fix does not auto-write it.",
         );
       }
       appendOptionalOpenAIProxyCompatAdviceLines(lines, optionalOpenAIProxyCompat);
@@ -5692,6 +5729,7 @@ export const __internals_for_tests = {
   isCompatCheckApplicable,
   isPromptCacheRetention400Applicable,
   isSessionAffinity403Applicable,
+  isOpenAISdkHeader403Applicable,
   hasPromptCacheRetentionUnsupportedSignal,
   // Non-GPT OpenAI-compatible model detection
   isKimiLikeModel,
@@ -5910,6 +5948,8 @@ export default function (pi: ExtensionAPI) {
   const warnedPromptCacheRetention400Models = new Set<string>();
   const sendSessionAffinityHeaders403Models = new Set<string>();
   const warnedSendSessionAffinityHeaders403Models = new Set<string>();
+  const openAISdkHeader403Models = new Set<string>();
+  const warnedOpenAISdkHeader403Models = new Set<string>();
   let cacheStatsByModel: Record<string, CacheStats> = {};
   let cacheStatsTotalsByModel: Record<string, CacheStats> = {};
   let cacheStatsLegacyFamily: Partial<Record<CacheProviderId, CacheStats>> = emptyAllCacheStats();
@@ -6576,28 +6616,42 @@ export default function (pi: ExtensionAPI) {
       return;
     }
 
-    // ── 403: sendSessionAffinityHeaders blocked by CDN/WAF ──
-    //
-    // Pi's openai-completions/responses adapters send three custom HTTP
-    // headers (session_id, x-client-request-id, x-session-affinity) when
-    // sendSessionAffinityHeaders is enabled. Some third-party proxies /
-    // CDNs / WAFs block these custom headers and return 403. We record a
-    // one-time per-session notification and surface it in doctor/fix so the
-    // user can disable the flag for the blocked model.
+    // ── 403: proxy/CDN/WAF blocking ──
     if (event.status === 403) {
-      if (!isSessionAffinity403Applicable(model)) return;
-
       const key403 = modelKey(model);
-      sendSessionAffinityHeaders403Models.add(key403);
-      if (warnedSendSessionAffinityHeaders403Models.has(key403)) return;
-      warnedSendSessionAffinityHeaders403Models.add(key403);
-      ctx.ui.notify(
-        `⚠️ ${LOG_PREFIX}: ${key403} returned HTTP 403 while sendSessionAffinityHeaders is enabled. ` +
-        `The proxy/CDN may be blocking Pi's custom session-affinity headers (session_id, x-client-request-id, x-session-affinity). ` +
-        `Run /cache-optimizer doctor for details and /cache-optimizer fix to set sendSessionAffinityHeaders: false.`,
-        "warning",
-      );
-      return;
+
+      // Case 1: Pi's custom session-affinity headers are enabled. Offer the
+      // existing safe compat fix (`sendSessionAffinityHeaders: false`).
+      if (isSessionAffinity403Applicable(model)) {
+        sendSessionAffinityHeaders403Models.add(key403);
+        if (warnedSendSessionAffinityHeaders403Models.has(key403)) return;
+        warnedSendSessionAffinityHeaders403Models.add(key403);
+        ctx.ui.notify(
+          `⚠️ ${LOG_PREFIX}: ${key403} returned HTTP 403 while sendSessionAffinityHeaders is enabled. ` +
+          `The proxy/CDN may be blocking Pi's custom session-affinity headers (session_id, x-client-request-id, x-session-affinity). ` +
+          `Run /cache-optimizer doctor for details and /cache-optimizer fix to set sendSessionAffinityHeaders: false.`,
+          "warning",
+        );
+        return;
+      }
+
+      // Case 2: session-affinity headers are already absent/disabled, but the
+      // provider still returns 403. Some CDNs/WAFs block the OpenAI JS SDK
+      // default request fingerprint (User-Agent: OpenAI/JS ... or
+      // X-Stainless-* headers). This is provider-specific; do NOT auto-fix by
+      // writing a User-Agent because the right value depends on the endpoint.
+      if (isOpenAISdkHeader403Applicable(model)) {
+        openAISdkHeader403Models.add(key403);
+        if (warnedOpenAISdkHeader403Models.has(key403)) return;
+        warnedOpenAISdkHeader403Models.add(key403);
+        ctx.ui.notify(
+          `⚠️ ${LOG_PREFIX}: ${key403} returned HTTP 403 even though sendSessionAffinityHeaders is not enabled. ` +
+          `The proxy/CDN may be blocking the OpenAI JS SDK User-Agent / X-Stainless-* headers. ` +
+          `Run /cache-optimizer doctor for manual diagnostic guidance; /cache-optimizer fix will not auto-write User-Agent headers.`,
+          "warning",
+        );
+        return;
+      }
     }
   });
 
@@ -6720,7 +6774,7 @@ export default function (pi: ExtensionAPI) {
           cmdCtx.ui.notify("No active model selected. Select a model first with /model or pi --model.", "warning");
           return;
         }
-        const diagnosis = buildDoctorDiagnosis(model, { promptCacheRetention400: promptCacheRetention400Models.has(modelKey(model)), sessionAffinity403: sendSessionAffinityHeaders403Models.has(modelKey(model)) });
+        const diagnosis = buildDoctorDiagnosis(model, { promptCacheRetention400: promptCacheRetention400Models.has(modelKey(model)), sessionAffinity403: sendSessionAffinityHeaders403Models.has(modelKey(model)), openAISdkHeader403: openAISdkHeader403Models.has(modelKey(model)) });
         const adapter = selectAdapterForModel(model);
         const sk = model ? sessionModelKey(model) : undefined;
         const statsState = model ? cacheStatsTotalsByModel[modelKey(model)] : undefined;
@@ -7141,7 +7195,7 @@ export default function (pi: ExtensionAPI) {
             if (!model) {
               cmdCtx.ui.notify("No active model selected. Select a model first with /model or pi --model.", "warning");
             } else {
-              const diagnosis = buildDoctorDiagnosis(model, { promptCacheRetention400: promptCacheRetention400Models.has(modelKey(model)), sessionAffinity403: sendSessionAffinityHeaders403Models.has(modelKey(model)) });
+              const diagnosis = buildDoctorDiagnosis(model, { promptCacheRetention400: promptCacheRetention400Models.has(modelKey(model)), sessionAffinity403: sendSessionAffinityHeaders403Models.has(modelKey(model)), openAISdkHeader403: openAISdkHeader403Models.has(modelKey(model)) });
               const adapter = selectAdapterForModel(model);
               const sk = model ? sessionModelKey(model) : undefined;
               const statsState = model ? cacheStatsTotalsByModel[modelKey(model)] : undefined;

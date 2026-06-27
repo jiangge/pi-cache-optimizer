@@ -569,7 +569,7 @@ task-level verification script that asserts:
   returns correct results for id/name matches and non-matches, assistant message
   matching is role-gated, and compat warnings use the broadened
   `describeMissingOpenAICompatibleProxyCompat`.
-* 403 session-affinity header detection: `isSessionAffinity403Applicable` returns true only for OpenAI-compatible APIs (`openai-completions` / `openai-responses`) with merged compat `sendSessionAffinityHeaders === true`; returns false for custom transports (`kiro-api`, `anthropic-messages`) and for merged `false`/missing values; explicit `sendSessionAffinityHeaders: false` is accepted as a safe opt-out and must not keep `⚠️ compat` active or make `/cache-optimizer fix` suggest `true`; the `after_provider_response` 403 path records a one-time model-scoped warning and surfaces it in doctor/fix; existing 400 `prompt_cache_retention` behavior and all prior verify scripts remain green.
+* 403 session-affinity header detection: `isSessionAffinity403Applicable` returns true only for OpenAI-compatible APIs (`openai-completions` / `openai-responses`) with merged compat `sendSessionAffinityHeaders === true`; returns false for custom transports (`kiro-api`, `anthropic-messages`) and for merged `false`/missing values; explicit `sendSessionAffinityHeaders: false` is accepted as a safe opt-out and must not keep `⚠️ compat` active or make `/cache-optimizer fix` suggest `true`; the `after_provider_response` 403 path records a one-time model-scoped warning and surfaces it in doctor/fix. `isOpenAISdkHeader403Applicable` returns true for third-party OpenAI-compatible proxies after session affinity is disabled/absent, records a read-only OpenAI SDK User-Agent / `X-Stainless-*` WAF diagnostic, and must not add an auto-fix path; existing 400 `prompt_cache_retention` behavior and all prior verify scripts remain green.
 
 ---
 
@@ -1063,7 +1063,11 @@ Likewise, if a previous `after_provider_response` saw HTTP 403 for this model wh
 a stronger hint to set `sendSessionAffinityHeaders: false` because the proxy/CDN likely blocks
 Pi's custom session-affinity headers (session_id, x-client-request-id, x-session-affinity). When
 the flag is enabled but no 403 has been observed yet, doctor shows an advisory note about
-potential CDN/WAF blocking.
+potential CDN/WAF blocking. If a previous HTTP 403 was observed after session-affinity headers
+were already absent/disabled (`openAISdkHeader403Models`), doctor gives read-only manual
+guidance that the proxy/CDN may be blocking the OpenAI JS SDK request fingerprint (for example
+`User-Agent: OpenAI/JS ...` or `X-Stainless-*` headers). `/cache-optimizer fix` MUST NOT
+automatically write `headers.User-Agent` because the correct value is provider/WAF-specific.
 
 ### `/cache-optimizer stats`
 
@@ -1273,6 +1277,7 @@ compat). It does NOT read or expose:
 | `/cache-optimizer fix` with 403-observed OpenAI-compatible model | Offers `sendSessionAffinityHeaders: false` as the compat-key suggestion (mirror of the 400 `supportsLongCacheRetention: false` path) |
 | `/cache-optimizer compat` with fully-configured model where `sendSessionAffinityHeaders` is enabled | Shows `✅ Compat fully configured.` plus an advisory line about potential CDN/WAF 403 blocking of custom session-affinity headers |
 | Generic proxy model with explicit `sendSessionAffinityHeaders: false` after a 403/CDN block | No `⚠️ compat`; `/cache-optimizer fix` must NOT suggest changing it back to `true` |
+| Generic proxy returns HTTP 403 after `sendSessionAffinityHeaders` is already false/absent | Extension records a one-time `openAISdkHeader403Models` diagnostic and doctor/compat provide read-only guidance about OpenAI JS SDK `User-Agent` / `X-Stainless-*` WAF blocking; `/cache-optimizer fix` does NOT auto-write `headers.User-Agent` |
 | `/cache-optimizer stats` with model matching an adapter | Output includes model key, request counts, token counts, hit rate, recent trend |
 | `/cache-optimizer stats` with unseen model bucket | Shows 0/0, not legacy family aggregates |
 | `/cache-optimizer stats` with unsupported model (no adapter) | Shows friendly message "No cache-adapter-matched model active" |

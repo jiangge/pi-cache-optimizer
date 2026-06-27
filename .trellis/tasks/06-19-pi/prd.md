@@ -158,3 +158,12 @@
 * **models.json fix**: gggrok `grok-composer-2.5-fast`, `grok-4.20-multi-agent-xhigh`, and `grok-4.3-fast` all set to model-level `sendSessionAffinityHeaders: false`.
 * **Version**: `package.json` bumped to `2.6.15`.
 * **Validation**: `verify-403-detection.ts` expanded from 10 to 14 tests to assert explicit `sendSessionAffinityHeaders: false` is not missing compat and does not make `/cache-optimizer fix` suggest `true`.
+
+### OpenAI SDK User-Agent / header 403 diagnostic (2026-06-27)
+
+* **Problem discovered**: After `sendSessionAffinityHeaders: false` was correctly applied for gggrok, `grok-4.3-fast` still returned `403 Your request was blocked` in Pi. Direct `curl` requests to the same endpoint/model/key returned HTTP 200, while the OpenAI JS SDK used by Pi returned HTTP 403. Overriding only `User-Agent` to `curl/8.5.0` made the OpenAI SDK request succeed, proving gggrok's Cloudflare/WAF was blocking the SDK request fingerprint (`User-Agent: OpenAI/JS ...` and/or `X-Stainless-*` headers), not cache-optimizer or session-affinity headers.
+* **models.json workaround**: Added provider-level `headers: { "User-Agent": "curl/8.5.0" }` to `gggrok` after live testing that value. Kept all three gggrok models at model-level `sendSessionAffinityHeaders: false`.
+* **Fix implemented**: Added read-only diagnostics only. New `isOpenAISdkHeader403Applicable(model)` identifies third-party OpenAI-compatible proxies where session-affinity headers are not enabled. The `after_provider_response` 403 path now records `openAISdkHeader403Models` and shows a one-time warning distinct from `sendSessionAffinityHeaders403Models`. Doctor/compat explain that the proxy/CDN may block OpenAI JS SDK `User-Agent` / `X-Stainless-*` headers and recommend manually testing a provider-level `headers.User-Agent` override.
+* **No auto-fix**: `/cache-optimizer fix` intentionally does NOT write `headers.User-Agent`; the correct value is provider/WAF-specific and should be manually tested.
+* **Version**: `package.json` bumped to `2.6.16`.
+* **Validation**: `verify-403-detection.ts` expanded to cover `isOpenAISdkHeader403Applicable`; all existing checks pass.

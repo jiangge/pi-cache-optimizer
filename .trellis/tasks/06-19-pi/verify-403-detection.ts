@@ -30,6 +30,7 @@ import { __internals_for_tests as I } from "../../../index.ts";
 
 const {
   isSessionAffinity403Applicable,
+  isOpenAISdkHeader403Applicable,
   describeMissingOpenAICompatibleProxyCompat,
   buildFixSuggestion,
   getCompat,
@@ -213,6 +214,41 @@ function mkModel(
   check(
     "nvidia openai-completions + sendSessionAffinityHeaders: true → applicable (API-driven guard)",
     isSessionAffinity403Applicable(model) === true,
+  );
+}
+
+// ── Case 11: OpenAI SDK header/User-Agent 403 diagnostic guard ──
+{
+  const disabledAffinity = mkModel("gggrok", "grok-4.3-fast", "openai-completions", {
+    sendSessionAffinityHeaders: false,
+  }, "https://ggrokheavy.xyz/v1");
+  check(
+    "SDK header 403 diagnostic applies when sendSessionAffinityHeaders is false on a third-party proxy",
+    isOpenAISdkHeader403Applicable(disabledAffinity) === true,
+  );
+
+  const enabledAffinity = mkModel("gggrok", "grok-4.3-fast", "openai-completions", {
+    sendSessionAffinityHeaders: true,
+  }, "https://ggrokheavy.xyz/v1");
+  check(
+    "SDK header 403 diagnostic does NOT apply while session-affinity 403 diagnostic owns the case",
+    isOpenAISdkHeader403Applicable(enabledAffinity) === false,
+  );
+
+  const official = mkModel("openai", "gpt-5.5", "openai-completions", {
+    sendSessionAffinityHeaders: false,
+  }, "https://api.openai.com/v1");
+  check(
+    "SDK header 403 diagnostic does NOT apply to official OpenAI",
+    isOpenAISdkHeader403Applicable(official) === false,
+  );
+
+  const custom = mkModel("kiro", "claude-opus-4-8", "kiro-api", {
+    sendSessionAffinityHeaders: false,
+  }, "");
+  check(
+    "SDK header 403 diagnostic does NOT apply to custom transports",
+    isOpenAISdkHeader403Applicable(custom) === false,
   );
 }
 
