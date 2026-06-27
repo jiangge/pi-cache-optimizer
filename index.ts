@@ -6481,6 +6481,18 @@ export default function (pi: ExtensionAPI) {
     const adapter = selectAdapterForAssistantMessage(event.message, ctx.model);
     if (!adapter) return;
 
+    // Skip stats for error/aborted messages (network retries, user aborts).
+    // Pi's auto-retry emits message_end for the failed attempt before
+    // removing it and retrying. The error message carries zero-usage fields
+    // ({ input: 0, cacheRead: 0, cacheWrite: 0 }) that normalizeUsage
+    // returns as a valid (non-undefined) snapshot, which would inflate
+    // totalRequests and skew cache hit-rate accuracy. The final successful
+    // response is emitted as a separate message_end with real usage data.
+    const msgRecord = asRecord(event.message);
+    if (msgRecord?.stopReason === "error" || msgRecord?.stopReason === "aborted") {
+      return;
+    }
+
     const usage = adapter.normalizeUsage(event.message);
 
     // Completed message metadata is request-local and authoritative for virtual
