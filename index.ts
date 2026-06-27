@@ -1992,10 +1992,16 @@ function describeMissingOpenAICompatibleProxyCompat(model: PiModel): string[] {
   if (!isOpenAICompatibleProxyApi(model.api)) return missing;
   if (isOfficialOpenAIBaseUrl(model)) return missing;
 
-  if (compat.sendSessionAffinityHeaders !== true) {
+  if (compat.sendSessionAffinityHeaders === undefined) {
     missing.push("sendSessionAffinityHeaders");
   }
 
+  // Explicit `sendSessionAffinityHeaders: false` is a valid safe opt-out for
+  // proxies/CDNs/WAFs that block Pi's custom affinity headers with HTTP 403.
+  // Treat only a missing/undefined value as missing compat; do not mark an
+  // intentional false override as ⚠️ compat or let /cache-optimizer fix turn it
+  // back to true.
+  //
   // NOTE: supportsLongCacheRetention is intentionally NOT checked here.
   // Per spec, it is optional/risky advisory text only and must NOT trigger
   // the ⚠️ compat marker. The before_provider_request hook proactively

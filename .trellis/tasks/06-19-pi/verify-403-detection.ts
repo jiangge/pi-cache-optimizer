@@ -28,7 +28,12 @@
 
 import { __internals_for_tests as I } from "../../../index.ts";
 
-const { isSessionAffinity403Applicable, getCompat } = I;
+const {
+  isSessionAffinity403Applicable,
+  describeMissingOpenAICompatibleProxyCompat,
+  buildFixSuggestion,
+  getCompat,
+} = I;
 
 let failed = 0;
 let passed = 0;
@@ -154,9 +159,35 @@ function mkModel(
     "mofas/glm-5.2 after fix → NOT applicable (403 guard correctly disabled)",
     isSessionAffinity403Applicable(model) === false,
   );
+  check(
+    "explicit sendSessionAffinityHeaders:false is NOT missing proxy compat",
+    !describeMissingOpenAICompatibleProxyCompat(model).includes("sendSessionAffinityHeaders"),
+    `missing=${JSON.stringify(describeMissingOpenAICompatibleProxyCompat(model))}`,
+  );
+  check(
+    "explicit sendSessionAffinityHeaders:false does NOT make /fix suggest true",
+    buildFixSuggestion(model) === undefined,
+    `suggestion=${JSON.stringify(buildFixSuggestion(model))}`,
+  );
 }
 
-// ── Case 8: official OpenAI base URL + sendSessionAffinityHeaders: true ──
+// ── Case 8: openai-completions + missing sendSessionAffinityHeaders still reports missing ──
+{
+  const model = mkModel("generic", "grok-4.3-fast", "openai-completions", {}, "https://proxy.example.com/v1");
+  check(
+    "missing sendSessionAffinityHeaders still reports proxy compat missing",
+    describeMissingOpenAICompatibleProxyCompat(model).includes("sendSessionAffinityHeaders"),
+    `missing=${JSON.stringify(describeMissingOpenAICompatibleProxyCompat(model))}`,
+  );
+  const suggestion = buildFixSuggestion(model);
+  check(
+    "missing sendSessionAffinityHeaders still makes /fix suggest true",
+    !!suggestion && suggestion.compatKeys.sendSessionAffinityHeaders === true,
+    `suggestion=${JSON.stringify(suggestion)}`,
+  );
+}
+
+// ── Case 9: official OpenAI base URL + sendSessionAffinityHeaders: true ──
 // Unlike isPromptCacheRetention400Applicable, the 403 guard does NOT exclude
 // official OpenAI by base URL. It only checks the compat flag. In practice
 // official OpenAI never sets this flag, so this is fine. Verify the behavior
@@ -171,7 +202,7 @@ function mkModel(
   );
 }
 
-// ── Case 9: antling / together / nvidia custom transports → NOT applicable ──
+// ── Case 10: antling / together / nvidia custom transports → NOT applicable ──
 {
   const model = mkModel("nvidia", "llama-3.1-405b", "openai-completions", {
     sendSessionAffinityHeaders: true,

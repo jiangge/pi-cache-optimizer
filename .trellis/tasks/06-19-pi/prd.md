@@ -149,3 +149,12 @@
 * **models.json fix**: mofas/glm-5.2 and mofas/deepseek-v4-pro both given model-level `sendSessionAffinityHeaders: false` + `supportsLongCacheRetention: false` (provider-level retained; model-level overrides take precedence). `/reload` or restart applies.
 * **Version**: `package.json` bumped to `2.6.14` because this is a new runtime diagnostic + fix-path behavior.
 * **Validation**: `bunx tsc --noEmit --pretty false`, new `verify-403-detection.ts` (10 tests), all 4 existing verify scripts (59 tests) still pass, `git diff --check`, `npm pack --dry-run`.
+
+### 403 false opt-out compat/fix correction (2026-06-27)
+
+* **Bug discovered**: User set gggrok model-level `sendSessionAffinityHeaders: false` to avoid CDN/WAF 403, but the footer still showed `⚠️ compat`. Running `/cache-optimizer fix` previewed `{ "sendSessionAffinityHeaders": true }`, then reintroduced the 403.
+* **Root cause**: `describeMissingOpenAICompatibleProxyCompat` treated any value other than `true` as missing, so an intentional safe opt-out (`false`) was marked missing. `buildFixSuggestion` then converted that missing flag into the old safe-default suggestion `sendSessionAffinityHeaders: true` before the 403-specific false path could help.
+* **Fix implemented**: Generic OpenAI-compatible proxy compat now treats only `undefined`/missing `sendSessionAffinityHeaders` as missing. Explicit `false` is accepted as a valid safe opt-out for proxies/CDNs/WAFs that block custom affinity headers, clears `⚠️ compat`, and prevents `/cache-optimizer fix` from changing it back to `true`.
+* **models.json fix**: gggrok `grok-composer-2.5-fast`, `grok-4.20-multi-agent-xhigh`, and `grok-4.3-fast` all set to model-level `sendSessionAffinityHeaders: false`.
+* **Version**: `package.json` bumped to `2.6.15`.
+* **Validation**: `verify-403-detection.ts` expanded from 10 to 14 tests to assert explicit `sendSessionAffinityHeaders: false` is not missing compat and does not make `/cache-optimizer fix` suggest `true`.

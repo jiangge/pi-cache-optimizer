@@ -176,9 +176,13 @@ core's own cache transport.
 
 For models using `api: "openai-completions"` through a non-official
 base URL (not `api.openai.com`), warn/mark missing compat only when merged compat
-lacks `sendSessionAffinityHeaders`. The copyable JSON suggestion MUST be
-conservative: recommend `sendSessionAffinityHeaders: true` by default when
-missing, but do NOT recommend `supportsLongCacheRetention: true` as an automatic
+has no `sendSessionAffinityHeaders` value (`undefined`). An explicit
+`sendSessionAffinityHeaders: false` is a valid safe opt-out for proxies/CDNs/WAFs
+that block Pi's custom affinity headers with HTTP 403, and MUST NOT keep
+`⚠️ compat` active or make `/cache-optimizer fix` write `true` again. The
+copyable JSON suggestion MUST be conservative: recommend
+`sendSessionAffinityHeaders: true` by default when missing, but do NOT recommend
+`supportsLongCacheRetention: true` as an automatic
 safe default. Long retention is optional advisory text only; it must not keep
 `⚠️ compat` active or make `/cache-optimizer fix` report unresolved work after
 session affinity has been fixed. It may be mentioned as optional guidance only
@@ -565,7 +569,7 @@ task-level verification script that asserts:
   returns correct results for id/name matches and non-matches, assistant message
   matching is role-gated, and compat warnings use the broadened
   `describeMissingOpenAICompatibleProxyCompat`.
-* 403 session-affinity header detection: `isSessionAffinity403Applicable` returns true only for OpenAI-compatible APIs (`openai-completions` / `openai-responses`) with merged compat `sendSessionAffinityHeaders === true`; returns false for custom transports (`kiro-api`, `anthropic-messages`) and for merged `false`/missing values; the `after_provider_response` 403 path records a one-time model-scoped warning and surfaces it in doctor/fix; existing 400 `prompt_cache_retention` behavior and all prior verify scripts remain green.
+* 403 session-affinity header detection: `isSessionAffinity403Applicable` returns true only for OpenAI-compatible APIs (`openai-completions` / `openai-responses`) with merged compat `sendSessionAffinityHeaders === true`; returns false for custom transports (`kiro-api`, `anthropic-messages`) and for merged `false`/missing values; explicit `sendSessionAffinityHeaders: false` is accepted as a safe opt-out and must not keep `⚠️ compat` active or make `/cache-optimizer fix` suggest `true`; the `after_provider_response` 403 path records a one-time model-scoped warning and surfaces it in doctor/fix; existing 400 `prompt_cache_retention` behavior and all prior verify scripts remain green.
 
 ---
 
@@ -1268,6 +1272,7 @@ compat). It does NOT read or expose:
 | `/cache-optimizer doctor` with session-affinity enabled but no 403 observed | Shows advisory text that some CDNs/WAFs block custom headers (session_id, x-client-request-id, x-session-affinity) and return 403 |
 | `/cache-optimizer fix` with 403-observed OpenAI-compatible model | Offers `sendSessionAffinityHeaders: false` as the compat-key suggestion (mirror of the 400 `supportsLongCacheRetention: false` path) |
 | `/cache-optimizer compat` with fully-configured model where `sendSessionAffinityHeaders` is enabled | Shows `✅ Compat fully configured.` plus an advisory line about potential CDN/WAF 403 blocking of custom session-affinity headers |
+| Generic proxy model with explicit `sendSessionAffinityHeaders: false` after a 403/CDN block | No `⚠️ compat`; `/cache-optimizer fix` must NOT suggest changing it back to `true` |
 | `/cache-optimizer stats` with model matching an adapter | Output includes model key, request counts, token counts, hit rate, recent trend |
 | `/cache-optimizer stats` with unseen model bucket | Shows 0/0, not legacy family aggregates |
 | `/cache-optimizer stats` with unsupported model (no adapter) | Shows friendly message "No cache-adapter-matched model active" |
