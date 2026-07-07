@@ -1143,14 +1143,14 @@ function isGeminiLikeAssistantMessage(message: unknown, model: PiModel | undefin
  *
  * Adaptive-generation models (from pi-ai built-in catalog) include:
  *   claude-opus-4-6, claude-opus-4-7, claude-opus-4-8 (also dotted 4.6/4.7/4.8)
- *   claude-sonnet-4-6
+ *   claude-sonnet-4-6, claude-sonnet-5
  *   claude-fable-5
  *
  * We match broadly: opus >= 4-6, sonnet >= 4-6, fable >= 5.
  * Ids may carry date-stamp or size suffixes like "[1M]".
  */
-const ADAPTIVE_OPUS_PATTERN = /(^|[\/\s:_-])(opus-4[.-][6-9]|opus-4-[1-9][0-9])($|[-_.:\/\s\[])/i;
-const ADAPTIVE_SONNET_PATTERN = /(^|[\/\s:_-])(sonnet-4[.-][6-9]|sonnet-4-[1-9][0-9])($|[-_.:\/\s\[])/i;
+const ADAPTIVE_OPUS_PATTERN = /(^|[\/\s:_-])(opus-4[.-][6-9]|opus-4-[1-9][0-9]|opus-([5-9]|[1-9][0-9]))($|[-_.:\/\s\[])/i;
+const ADAPTIVE_SONNET_PATTERN = /(^|[\/\s:_-])(sonnet-4[.-][6-9]|sonnet-4-[1-9][0-9]|sonnet-([5-9]|[1-9][0-9]))($|[-_.:\/\s\[])/i;
 const ADAPTIVE_FABLE_PATTERN = /(^|[\/\s:_-])fable-([5-9]|[1-9][0-9])($|[-_.:\/\s\[])/i;
 
 function isAdaptiveGenerationModel(model: PiModel | undefined): boolean {

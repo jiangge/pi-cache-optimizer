@@ -971,8 +971,8 @@ DeepSeek-like models using Pi Mono guidance may also surface `⚠️ compat` whe
 `requiresReasoningContentOnAssistantMessages` or `thinkingFormat: "deepseek"`
 are missing, even when the provider is otherwise not a generic proxy.
 Native Anthropic `anthropic-messages` adaptive-generation models (opus-4.6+,
-sonnet-4.6+, fable-5+) may also surface `⚠️ compat` when merged compat lacks
-`forceAdaptiveThinking: true`.
+sonnet-4.6+ including Sonnet 5, fable-5+) may also surface `⚠️ compat` when
+merged compat lacks `forceAdaptiveThinking: true`.
 
 Rules:
 
@@ -1115,7 +1115,8 @@ Auto-repairs safe compat issues detected for the **current active model only**.
 It covers the same safe defaults shown by doctor/compat:
 
 * Anthropic adaptive thinking: `forceAdaptiveThinking: true` for native
-  `anthropic-messages` opus-4.6+/sonnet-4.6+/fable-5+ models.
+  `anthropic-messages` opus-4.6+/sonnet-4.6+ (including Sonnet 5)/fable-5+
+  models.
 * DeepSeek Pi Mono compat: `thinkingFormat: "deepseek"`,
   `requiresReasoningContentOnAssistantMessages: true`, plus cache/session-affinity
   flags that are part of the DeepSeek safe suggestion.

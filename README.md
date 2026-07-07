@@ -32,7 +32,7 @@ Pi extension for improving provider-side KV / prompt cache hit rates. It keeps s
 - Requests long cache retention when Pi/provider compat supports it.
 - Adds a session-id `prompt_cache_key` fallback for `openai-completions` / `openai-responses` payloads when no effective key exists.
 - Warns once for third-party OpenAI-compatible proxies missing cache/session-affinity compat flags.
-- Detects Anthropic adaptive thinking models (opus-4.6+, sonnet-4.6+, fable-5+) missing `forceAdaptiveThinking: true` compat.
+- Detects Anthropic adaptive thinking models (opus-4.6+, sonnet-4.6+ including Sonnet 5, fable-5+) missing `forceAdaptiveThinking: true` compat.
 - Shows restart-persistent provider/model footer stats for supported model families.
 - Supports optional router-extension integration through versioned global protocols (`Symbol.for("pi.routing.registry.v1")` and `Symbol.for("pi.cache.hints.v1")`) without importing router packages.
 
@@ -111,7 +111,7 @@ Notes:
 
 ## Anthropic adaptive thinking models
 
-Claude models from opus-4.6 / sonnet-4.6 / fable-5 onwards require `forceAdaptiveThinking: true` in compat. Without it, Pi sends the legacy thinking format and Anthropic rejects the request.
+Claude models from opus-4.6 / sonnet-4.6 (including Sonnet 5) / fable-5 onwards require `forceAdaptiveThinking: true` in compat. Without it, Pi sends the legacy thinking format and Anthropic rejects the request.
 
 Pi's built-in catalog already sets this flag for official models. Custom channels in `models.json` that override these models must include the flag:
 
@@ -126,7 +126,7 @@ Pi's built-in catalog already sets this flag for official models. Custom channel
         "forceAdaptiveThinking": true
       },
       "models": [
-        { "id": "claude-opus-4-8", "name": "Claude Opus 4.8" }
+        { "id": "claude-sonnet-5", "name": "Claude Sonnet 5" }
       ]
     }
   }
@@ -140,7 +140,7 @@ Or use model-level override:
   "providers": {
     "your-claude-channel": {
       "modelOverrides": {
-        "claude-opus-4-8": {
+        "claude-sonnet-5": {
           "compat": {
             "forceAdaptiveThinking": true
           }

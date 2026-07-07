@@ -167,3 +167,11 @@
 * **No auto-fix**: `/cache-optimizer fix` intentionally does NOT write `headers.User-Agent`; the correct value is provider/WAF-specific and should be manually tested.
 * **Version**: `package.json` bumped to `2.6.16`.
 * **Validation**: `verify-403-detection.ts` expanded to cover `isOpenAISdkHeader403Applicable`; all existing checks pass.
+
+### Pi 0.80.3 web compatibility scan — Claude Sonnet 5 adaptive thinking (2026-07-07)
+
+* **Web finding**: Pi 0.80.3 release notes add Anthropic Claude Sonnet 5 support and state that Sonnet 5 uses adaptive thinking payloads for Anthropic-compatible and Bedrock requests. Local Pi was 0.80.3 while project-local validation SDK was 0.80.2; `npm install --package-lock=false --no-save @earendil-works/pi-coding-agent@0.80.3` synced local `node_modules` for validation without tracked dependency/lockfile changes.
+* **Problem discovered**: `isAdaptiveGenerationModel` only matched opus 4.6+, sonnet 4.6+, and fable 5+. Custom `anthropic-messages` channels or aliases for `claude-sonnet-5` would not surface `⚠️ compat`, doctor/compat advice, or `/cache-optimizer fix` for missing `forceAdaptiveThinking: true`.
+* **Fix implemented**: Expanded adaptive-generation detection to match Sonnet major versions >=5 (and Opus major versions >=5 for forward compatibility) while preserving older 4.x thresholds and the `anthropic-messages` API gate. README.md, README.zh-CN.md, and the footer-stats spec now mention Sonnet 5.
+* **Version**: `package.json` bumped to `2.6.17` because this is runtime compat/diagnostic behavior.
+* **Validation**: Added `verify-adaptive-thinking-detection.ts` covering Sonnet 5, date/suffix variants, existing adaptive families, configured no-op behavior, older non-adaptive Claude models, and API gating.
