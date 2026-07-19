@@ -142,12 +142,13 @@ const ORION_MODEL_PATTERN = /(^|[\/\s:_-])orion($|[\-_.:\/\s])/i;
 
 type CacheCompat = {
   sendSessionAffinityHeaders?: boolean;
-  sendSessionIdHeader?: boolean;
+  sessionAffinityFormat?: "openai" | "openai-nosession" | "openrouter";
   supportsLongCacheRetention?: boolean;
   thinkingFormat?: string;
   requiresReasoningContentOnAssistantMessages?: boolean;
   cacheControlFormat?: string;
   forceAdaptiveThinking?: boolean;
+  allowEmptySignature?: boolean;
 };
 
 type CacheStats = {
@@ -1159,8 +1160,38 @@ function isAdaptiveGenerationModel(model: PiModel | undefined): boolean {
   return tokens.some((t) => ADAPTIVE_OPUS_PATTERN.test(t) || ADAPTIVE_SONNET_PATTERN.test(t) || ADAPTIVE_FABLE_PATTERN.test(t));
 }
 
+function isKimiCodingAdaptiveModel(model: PiModel | undefined): boolean {
+  if (!model) return false;
+  const provider = lower(model.provider);
+  const baseUrl = lower(model.baseUrl);
+  const isKimiCodingChannel = provider.includes("kimi-coding") || baseUrl.includes("api.kimi.com/coding");
+  if (!isKimiCodingChannel) return false;
+
+  const tokens = getModelIdNameTokenValues(model);
+  return tokens.some((token) =>
+    token === "k3"
+    || token.includes("kimi-k3")
+    || token.includes("kimi k3")
+    || token.includes("kimi-for-coding")
+    || token.includes("kimi for coding")
+  );
+}
+
+function isKimiCodingEmptySignatureModel(model: PiModel | undefined): boolean {
+  if (!isKimiCodingAdaptiveModel(model)) return false;
+  return getModelIdNameTokenValues(model).some((token) =>
+    token === "k3"
+    || token === "kimi-k3"
+    || token.startsWith("kimi-k3-")
+    || token === "kimi k3"
+    || token === "kimi-for-coding"
+    || token === "kimi for coding"
+  );
+}
+
 function isAdaptiveThinkingCompatApplicable(model: PiModel): boolean {
-  return lower(model.api) === "anthropic-messages" && isAdaptiveGenerationModel(model);
+  return lower(model.api) === "anthropic-messages"
+    && (isAdaptiveGenerationModel(model) || isKimiCodingAdaptiveModel(model));
 }
 
 function describeMissingAdaptiveThinkingCompat(model: PiModel): string[] {
@@ -1169,6 +1200,9 @@ function describeMissingAdaptiveThinkingCompat(model: PiModel): string[] {
   if (compat.forceAdaptiveThinking !== true) {
     missing.push("forceAdaptiveThinking");
   }
+  if (isKimiCodingEmptySignatureModel(model) && compat.allowEmptySignature !== true) {
+    missing.push("allowEmptySignature");
+  }
   return missing;
 }
 
@@ -1176,6 +1210,9 @@ function buildAdaptiveThinkingCompatSuggestion(missing: string[]): Record<string
   const suggestion: Record<string, unknown> = {};
   if (missing.includes("forceAdaptiveThinking")) {
     suggestion.forceAdaptiveThinking = true;
+  }
+  if (missing.includes("allowEmptySignature")) {
+    suggestion.allowEmptySignature = true;
   }
   return suggestion;
 }
@@ -1189,6 +1226,9 @@ function appendAdaptiveThinkingCompatAdviceLines(lines: string[], missing: strin
   lines.push("- forceAdaptiveThinking: true tells Pi to use adaptive thinking format");
   lines.push("  (thinking: {type: 'adaptive'}) instead of legacy budget tokens format.");
   lines.push("  Without this flag, Pi sends legacy thinking which adaptive-only upstreams reject.");
+  if (missing.includes("allowEmptySignature")) {
+    lines.push("- allowEmptySignature: true preserves Kimi Coding K3 thinking blocks whose replay signature is empty.");
+  }
   appendCredentialSafeProviderGuidance(lines, placement, suggestion);
 }
 
@@ -1198,8 +1238,8 @@ function buildAdaptiveThinkingCompatWarningText(key: string, missing: string[]):
   const modelId = slashIdx > 0 ? key.slice(slashIdx + 1) : undefined;
   const modelsJsonPath = getModelsJsonDisplayPath();
   const lines: string[] = [
-    `💡 pi-cache-optimizer: ${key} is an adaptive-generation Claude model but merged compat lacks ${missing.join(" and ")}.`,
-    `Without this flag, Pi sends legacy thinking format that may be rejected by the upstream.`,
+    `💡 pi-cache-optimizer: ${key} is an adaptive-generation model but merged compat lacks ${missing.join(" and ")}.`,
+    `Without the required compat, Pi may send legacy thinking or replay thinking blocks incorrectly.`,
     `Edit ${modelsJsonPath} -> providers["${providerLabel}"] -> compat (at the same level as baseUrl/api/apiKey/models).`,
     "",
   ];
@@ -2177,11 +2217,7 @@ function describeMissingDeepSeekCompat(model: PiModel): string[] {
   if (compat.supportsLongCacheRetention !== true) {
     missing.push("supportsLongCacheRetention");
   }
-  if (model.api === "openai-responses") {
-    if (compat.sendSessionIdHeader !== true) {
-      missing.push("sendSessionIdHeader");
-    }
-  } else if (compat.sendSessionAffinityHeaders !== true) {
+  if (model.api !== "openai-responses" && compat.sendSessionAffinityHeaders !== true) {
     missing.push("sendSessionAffinityHeaders");
   }
   if (compat.requiresReasoningContentOnAssistantMessages !== true) {
@@ -2214,9 +2250,6 @@ function buildDeepSeekCompatSuggestion(missing: string[]): Record<string, unknow
   if (missing.includes("supportsLongCacheRetention")) {
     suggestion.supportsLongCacheRetention = true;
   }
-  if (missing.includes("sendSessionIdHeader")) {
-    suggestion.sendSessionIdHeader = true;
-  }
   if (missing.includes("sendSessionAffinityHeaders")) {
     suggestion.sendSessionAffinityHeaders = true;
   }
@@ -2245,9 +2278,6 @@ function appendDeepSeekCompatAdviceLines(lines: string[], missing: string[], pla
   }
   if (missing.includes("sendSessionAffinityHeaders")) {
     lines.push("- sendSessionAffinityHeaders: recommended for OpenAI-compatible DeepSeek proxies when supported; it helps keep one Pi session on the same upstream/backend.");
-  }
-  if (missing.includes("sendSessionIdHeader")) {
-    lines.push("- sendSessionIdHeader: recommended for OpenAI Responses-compatible DeepSeek proxies when supported.");
   }
   if (missing.includes("supportsLongCacheRetention")) {
     lines.push("- supportsLongCacheRetention: enable for DeepSeek-compatible endpoints that support long cache retention.");
@@ -3256,15 +3286,14 @@ function notifyCacheCompatIfNeeded(
   if (!model) return;
 
   // Native anthropic-messages adaptive thinking compat check.
-  // The Claude adapter's warningText only fires for OpenAI-compatible APIs,
-  // so native anthropic-messages models need a separate check.
-  if (lower(model.api) === "anthropic-messages" && isAdaptiveGenerationModel(model)) {
-    const compat = getCompat(model);
-    if (compat.forceAdaptiveThinking !== true) {
+  // Adapter warningText only fires for OpenAI-compatible APIs, so native
+  // Anthropic and Kimi Coding adaptive models need a separate check.
+  if (isAdaptiveThinkingCompatApplicable(model)) {
+    const missing = describeMissingAdaptiveThinkingCompat(model);
+    if (missing.length > 0) {
       const key = `adaptive-thinking:${modelKey(model)}`;
       if (!warnedModels.has(key)) {
         warnedModels.add(key);
-        const missing = describeMissingAdaptiveThinkingCompat(model);
         ctx.ui.notify(buildAdaptiveThinkingCompatWarningText(modelKey(model), missing), "warning");
       }
     }
@@ -3930,16 +3959,16 @@ function isPromptCacheRetention400Applicable(model: PiModel): boolean {
 /**
  * Whether the 403 sendSessionAffinityHeaders diagnostic applies to a model.
  *
- * Pi's openai-completions / openai-responses adapters send three custom HTTP
- * headers (session_id, x-client-request-id, x-session-affinity) when
- * `sendSessionAffinityHeaders` is enabled. Some third-party proxies / CDNs /
- * WAFs block these custom headers and return HTTP 403 "Your request was
- * blocked". This guard returns true only for OpenAI-compatible APIs whose
- * merged compat currently enables session-affinity headers, so the 403
- * monitoring and doctor/fix paths can advise disabling the flag.
+ * Pi's openai-completions adapter sends custom HTTP headers (session_id,
+ * x-client-request-id, x-session-affinity) when `sendSessionAffinityHeaders`
+ * is enabled. Some third-party proxies / CDNs / WAFs block these headers and
+ * return HTTP 403 "Your request was blocked". Pi 0.80.7+ no longer uses this
+ * flag for openai-responses; Responses header shape is controlled by
+ * `sessionAffinityFormat`. This guard therefore applies only to
+ * openai-completions, where doctor/fix can safely advise disabling the flag.
  */
 function isSessionAffinity403Applicable(model: PiModel): boolean {
-  if (!isOpenAICompatibleApi(model.api)) return false;
+  if (!isOpenAICompatibleProxyApi(model.api)) return false;
   return getCompat(model).sendSessionAffinityHeaders === true;
 }
 
@@ -5290,7 +5319,6 @@ function deepEqualIgnoringKeys(a: unknown, b: unknown, extraKeys: string[]): boo
  */
 const PROVIDER_LEVEL_SAFE_COMPAT_KEYS = new Set<string>([
   "sendSessionAffinityHeaders",
-  "sendSessionIdHeader",
   "supportsLongCacheRetention",
 ]);
 
@@ -5304,9 +5332,10 @@ function syntheticModelForId(providerLabel: string, id: string): PiModel {
  * Strategy (auto-detect, prefer provider level when safe):
  * - Channel-capability keys (session affinity / long retention) are always
  *   provider-safe.
- * - Model-behavior keys (forceAdaptiveThinking, thinkingFormat, ...) are
- *   provider-safe ONLY when every sibling model in the provider also matches
- *   the same detection (all adaptive-generation / all DeepSeek-like).
+ * - Model-behavior keys (forceAdaptiveThinking, allowEmptySignature,
+ *   thinkingFormat, ...) are provider-safe ONLY when every sibling model in
+ *   the provider also matches the same detection (all adaptive-generation /
+ *   Kimi Coding adaptive / DeepSeek-like).
  * - Single-model providers: provider level is equivalent — prefer it.
  * - Any unsafe key → fall back to model level (single write, smallest blast radius).
  */
@@ -5329,8 +5358,16 @@ function decideFixPlacement(
     if (PROVIDER_LEVEL_SAFE_COMPAT_KEYS.has(key)) continue;
 
     if (key === "forceAdaptiveThinking") {
-      const allAdaptive = siblings.every((id) => isAdaptiveGenerationModel(syntheticModelForId(providerLabel, id)));
+      const allAdaptive = siblings.every((id) => {
+        const sibling = syntheticModelForId(providerLabel, id);
+        return isAdaptiveGenerationModel(sibling) || isKimiCodingAdaptiveModel(sibling);
+      });
       if (!allAdaptive) unsafeKeys.push(key);
+      continue;
+    }
+    if (key === "allowEmptySignature") {
+      const allKimiCodingAdaptive = siblings.every((id) => isKimiCodingAdaptiveModel(syntheticModelForId(providerLabel, id)));
+      if (!allKimiCodingAdaptive) unsafeKeys.push(key);
       continue;
     }
     if (key === "thinkingFormat" || key === "requiresReasoningContentOnAssistantMessages") {
@@ -5935,6 +5972,8 @@ export const __internals_for_tests = {
   buildFixSuggestion,
   // Adaptive thinking compat helpers
   isAdaptiveGenerationModel,
+  isKimiCodingAdaptiveModel,
+  isKimiCodingEmptySignatureModel,
   isAdaptiveThinkingCompatApplicable,
   describeMissingAdaptiveThinkingCompat,
   buildAdaptiveThinkingCompatSuggestion,

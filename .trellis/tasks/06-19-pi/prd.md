@@ -175,3 +175,21 @@
 * **Fix implemented**: Expanded adaptive-generation detection to match Sonnet major versions >=5 (and Opus major versions >=5 for forward compatibility) while preserving older 4.x thresholds and the `anthropic-messages` API gate. README.md, README.zh-CN.md, and the footer-stats spec now mention Sonnet 5.
 * **Version**: `package.json` bumped to `2.6.17` because this is runtime compat/diagnostic behavior.
 * **Validation**: Added `verify-adaptive-thinking-detection.ts` covering Sonnet 5, date/suffix variants, existing adaptive families, configured no-op behavior, older non-adaptive Claude models, and API gating.
+
+### Pi 0.80.10 compatibility scan — Kimi K3 and Responses session affinity (2026-07-19)
+
+* **Versions checked**: Global Pi is `0.80.10`; project-local validation SDK was `0.80.6` and was synced with `npm install --package-lock=false --no-save @earendil-works/pi-coding-agent@0.80.10`. No tracked dependency or lockfile change was produced.
+* **Official Pi findings**:
+  * Pi 0.80.9 adds Kimi K3 to Kimi Coding, Moonshot AI / China, OpenRouter, and Vercel AI Gateway catalogs, plus Kimi deferred-tool serialization for OpenAI-compatible Chat Completions.
+  * Pi 0.80.10 fixes Kimi Coding adaptive thinking, empty-signature thinking replay for K3 and `kimi-for-coding`, K3 `max` thinking metadata, and Moonshot pricing.
+  * Pi 0.80.7 removes `compat.sendSessionIdHeader` for `openai-responses`; Pi now uses `sessionAffinityFormat` and auto-detects the default.
+  * Pi 0.80.8 changes SDK `ModelRuntime`, but preserves the synchronous extension-facing `ModelRegistry` API. This extension does not call the newly async `modelRegistry.refresh()`, so no ModelRuntime migration is needed.
+* **Existing behavior retained**: Kimi K3 names already match the Kimi footer adapter, and Moonshot/OpenRouter K3 variants continue through the generic OpenAI-compatible proxy/cache path. Deferred tool loading is owned by Pi/model compat and does not require this extension to register or manage tools.
+* **Runtime fixes implemented**:
+  1. Added narrowly gated Kimi Coding adaptive compat detection for `anthropic-messages` K3 / `kimi-for-coding` channels. Missing `forceAdaptiveThinking: true` and `allowEmptySignature: true` now surface in footer/doctor/compat and `/cache-optimizer fix`.
+  2. Kept Vercel and other non-Kimi-Coding `anthropic-messages` K3 variants out of this diagnostic, matching Pi's generated catalog and avoiding false warnings.
+  3. Removed all diagnosis/fix output for obsolete `sendSessionIdHeader`; DeepSeek `openai-responses` now leaves session-affinity format to Pi 0.80.7+.
+  4. Restricted the `sendSessionAffinityHeaders` 403 diagnostic to `openai-completions`, because Pi 0.80.7+ `openai-responses` no longer consumes that flag.
+* **Docs/spec**: Updated README.md, README.zh-CN.md, and the footer-stats contract for Kimi K3 and Pi 0.80.7+ session-affinity semantics.
+* **Version**: Bumped package version to `2.6.18` because this changes runtime compat diagnosis and auto-fix behavior.
+* **Validation**: Added `verify-kimi-k3-pi-08010.ts`; updated `verify-403-detection.ts`; full task verification, TypeScript, diff, package dry-run, and Trellis task validation pass.

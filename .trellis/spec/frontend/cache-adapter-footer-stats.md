@@ -205,7 +205,7 @@ adapter-aware and MUST include:
 
 * `supportsLongCacheRetention: true` when absent.
 * `sendSessionAffinityHeaders: true` for `openai-completions` when absent.
-* `sendSessionIdHeader: true` for `openai-responses` when absent.
+* For `openai-responses`, Pi 0.80.7+ uses `sessionAffinityFormat` (`openai`, `openai-nosession`, or `openrouter`) and auto-detects the default. The extension MUST NOT diagnose or write the removed `sendSessionIdHeader` field.
 * `requiresReasoningContentOnAssistantMessages: true` when absent.
 * `thinkingFormat: "deepseek"` when absent or different.
 
@@ -426,7 +426,7 @@ and removing `_nosession`.
 | Model id/name looks GPT-like or Kimi/Qwen/GLM/MiniMax/Mimo/Hunyuan-like but API is a custom transport (e.g. `kiro-api`) | Do not add OpenAI `prompt_cache_key`; do not assume compat layers reach custom transports. |
 | Third-party `openai-completions` proxy (GPT, Kimi, Qwen, GLM, MiniMax, Mimo, Hunyuan, etc.) missing cache/session-affinity compat | Warn once per model with a copyable `compat` suggestion; do not edit `models.json`. |
 | DeepSeek-like `openai-completions` model missing Pi Mono reasoning compat | Warn once; `/cache-optimizer doctor` and `/cache-optimizer compat` include copyable JSON with `requiresReasoningContentOnAssistantMessages: true` and `thinkingFormat: "deepseek"` plus any missing cache/session-affinity flags; do not edit `models.json`. |
-| DeepSeek-like `openai-responses` model missing response session header compat | Warn once with `sendSessionIdHeader: true` rather than `sendSessionAffinityHeaders: true`, plus DeepSeek reasoning compat when missing. |
+| DeepSeek-like `openai-responses` model on Pi 0.80.7+ | Diagnose DeepSeek reasoning/retention compat only; do not suggest the removed `sendSessionIdHeader`. Pi owns response session-affinity header selection through `sessionAffinityFormat` and its auto-detected default. |
 | Old stats path exists, new stats path missing | Read old v1/v2/v3 data, write the new path atomically in v6 shape, best-effort `unlink` old. v2 `statsByProvider` data moves to `legacyFamily`; v3 unscoped model keys are assigned to the current session and totals are derived. |
 | New v2 stats file exists | Load v2 `statsByProvider` into `legacyFamily`; start with empty session stats/totals; next write persists v6. |
 | New v3 stats file has entries for `otokapi/gpt-5.5` and `cafecode/gpt-5.5` | Migrate both unscoped keys into the current session hash and derive separate provider/model totals, even though both use the OpenAI-family footer label. |
@@ -569,7 +569,7 @@ task-level verification script that asserts:
   returns correct results for id/name matches and non-matches, assistant message
   matching is role-gated, and compat warnings use the broadened
   `describeMissingOpenAICompatibleProxyCompat`.
-* 403 session-affinity header detection: `isSessionAffinity403Applicable` returns true only for OpenAI-compatible APIs (`openai-completions` / `openai-responses`) with merged compat `sendSessionAffinityHeaders === true`; returns false for custom transports (`kiro-api`, `anthropic-messages`) and for merged `false`/missing values; explicit `sendSessionAffinityHeaders: false` is accepted as a safe opt-out and must not keep `⚠️ compat` active or make `/cache-optimizer fix` suggest `true`; the `after_provider_response` 403 path records a one-time model-scoped warning and surfaces it in doctor/fix. `isOpenAISdkHeader403Applicable` returns true for third-party OpenAI-compatible proxies after session affinity is disabled/absent, records a read-only OpenAI SDK User-Agent / `X-Stainless-*` WAF diagnostic, and must not add an auto-fix path; existing 400 `prompt_cache_retention` behavior and all prior verify scripts remain green.
+* 403 session-affinity header detection: `isSessionAffinity403Applicable` returns true only for `openai-completions` with merged compat `sendSessionAffinityHeaders === true`; returns false for Pi 0.80.7+ `openai-responses` (which uses `sessionAffinityFormat` instead), custom transports (`kiro-api`, `anthropic-messages`), and merged `false`/missing values. Explicit `sendSessionAffinityHeaders: false` is accepted as a safe opt-out and must not keep `⚠️ compat` active or make `/cache-optimizer fix` suggest `true`; the `after_provider_response` 403 path records a one-time model-scoped warning and surfaces it in doctor/fix. `isOpenAISdkHeader403Applicable` returns true for third-party `openai-completions` proxies after session affinity is disabled/absent, records a read-only OpenAI SDK User-Agent / `X-Stainless-*` WAF diagnostic, and must not add an auto-fix path; existing 400 `prompt_cache_retention` behavior and all prior verify scripts remain green.
 
 ---
 
@@ -970,9 +970,11 @@ OpenAI cache 0/0 · 0M/0M tok ⚠️ compat
 DeepSeek-like models using Pi Mono guidance may also surface `⚠️ compat` when
 `requiresReasoningContentOnAssistantMessages` or `thinkingFormat: "deepseek"`
 are missing, even when the provider is otherwise not a generic proxy.
-Native Anthropic `anthropic-messages` adaptive-generation models (opus-4.6+,
-sonnet-4.6+ including Sonnet 5, fable-5+) may also surface `⚠️ compat` when
-merged compat lacks `forceAdaptiveThinking: true`.
+Native `anthropic-messages` adaptive-generation models may also surface
+`⚠️ compat`: Claude opus-4.6+, sonnet-4.6+ including Sonnet 5, and fable-5+
+require `forceAdaptiveThinking: true`; Kimi Coding K3 / `kimi-for-coding`
+require `forceAdaptiveThinking: true` and `allowEmptySignature: true` for
+empty-signature thinking replay.
 
 Rules:
 
@@ -985,8 +987,9 @@ Rules:
   For generic OpenAI-compatible proxies this delegates to
   `describeMissingOpenAICompatibleProxyCompat`; for DeepSeek-like models it
   delegates to `describeMissingDeepSeekCompat` and includes Pi Mono reasoning
-  compat fields; for native Anthropic adaptive-generation models it delegates to
-  `describeMissingAdaptiveThinkingCompat` and includes `forceAdaptiveThinking`.
+  compat fields; for native `anthropic-messages` adaptive-generation models it
+  delegates to `describeMissingAdaptiveThinkingCompat` and includes
+  `forceAdaptiveThinking`, plus `allowEmptySignature` for Kimi Coding K3.
 * Official OpenAI base URLs (`api.openai.com`) never trigger the marker.
 * Custom transports (`kiro-api`, `bedrock-converse-stream`, etc.) never trigger the marker.
   `anthropic-messages` is the narrow exception above, only for adaptive-generation
@@ -1114,9 +1117,10 @@ only the status line as before.
 Auto-repairs safe compat issues detected for the **current active model only**.
 It covers the same safe defaults shown by doctor/compat:
 
-* Anthropic adaptive thinking: `forceAdaptiveThinking: true` for native
-  `anthropic-messages` opus-4.6+/sonnet-4.6+ (including Sonnet 5)/fable-5+
-  models.
+* Adaptive thinking: `forceAdaptiveThinking: true` for native
+  `anthropic-messages` Claude opus-4.6+/sonnet-4.6+ (including Sonnet 5)/
+  fable-5+ and Kimi Coding K3 / `kimi-for-coding`; the Kimi Coding models also
+  get `allowEmptySignature: true`.
 * DeepSeek Pi Mono compat: `thinkingFormat: "deepseek"`,
   `requiresReasoningContentOnAssistantMessages: true`, plus cache/session-affinity
   flags that are part of the DeepSeek safe suggestion.
@@ -1245,7 +1249,8 @@ compat). It does NOT read or expose:
 | Scenario | Expected behavior |
 |---|---|
 | `/cache-optimizer doctor` with generic proxy missing session affinity | Output includes `Missing compat flags: sendSessionAffinityHeaders`, a copyable safe JSON suggestion with `sendSessionAffinityHeaders: true`, the `~/.pi/agent/models.json -> providers["<id>"]` path, optional/risky guidance for `supportsLongCacheRetention`, and credential-safe guidance that keeps existing authentication as-is while placing only compat overrides in `models.json` |
-| `/cache-optimizer doctor` with DeepSeek-like Pi Mono model missing reasoning compat | Output includes missing `requiresReasoningContentOnAssistantMessages` and `thinkingFormat`, plus copyable JSON with `requiresReasoningContentOnAssistantMessages: true` and `thinkingFormat: "deepseek"`. |
+| `/cache-optimizer doctor` with DeepSeek-like Pi Mono model missing reasoning compat | Output includes missing `requiresReasoningContentOnAssistantMessages` and `thinkingFormat`, plus copyable JSON with `requiresReasoningContentOnAssistantMessages: true` and `thinkingFormat: "deepseek"`. For `openai-responses`, it does not suggest removed `sendSessionIdHeader`; Pi 0.80.7+ owns header shape through `sessionAffinityFormat`. |
+| Kimi Coding K3 custom `anthropic-messages` model missing adaptive compat | Footer/doctor/compat show missing `forceAdaptiveThinking` and `allowEmptySignature`; `/cache-optimizer fix` suggests both at model scope when sibling models are mixed. Moonshot/OpenRouter K3 variants on `openai-completions` remain in the Kimi/proxy path and do not receive Kimi Coding adaptive compat. |
 | `/cache-optimizer compat` with DeepSeek-like Pi Mono model missing reasoning compat | Shows the same DeepSeek-specific JSON suggestion and edit location; custom transports still show not-applicable. |
 | `/cache-optimizer doctor` without an active model | Notification: "No active model selected" |
 | `/cache-optimizer doctor` with applicable fully-configured model | Shows `✅ Compat fully configured.` (without "(or not applicable)") |
@@ -1273,7 +1278,7 @@ compat). It does NOT read or expose:
 | Router/channel diagnostics do not affect adapter selection | An OpenRouter Llama model still selects the Llama adapter, not an "OpenRouter" adapter |
 | Diagnostic text must not expose API keys, prompts, payloads, or model output | All router/channel output uses only provider, api, baseUrl, compat metadata |
 | Third-party OpenAI-compatible proxy (`openai-completions` or `openai-responses`) returns HTTP 400 while `supportsLongCacheRetention` is enabled | Extension records a one-time model-scoped warning and `/cache-optimizer doctor` surfaces the `prompt_cache_retention` recovery hint |
-| Third-party OpenAI-compatible proxy returns HTTP 403 while `sendSessionAffinityHeaders` is enabled | Extension records a one-time model-scoped warning (`sendSessionAffinityHeaders403Models`) and `/cache-optimizer doctor` surfaces the session-affinity 403 hint with `/cache-optimizer fix` offering `sendSessionAffinityHeaders: false` |
+| Third-party `openai-completions` proxy returns HTTP 403 while `sendSessionAffinityHeaders` is enabled | Extension records a one-time model-scoped warning (`sendSessionAffinityHeaders403Models`) and `/cache-optimizer doctor` surfaces the session-affinity 403 hint with `/cache-optimizer fix` offering `sendSessionAffinityHeaders: false`. Pi 0.80.7+ `openai-responses` is excluded because it uses `sessionAffinityFormat`. |
 | `/cache-optimizer doctor` with session-affinity enabled but no 403 observed | Shows advisory text that some CDNs/WAFs block custom headers (session_id, x-client-request-id, x-session-affinity) and return 403 |
 | `/cache-optimizer fix` with 403-observed OpenAI-compatible model | Offers `sendSessionAffinityHeaders: false` as the compat-key suggestion (mirror of the 400 `supportsLongCacheRetention: false` path) |
 | `/cache-optimizer compat` with fully-configured model where `sendSessionAffinityHeaders` is enabled | Shows `✅ Compat fully configured.` plus an advisory line about potential CDN/WAF 403 blocking of custom session-affinity headers |

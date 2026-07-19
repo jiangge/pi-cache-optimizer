@@ -11,7 +11,8 @@
  *   - openai-completions + sendSessionAffinityHeaders: true → applicable
  *   - openai-completions + sendSessionAffinityHeaders: false → not applicable
  *   - openai-completions + sendSessionAffinityHeaders: missing → not applicable
- *   - openai-responses + sendSessionAffinityHeaders: true → applicable
+ *   - openai-responses + legacy sendSessionAffinityHeaders: true → not applicable
+ *     on Pi 0.80.7+ (Responses uses sessionAffinityFormat instead)
  *   - kiro-api (custom transport) → not applicable (regardless of flag)
  *   - anthropic-messages → not applicable (regardless of flag)
  *   - official OpenAI base URL → not applicable (session-affinity headers are
@@ -104,15 +105,15 @@ function mkModel(
   );
 }
 
-// ── Case 4: openai-responses + sendSessionAffinityHeaders: true → applicable ──
+// ── Case 4: openai-responses ignores the legacy flag on Pi 0.80.7+ ──
 {
   const model = mkModel("myproxy", "gpt-5.5", "openai-responses", {
-    sendSessionIdHeader: false, // openai-responses uses sendSessionIdHeader, not sendSessionAffinityHeaders
     sendSessionAffinityHeaders: true,
+    sessionAffinityFormat: "openai",
   }, "https://proxy.example.com/v1");
   check(
-    "openai-responses + sendSessionAffinityHeaders: true → applicable",
-    isSessionAffinity403Applicable(model) === true,
+    "openai-responses + legacy sendSessionAffinityHeaders: true → NOT applicable",
+    isSessionAffinity403Applicable(model) === false,
   );
 }
 

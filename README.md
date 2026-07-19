@@ -17,7 +17,7 @@ Pi extension for improving provider-side KV / prompt cache hit rates. It keeps s
 - [Commands](#commands)
 - [Persistent opt-out](#persistent-opt-out)
 - [OpenAI-compatible proxy setup](#openai-compatible-proxy-setup)
-- [Anthropic adaptive thinking models](#anthropic-adaptive-thinking-models)
+- [Adaptive thinking models](#adaptive-thinking-models)
 - [Auto-repair with `/cache-optimizer fix`](#auto-repair-with-cache-optimizer-fix)
 - [Footer stats](#footer-stats)
 - [For router / virtual-channel extension authors](#for-router--virtual-channel-extension-authors)
@@ -32,7 +32,7 @@ Pi extension for improving provider-side KV / prompt cache hit rates. It keeps s
 - Requests long cache retention when Pi/provider compat supports it.
 - Adds a session-id `prompt_cache_key` fallback for `openai-completions` / `openai-responses` payloads when no effective key exists.
 - Warns once for third-party OpenAI-compatible proxies missing cache/session-affinity compat flags.
-- Detects Anthropic adaptive thinking models (opus-4.6+, sonnet-4.6+ including Sonnet 5, fable-5+) missing `forceAdaptiveThinking: true` compat.
+- Detects adaptive-thinking compat for Claude (opus-4.6+, sonnet-4.6+ including Sonnet 5, fable-5+) and Kimi Coding K3 / `kimi-for-coding` custom channels.
 - Shows restart-persistent provider/model footer stats for supported model families.
 - Supports optional router-extension integration through versioned global protocols (`Symbol.for("pi.routing.registry.v1")` and `Symbol.for("pi.cache.hints.v1")`) without importing router packages.
 
@@ -109,9 +109,9 @@ Notes:
 - For DeepSeek models, the Pi Mono guidance expects `compat.requiresReasoningContentOnAssistantMessages: true` and `compat.thinkingFormat: "deepseek"` alongside cache/session-affinity flags when the endpoint supports them.
 - This extension's `doctor` and `compat` commands only advise; they do not modify `models.json`.
 
-## Anthropic adaptive thinking models
+## Adaptive thinking models
 
-Claude models from opus-4.6 / sonnet-4.6 (including Sonnet 5) / fable-5 onwards require `forceAdaptiveThinking: true` in compat. Without it, Pi sends the legacy thinking format and Anthropic rejects the request.
+Claude models from opus-4.6 / sonnet-4.6 (including Sonnet 5) / fable-5 onwards require `forceAdaptiveThinking: true` in compat. Kimi Coding K3 (`k3`) and `kimi-for-coding` also use adaptive thinking and need `allowEmptySignature: true` so replayed empty-signature thinking blocks remain valid. Without the required compat, Pi may send a legacy thinking payload or replay thinking incorrectly.
 
 Pi's built-in catalog already sets this flag for official models. Custom channels in `models.json` that override these models must include the flag:
 
@@ -151,15 +151,36 @@ Or use model-level override:
 }
 ```
 
+For Kimi Coding K3 custom channels, use model-level compat when the provider contains mixed models:
+
+```json
+{
+  "providers": {
+    "your-kimi-coding-channel": {
+      "modelOverrides": {
+        "k3": {
+          "compat": {
+            "forceAdaptiveThinking": true,
+            "allowEmptySignature": true
+          }
+        }
+      }
+    }
+  }
+}
+```
+
+Pi 0.80.9+ already includes Kimi K3 in built-in Kimi Coding, Moonshot AI / China, OpenRouter, and Vercel AI Gateway catalogs. The Moonshot/OpenRouter variants use their OpenAI-compatible transport and continue through the normal Kimi footer/proxy path; the adaptive compat above applies only to `anthropic-messages` Kimi Coding channels.
+
 `/cache-optimizer doctor` and `/cache-optimizer compat` detect missing flags and show copyable JSON.
 
 ## Auto-repair with `/cache-optimizer fix`
 
 **v2.6.0+** adds a `fix` subcommand that can auto-repair safe compat issues:
 
-- Anthropic adaptive thinking (`forceAdaptiveThinking: true`)
+- Adaptive thinking (`forceAdaptiveThinking: true`; Kimi Coding K3 / `kimi-for-coding` also `allowEmptySignature: true`)
 - DeepSeek Pi Mono reasoning compat (`thinkingFormat: "deepseek"`, `requiresReasoningContentOnAssistantMessages: true`)
-- OpenAI-compatible proxy session affinity (`sendSessionAffinityHeaders: true` for `openai-completions`, `sendSessionIdHeader: true` for `openai-responses`)
+- OpenAI-compatible proxy session affinity (`sendSessionAffinityHeaders: true` for `openai-completions`). Pi 0.80.7+ controls `openai-responses` header shape with `sessionAffinityFormat` and auto-detects its default; this extension no longer writes the removed `sendSessionIdHeader` field.
 
 **Scope:** only the currently active model. Other channels require switching models and running `fix` again.
 
