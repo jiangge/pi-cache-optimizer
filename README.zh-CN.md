@@ -8,7 +8,7 @@
 
 用于提升 Pi 中 provider 侧 KV Cache / Prompt Cache 命中率的扩展：把稳定 prompt 内容前置，给 OpenAI-compatible 请求补保守的 `prompt_cache_key`，提示代理渠道常见缓存路由兼容问题，并在底部显示只读缓存统计。
 
-> 本包已从 `pi-deepseek-cache-optimizer` 改名。已有底部统计会自动迁移。正常运行时扩展不会触碰你的 `~/.pi/agent/models.json`；只有 `/cache-optimizer fix` 会在展示交互式预览、风险提示并得到明确确认后写入，且会先创建带时间戳的自动备份。
+> 本包已从 `pi-deepseek-cache-optimizer` 改名。已有底部统计会自动迁移。正常运行时扩展不会触碰 Pi 的 `models.json`（默认 `~/.pi/agent/models.json`；自定义 agent 目录使用 `PI_CODING_AGENT_DIR`）；只有 `/cache-optimizer fix` 会在展示交互式预览、风险提示并得到明确确认后写入，且会先创建带时间戳的自动备份。
 
 ## 目录
 
@@ -30,7 +30,7 @@
 - 将稳定的 system prompt 内容移动到动态上下文之前。
 - 压缩 Pi skill 列表，并移除 session-overview 中的易变字段。
 - 在 Pi / provider compat 支持时请求长缓存保留。
-- 对 `openai-completions` / `openai-responses` 请求，在没有有效 key 时使用 Pi session id 补 `prompt_cache_key`。
+- 对 `openai-completions` / `openai-responses` 请求，在没有有效 key 时使用 Pi session id 补 `prompt_cache_key`（Pi 本地 `llama.cpp` provider 除外，因为代理 cache-key 语义不适用）。
 - 对缺少缓存 / session-affinity compat 的第三方 OpenAI-compatible 代理给出一次性提醒。
 - 检测 Claude（opus-4.6+、sonnet-4.6+ 含 Sonnet 5、fable-5+）以及 Kimi Coding K3 / `kimi-for-coding` 自定义渠道的 adaptive-thinking compat。
 - 为支持的模型家族显示可跨 Pi 进程 / 终端重启延续的 provider/model footer 缓存统计。
@@ -80,7 +80,11 @@ Pi 0.79.7 及之后，`pi update` 默认只更新 Pi 本体。若要更新已安
 
 ## OpenAI-compatible 代理配置
 
-LiteLLM / OneAPI / NewAPI / 类 OpenRouter 渠道等第三方 `openai-completions` 代理，常会把同一个 session 分散到多个上游后端，导致 provider 侧 prompt cache 被拆散。建议先启用 session affinity：
+LiteLLM / OneAPI / NewAPI / 类 OpenRouter 渠道等第三方 `openai-completions` 代理，常会把同一个 session 分散到多个上游后端，导致 provider 侧 prompt cache 被拆散。
+
+Pi 0.81+ 也内置了使用 OpenAI-shaped transport 的本地 `llama.cpp` provider。它是本地单后端服务器，不是第三方路由代理，因此本扩展会对 provider `llama.cpp` 跳过 `prompt_cache_key` / long-retention fallback、proxy compat 提醒、`/cache-optimizer fix` 以及 403 session-affinity 诊断。
+
+对真正的代理，建议先启用 session affinity：
 
 ```json
 {
@@ -199,7 +203,7 @@ Pi 0.80.9+ 已在内置 Kimi Coding、Moonshot AI / 中国区、OpenRouter 和 V
 
 ### 没有 `models.json` provider entry 的渠道
 
-有些 Pi 渠道可用时，`~/.pi/agent/models.json` 里可能还没有对应 provider block。保留现有认证方式，不要复制 credential、token 或 API key。只在 `models.json` 里添加缓存 / 路由兼容覆盖。
+有些 Pi 渠道可用时，Pi agent `models.json`（默认 `~/.pi/agent/models.json`；若设置了 `PI_CODING_AGENT_DIR`，则为 `$PI_CODING_AGENT_DIR/models.json`）里可能还没有对应 provider block。保留现有认证方式，不要复制 credential、token 或 API key。只在 `models.json` 里添加缓存 / 路由兼容覆盖。
 
 Provider 级最小 override：
 
@@ -235,7 +239,7 @@ Provider 级最小 override：
 
 ## Footer 统计
 
-统计是只读本地计数，保存在 `~/.pi/agent/pi-cache-optimizer-stats.json`，按 provider/model 作为 footer 展示维度，因此同一个渠道/模型在 Pi 进程或终端重启后会延续今天的统计。文件也保留 hashed session buckets，用于迁移和 reload 记录。文件只包含日期和数字计数，不包含 API key、prompt、payload、headers、响应或模型输出。
+统计是只读本地计数，保存在 Pi agent 目录（默认 `~/.pi/agent/pi-cache-optimizer-stats.json`；自定义 agent 目录使用 `PI_CODING_AGENT_DIR`），按 provider/model 作为 footer 展示维度，因此同一个渠道/模型在 Pi 进程或终端重启后会延续今天的统计。文件也保留 hashed session buckets，用于迁移和 reload 记录。文件只包含日期和数字计数，不包含 API key、prompt、payload、headers、响应或模型输出。
 
 Pi 0.79+ 已内置 footer `CH` 标记，用于显示最近一次 prompt cache hit rate。本扩展在此基础上补充持久化的 provider/model 计数，以及代理 compat 诊断。
 
@@ -364,7 +368,7 @@ const hints = (globalThis as Record<symbol, any>)[CACHE_HINTS]?.getHints?.({
 pi remove npm:pi-cache-optimizer
 ```
 
-然后运行 `/reload` 或重启 Pi。可选：删除本地统计文件：
+然后运行 `/reload` 或重启 Pi。可选：删除本地统计文件（如果使用 `PI_CODING_AGENT_DIR`，请删除该目录中的同名文件）：
 
 | 平台 | 删除本地统计文件 |
 |---|---|

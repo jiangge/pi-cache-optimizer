@@ -50,7 +50,8 @@ Primary hooks/events:
 
 ### `after_provider_response`
 
-- Record model-scoped 400 hints only for applicable prompt-cache-retention failures.
+- Record model-scoped 400 hints only for applicable prompt-cache-retention failures; local `llama.cpp` is excluded.
+- Record model-scoped 403 hints only for applicable third-party OpenAI-compatible proxy failures (session-affinity headers or OpenAI SDK header/User-Agent diagnostics). Local `llama.cpp` and custom transports are excluded.
 - Do not log payloads, headers, prompts, or credentials.
 
 ### `message_end`

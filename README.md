@@ -8,7 +8,7 @@
 
 Pi extension for improving provider-side KV / prompt cache hit rates. It keeps stable prompt content near the front, adds a conservative OpenAI-compatible `prompt_cache_key` fallback, warns about common proxy cache-routing gaps, and shows read-only footer cache stats.
 
-> Renamed from `pi-deepseek-cache-optimizer`. Existing footer counters migrate automatically. The extension does **not** touch `~/.pi/agent/models.json` during normal operation; only `/cache-optimizer fix` can edit it, and only after an explicit interactive preview + confirmation with an automatic timestamped backup.
+> Renamed from `pi-deepseek-cache-optimizer`. Existing footer counters migrate automatically. The extension does **not** touch Pi's `models.json` during normal operation (default: `~/.pi/agent/models.json`; custom agent dirs use `PI_CODING_AGENT_DIR`); only `/cache-optimizer fix` can edit it, and only after an explicit interactive preview + confirmation with an automatic timestamped backup.
 
 ## Contents
 
@@ -30,7 +30,7 @@ Pi extension for improving provider-side KV / prompt cache hit rates. It keeps s
 - Reorders stable system-prompt content before dynamic context.
 - Compresses Pi skill listings and strips session-overview churn.
 - Requests long cache retention when Pi/provider compat supports it.
-- Adds a session-id `prompt_cache_key` fallback for `openai-completions` / `openai-responses` payloads when no effective key exists.
+- Adds a session-id `prompt_cache_key` fallback for `openai-completions` / `openai-responses` payloads when no effective key exists (except Pi's local `llama.cpp` provider, where proxy cache-key semantics do not apply).
 - Warns once for third-party OpenAI-compatible proxies missing cache/session-affinity compat flags.
 - Detects adaptive-thinking compat for Claude (opus-4.6+, sonnet-4.6+ including Sonnet 5, fable-5+) and Kimi Coding K3 / `kimi-for-coding` custom channels.
 - Shows restart-persistent provider/model footer stats for supported model families.
@@ -80,7 +80,11 @@ On Pi 0.79.7 and newer, `pi update` updates Pi itself only. To update installed 
 
 ## OpenAI-compatible proxy setup
 
-Third-party `openai-completions` proxies (LiteLLM / OneAPI / NewAPI / OpenRouter-like channels) often route one session across multiple upstream backends. That splits provider-side prompt caches. Start with session affinity:
+Third-party `openai-completions` proxies (LiteLLM / OneAPI / NewAPI / OpenRouter-like channels) often route one session across multiple upstream backends. That splits provider-side prompt caches.
+
+Pi 0.81+ also has a built-in local `llama.cpp` provider using an OpenAI-shaped transport. It is a local single-backend server, not a third-party routing proxy, so this extension deliberately skips `prompt_cache_key` / long-retention fallback, proxy compat warnings, `/cache-optimizer fix`, and 403 session-affinity diagnostics for provider `llama.cpp`.
+
+For real proxies, start with session affinity:
 
 ```json
 {
@@ -199,7 +203,7 @@ Pi 0.80.9+ already includes Kimi K3 in built-in Kimi Coding, Moonshot AI / China
 
 ### Channels without a `models.json` provider entry
 
-Some Pi channels may be available even when there is no provider block in `~/.pi/agent/models.json` yet. Keep existing authentication as-is and do not copy credentials, tokens, or API keys. Add only cache/routing compatibility overrides in `models.json`.
+Some Pi channels may be available even when there is no provider block in Pi's agent `models.json` yet (default: `~/.pi/agent/models.json`; with `PI_CODING_AGENT_DIR`, use `$PI_CODING_AGENT_DIR/models.json`). Keep existing authentication as-is and do not copy credentials, tokens, or API keys. Add only cache/routing compatibility overrides in `models.json`.
 
 Provider-level minimal override:
 
@@ -235,7 +239,7 @@ If only one model should change, use `modelOverrides`:
 
 ## Footer stats
 
-Stats are read-only local counters stored at `~/.pi/agent/pi-cache-optimizer-stats.json` and keyed by provider/model, so the same channel/model keeps today's footer counters after a Pi process or terminal restart. The file also keeps hashed session buckets for migration/reload bookkeeping. It contains only dates and numeric counters — no API keys, prompts, payloads, headers, responses, or model output.
+Stats are read-only local counters stored in Pi's agent directory (default: `~/.pi/agent/pi-cache-optimizer-stats.json`; custom agent dirs use `PI_CODING_AGENT_DIR`) and keyed by provider/model, so the same channel/model keeps today's footer counters after a Pi process or terminal restart. The file also keeps hashed session buckets for migration/reload bookkeeping. It contains only dates and numeric counters — no API keys, prompts, payloads, headers, responses, or model output.
 
 Pi 0.79+ also includes a built-in footer `CH` marker for the latest prompt cache hit rate. This extension complements that marker with persisted provider/model counters plus proxy compat diagnostics.
 
@@ -364,7 +368,7 @@ When the query matches the current session/route, `hints` may contain `systemPro
 pi remove npm:pi-cache-optimizer
 ```
 
-Then run `/reload` or restart Pi. Optional local stats cleanup:
+Then run `/reload` or restart Pi. Optional local stats cleanup (if you use `PI_CODING_AGENT_DIR`, delete the same files from that directory instead):
 
 | Platform | Delete local stats files |
 |---|---|

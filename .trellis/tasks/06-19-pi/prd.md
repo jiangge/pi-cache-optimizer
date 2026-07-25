@@ -193,3 +193,18 @@
 * **Docs/spec**: Updated README.md, README.zh-CN.md, and the footer-stats contract for Kimi K3 and Pi 0.80.7+ session-affinity semantics.
 * **Version**: Bumped package version to `2.6.18` because this changes runtime compat diagnosis and auto-fix behavior.
 * **Validation**: Added `verify-kimi-k3-pi-08010.ts`; updated `verify-403-detection.ts`; full task verification, TypeScript, diff, package dry-run, and Trellis task validation pass.
+
+### Pi 0.82.0 compatibility scan — custom agent dirs and local llama.cpp (2026-07-25)
+
+* **Versions checked**: Global Pi is `0.82.0`; project-local validation SDK is `0.82.0` after no-save sync. Package peer dependency remains `"*"`; no tracked SDK/lockfile dependency change was required.
+* **Official Pi findings**:
+  * Pi 0.81.0 adds built-in local `llama.cpp` provider/router support. The provider uses `api: "openai-completions"` but is a local single-backend server with no provider-side prompt-cache proxy/session-affinity semantics.
+  * Pi 0.81.0 adds full provider extension registration and Qwen Token Plan providers. Extension-facing hooks and synchronous `ModelRegistry` facade remain compatible with this package.
+  * Pi 0.82.0 adds constrained tool sampling, OpenRouter/Kimi Code sign-in, bash `PI_*` metadata, and fixes core debug logs to respect custom agent directories.
+* **Runtime fixes implemented**:
+  1. Stats and `models.json` paths now resolve from `PI_CODING_AGENT_DIR` (with `PI_CONFIG_DIR` root fallback) instead of always using `~/.pi/agent`; doctor/fix display paths mirror the configured agent dir.
+  2. Local Pi `llama.cpp` is excluded from extension-added `prompt_cache_key`, long-retention `prompt_cache_retention`/cache hints, generic proxy compat warnings/fix suggestions, router/channel proxy diagnostics, and 400/403 prompt-cache/session-affinity/OpenAI-SDK-header diagnostics. Footer stats remain truthful from returned usage fields.
+  3. Remote OpenAI-compatible providers added by Pi 0.82.0, such as Qwen Token Plan, remain in the generic proxy/cache path.
+* **Docs/spec**: Updated README.md, README.zh-CN.md, cache-adapter-footer-stats spec, hook guidelines, and added research note `.trellis/tasks/06-19-pi/research/pi-0.82-compat.md`.
+* **Version**: Bumped package version to `2.6.19` because stats/fix file path resolution and runtime hook diagnostics changed.
+* **Validation**: Added `verify-pi-0820-compat.ts`; `bunx tsc --noEmit --pretty false`, all task `verify*.ts` scripts, `git diff --check`, `npm pack --dry-run`, and `python3 ./.trellis/scripts/task.py validate .trellis/tasks/06-19-pi` pass.

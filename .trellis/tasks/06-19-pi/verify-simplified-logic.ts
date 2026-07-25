@@ -5,8 +5,9 @@
  * Tests hasExplicitLongRetentionOptIn logic with MOCK models.json data
  * (not the real file) for deterministic, reproducible results.
  *
- * Also documents the 4-gate before_provider_request logic and verifies
- * the gate ordering is correct (400 history BEFORE explicit opt-in).
+ * Also documents the before_provider_request logic and verifies
+ * the gate ordering is correct (local llama.cpp strip and 400 history
+ * BEFORE explicit opt-in).
  */
 
 // ─── Mock models.json data ───────────────────────────────────────────
@@ -189,26 +190,30 @@ const testCases: Array<{
 // ─── Gate ordering verification ──────────────────────────────────────
 
 /**
- * Replicates the 4-gate before_provider_request logic.
+ * Replicates the before_provider_request prompt_cache_retention gates.
  * Returns true if prompt_cache_retention should be KEPT, false if stripped.
  */
 function shouldKeepPromptCacheRetention(
+  isLocalLlamaCpp: boolean,
   isOfficialOpenAI: boolean,
   has400History: boolean,
   hasExplicitOptIn: boolean,
 ): boolean {
-  // Gate 1: Official OpenAI → keep
+  // Gate 1: local llama.cpp → strip (OpenAI-shaped local server; no provider prompt-cache retention)
+  if (isLocalLlamaCpp) return false;
+  // Gate 2: Official OpenAI → keep
   if (isOfficialOpenAI) return true;
-  // Gate 2: 400 history → strip (overrides user opt-in!)
+  // Gate 3: 400 history → strip (overrides user opt-in!)
   if (has400History) return false;
-  // Gate 3: Explicit user opt-in → keep
+  // Gate 4: Explicit user opt-in → keep
   if (hasExplicitOptIn) return true;
-  // Gate 4: Safe default → strip
+  // Gate 5: Safe default → strip
   return false;
 }
 
 const gateTestCases: Array<{
   name: string;
+  isLocalLlamaCpp: boolean;
   isOfficialOpenAI: boolean;
   has400History: boolean;
   hasExplicitOptIn: boolean;
@@ -216,52 +221,67 @@ const gateTestCases: Array<{
   reason: string;
 }> = [
   {
+    name: "Local llama.cpp with explicit opt-in (strip)",
+    isLocalLlamaCpp: true,
+    isOfficialOpenAI: false,
+    has400History: false,
+    hasExplicitOptIn: true,
+    expectedKeep: false,
+    reason: "Gate 1: local llama.cpp → strip regardless of explicit opt-in",
+  },
+  {
     name: "Official OpenAI (always keep)",
+    isLocalLlamaCpp: false,
     isOfficialOpenAI: true,
     has400History: false,
     hasExplicitOptIn: false,
     expectedKeep: true,
-    reason: "Gate 1: Official OpenAI → keep regardless of other flags",
+    reason: "Gate 2: Official OpenAI → keep regardless of other flags",
   },
   {
     name: "Official OpenAI with 400 history (still keep — trusted)",
+    isLocalLlamaCpp: false,
     isOfficialOpenAI: true,
     has400History: true,
     hasExplicitOptIn: false,
     expectedKeep: true,
-    reason: "Gate 1: Official OpenAI → keep (400 detection shouldn't fire for official OpenAI anyway)",
+    reason: "Gate 2: Official OpenAI → keep (400 detection shouldn't fire for official OpenAI anyway)",
   },
   {
     name: "Third-party with explicit opt-in, no 400 (keep)",
+    isLocalLlamaCpp: false,
     isOfficialOpenAI: false,
     has400History: false,
     hasExplicitOptIn: true,
     expectedKeep: true,
-    reason: "Gate 3: User explicitly opted in → keep",
+    reason: "Gate 4: User explicitly opted in → keep",
   },
   {
     name: "Third-party with explicit opt-in AND 400 history (strip!)",
+    isLocalLlamaCpp: false,
     isOfficialOpenAI: false,
     has400History: true,
     hasExplicitOptIn: true,
     expectedKeep: false,
-    reason: "Gate 2 BEFORE Gate 3: 400 overrides user opt-in — prevents infinite 400 loop",
+    reason: "Gate 3 BEFORE Gate 4: 400 overrides user opt-in — prevents infinite 400 loop",
   },
   {
     name: "Third-party without opt-in, no 400 (strip — safe default)",
+    isLocalLlamaCpp: false,
     isOfficialOpenAI: false,
     has400History: false,
     hasExplicitOptIn: false,
     expectedKeep: false,
-    reason: "Gate 4: No opt-in → strip (prevents 400 for 400+ third-party models)",
+    reason: "Gate 5: No opt-in → strip (prevents 400 for 400+ third-party models)",
   },
   {
     name: "Third-party without opt-in, with 400 history (strip)",
+    isLocalLlamaCpp: false,
     isOfficialOpenAI: false,
     has400History: true,
     hasExplicitOptIn: false,
     expectedKeep: false,
-    reason: "Gate 2: 400 history → strip",
+    reason: "Gate 3: 400 history → strip",
   },
 ];
 
@@ -290,6 +310,7 @@ console.log(`\n=== Gate Ordering Tests ===\n`);
 
 for (const test of gateTestCases) {
   const result = shouldKeepPromptCacheRetention(
+    test.isLocalLlamaCpp,
     test.isOfficialOpenAI,
     test.has400History,
     test.hasExplicitOptIn,

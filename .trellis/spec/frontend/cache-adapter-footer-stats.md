@@ -14,8 +14,8 @@ below as binding when changing `extension.ts`.
 |---|---|---|
 | npm package name | `pi-cache-optimizer` | Renamed from `pi-deepseek-cache-optimizer` in 2.0.0. |
 | Status key | `pi-cache-stats` | Passed to `ctx.ui.setStatus(STATUS_KEY, ...)`. Renamed from `deepseek-cache-stats`. |
-| Stats file path | `~/.pi/agent/pi-cache-optimizer-stats.json` | Renamed from `~/.pi/agent/deepseek-cache-optimizer-stats.json`. |
-| Models JSON path | `~/.pi/agent/models.json` | Reference path for compat warnings; shown as `%USERPROFILE%\.pi\agent\models.json` on Windows via `getModelsJsonDisplayPath()`. |
+| Stats file path | `~/.pi/agent/pi-cache-optimizer-stats.json` by default | Resolved under Pi's agent directory; honors `PI_CODING_AGENT_DIR` (and `PI_CONFIG_DIR` root fallback). Renamed from `deepseek-cache-optimizer-stats.json`. |
+| Models JSON path | `~/.pi/agent/models.json` by default | Reference path for compat warnings/fix; display helper shows `%USERPROFILE%\.pi\agent\models.json` on Windows unless a custom agent dir env override is active. |
 
 ---
 
@@ -101,6 +101,21 @@ When the adapter selection picks an underlying provider whose transport
 does not surface cache fields, the footer MUST stay at 0% rather than
 being massaged. Do NOT special-case-bump these counters.
 
+#### `llama.cpp` (provider `llama.cpp`, Pi 0.81+ built-in)
+
+* Wire identity: provider `llama.cpp`, `api: "openai-completions"`, local
+  base URL such as `http://127.0.0.1:8080/v1`.
+* Despite the OpenAI-shaped API, this is a local single-backend server, not a
+  third-party provider prompt-cache proxy. It should not receive session-affinity
+  HTTP headers or proxy routing diagnostics from this extension.
+* The extension MUST NOT add its `prompt_cache_key` fallback or long-retention
+  `prompt_cache_retention`/cache-hint signal for provider `llama.cpp`, MUST NOT
+  mark missing `sendSessionAffinityHeaders`, MUST NOT offer `/cache-optimizer fix`,
+  and MUST NOT record session-affinity/OpenAI-SDK-header 403 diagnostics for it.
+* Footer behavior remains truthful: if the server returns cache usage fields the
+  Llama adapter may display them; if not, it shows 0/under-reported rather than
+  synthetic hits.
+
 #### `kiro-api` (provider `kiro`, package `pi-provider-kiro`)
 
 * Wire identity: assistant messages carry `"provider":"kiro"`,
@@ -143,10 +158,13 @@ core's own cache transport.
 
 * Scope gate: the active model's `api` MUST be an OpenAI-compatible Pi adapter
   (`openai-completions` or `openai-responses`). Unlike the initial implementation,
-  the model `id`/`name` no longer needs to match GPT-family tokens — all models
-  using an OpenAI-shaped API (including Kimi, Qwen, GLM, MiniMax, Mimo, Hunyuan, and
-  any future OpenAI-compatible provider) receive the session-id fallback. Custom
-  transports such as `kiro-api` remain excluded by the API gate.
+  the model `id`/`name` no longer needs to match GPT-family tokens — remote models
+  using an OpenAI-shaped API (including Kimi, Qwen, GLM, MiniMax, Mimo, Hunyuan,
+  Qwen Token Plan, and any future OpenAI-compatible provider) receive the
+  session-id fallback. Custom transports such as `kiro-api` remain excluded by
+  the API gate. Pi 0.81+ `llama.cpp` is the narrow OpenAI-shaped exception: it is
+  a local single-backend server, not a provider-side prompt-cache proxy, so the
+  extension MUST NOT inject `prompt_cache_key` for provider `llama.cpp`.
 * Cache-key source: use `ctx.sessionManager.getSessionId()`, clamped to
   OpenAI's 64-codepoint `prompt_cache_key` limit. Do NOT derive the key from a
   prompt/stable-prefix hash; Pi core uses session id for official OpenAI paths,
@@ -176,7 +194,10 @@ core's own cache transport.
 
 For models using `api: "openai-completions"` through a non-official
 base URL (not `api.openai.com`), warn/mark missing compat only when merged compat
-has no `sendSessionAffinityHeaders` value (`undefined`). An explicit
+has no `sendSessionAffinityHeaders` value (`undefined`). Pi's built-in local
+`llama.cpp` provider is excluded even though it uses `openai-completions`, because
+it is not a third-party routing proxy and custom session-affinity headers are not
+meaningful there. An explicit
 `sendSessionAffinityHeaders: false` is a valid safe opt-out for proxies/CDNs/WAFs
 that block Pi's custom affinity headers with HTTP 403, and MUST NOT keep
 `⚠️ compat` active or make `/cache-optimizer fix` write `true` again. The
@@ -217,18 +238,21 @@ NOT mutate `models.json`.
 
 ### Platform-friendly models.json path
 
-The helper `getModelsJsonDisplayPath(platform?)` returns a user-facing path
-string for `models.json`, adapted to the user's platform:
+The helper `getModelsJsonDisplayPath(platform?, env?)` returns a user-facing
+path string for `models.json`, adapted to the user's platform and active Pi agent
+directory overrides:
 
-| Platform | Returns |
+| Condition | Returns |
 |----------|---------|
-| Windows (`win32`, `win64`, etc.) | `%USERPROFILE%\\.pi\\agent\\models.json` |
-| Linux, macOS, others | `~/.pi/agent/models.json` |
+| `PI_CODING_AGENT_DIR=/path/to/agent` | `/path/to/agent/models.json` (platform separator adjusted for display) |
+| `PI_CONFIG_DIR=/path/to/.pi` and no `PI_CODING_AGENT_DIR` | `/path/to/.pi/agent/models.json` |
+| Windows default (`win32`, `win64`, etc.) | `%USERPROFILE%\\.pi\\agent\\models.json` |
+| Linux, macOS, others default | `~/.pi/agent/models.json` |
 
 This is used in all user-facing compat warning texts, `/cache-optimizer doctor`,
 `/cache-optimizer compat`, and README documentation so users on any platform
 see a copyable path they recognize. The string is never used for I/O — actual
-path resolution is handled by Pi via Node `os.homedir()`.
+I/O uses `MODELS_JSON_PATH`, resolved from the same agent-dir rules as `STATE_DIR`.
 It exists because many third-party OpenAI-compatible proxies fan out to multiple
 upstream instances; a body `prompt_cache_key` alone may not keep requests on the
 same cache-bearing backend unless the proxy also honors session-affinity headers.
@@ -297,8 +321,8 @@ type PersistedCacheStatsV6 = {
 * The persisted file MUST contain only counters and local dates. Never persist
   API keys, prompts, request payloads, response bodies, HTTP headers, model
   outputs, or provider config snapshots.
-* Writes MUST remain atomic: write a temp file then `rename` into
-  `~/.pi/agent/pi-cache-optimizer-stats.json`; never update the JSON in place.
+* Writes MUST remain atomic: write a temp file then `rename` into the resolved
+  Pi agent-dir `pi-cache-optimizer-stats.json`; never update the JSON in place.
 * Concurrent writes are best-effort only. Before writing, the extension re-reads
   the persisted file and preserves other session buckets it can see, but there
   is **no inter-process lock**. If two Pi processes write at the same time,
@@ -424,7 +448,8 @@ and removing `_nosession`.
 | Payload has non-empty `prompt_cache_key` or `promptCacheKey` | Extension does not replace it. |
 | Payload has `prompt_cache_key: undefined`, `null`, `""`, or whitespace | Treat as missing; extension may add the session-id fallback. |
 | Model id/name looks GPT-like or Kimi/Qwen/GLM/MiniMax/Mimo/Hunyuan-like but API is a custom transport (e.g. `kiro-api`) | Do not add OpenAI `prompt_cache_key`; do not assume compat layers reach custom transports. |
-| Third-party `openai-completions` proxy (GPT, Kimi, Qwen, GLM, MiniMax, Mimo, Hunyuan, etc.) missing cache/session-affinity compat | Warn once per model with a copyable `compat` suggestion; do not edit `models.json`. |
+| Pi 0.81+ local `llama.cpp` provider (`provider: "llama.cpp"`, `api: "openai-completions"`) | Treat as local OpenAI-shaped transport, not a third-party proxy: do not add extension `prompt_cache_key` or long-retention `prompt_cache_retention`/cache-hint signals, do not show missing `sendSessionAffinityHeaders`, do not offer `/cache-optimizer fix`, and do not record session-affinity / OpenAI-SDK-header 403 diagnostics. Footer remains truthful from returned usage fields. |
+| Third-party `openai-completions` proxy (GPT, Kimi, Qwen, GLM, MiniMax, Mimo, Hunyuan, Qwen Token Plan, etc.) missing cache/session-affinity compat | Warn once per model with a copyable `compat` suggestion; do not edit `models.json`. |
 | DeepSeek-like `openai-completions` model missing Pi Mono reasoning compat | Warn once; `/cache-optimizer doctor` and `/cache-optimizer compat` include copyable JSON with `requiresReasoningContentOnAssistantMessages: true` and `thinkingFormat: "deepseek"` plus any missing cache/session-affinity flags; do not edit `models.json`. |
 | DeepSeek-like `openai-responses` model on Pi 0.80.7+ | Diagnose DeepSeek reasoning/retention compat only; do not suggest the removed `sendSessionIdHeader`. Pi owns response session-affinity header selection through `sessionAffinityFormat` and its auto-detected default. |
 | Old stats path exists, new stats path missing | Read old v1/v2/v3 data, write the new path atomically in v6 shape, best-effort `unlink` old. v2 `statsByProvider` data moves to `legacyFamily`; v3 unscoped model keys are assigned to the current session and totals are derived. |
@@ -569,7 +594,7 @@ task-level verification script that asserts:
   returns correct results for id/name matches and non-matches, assistant message
   matching is role-gated, and compat warnings use the broadened
   `describeMissingOpenAICompatibleProxyCompat`.
-* 403 session-affinity header detection: `isSessionAffinity403Applicable` returns true only for `openai-completions` with merged compat `sendSessionAffinityHeaders === true`; returns false for Pi 0.80.7+ `openai-responses` (which uses `sessionAffinityFormat` instead), custom transports (`kiro-api`, `anthropic-messages`), and merged `false`/missing values. Explicit `sendSessionAffinityHeaders: false` is accepted as a safe opt-out and must not keep `⚠️ compat` active or make `/cache-optimizer fix` suggest `true`; the `after_provider_response` 403 path records a one-time model-scoped warning and surfaces it in doctor/fix. `isOpenAISdkHeader403Applicable` returns true for third-party `openai-completions` proxies after session affinity is disabled/absent, records a read-only OpenAI SDK User-Agent / `X-Stainless-*` WAF diagnostic, and must not add an auto-fix path; existing 400 `prompt_cache_retention` behavior and all prior verify scripts remain green.
+* 403 session-affinity header detection: `isSessionAffinity403Applicable` returns true only for `openai-completions` with merged compat `sendSessionAffinityHeaders === true`; returns false for Pi 0.80.7+ `openai-responses` (which uses `sessionAffinityFormat` instead), local `llama.cpp`, custom transports (`kiro-api`, `anthropic-messages`), and merged `false`/missing values. Explicit `sendSessionAffinityHeaders: false` is accepted as a safe opt-out and must not keep `⚠️ compat` active or make `/cache-optimizer fix` suggest `true`; the `after_provider_response` 403 path records a one-time model-scoped warning and surfaces it in doctor/fix. `isOpenAISdkHeader403Applicable` returns true for third-party `openai-completions` proxies after session affinity is disabled/absent, records a read-only OpenAI SDK User-Agent / `X-Stainless-*` WAF diagnostic, and must not add an auto-fix path; existing 400 `prompt_cache_retention` behavior and all prior verify scripts remain green.
 
 ---
 
@@ -1025,7 +1050,8 @@ These are current-process runtime switches, not persistent config writes.
 Shows current active model status: provider, model id/name, API type, base URL,
 merged compat flags, and whether any cache/session-affinity compat flags are missing.
 If compat flags are missing, includes a copyable safe JSON suggestion and the edit
-location (`~/.pi/agent/models.json -> providers.<id> -> compat`). The JSON only
+location (`<Pi agent dir>/models.json -> providers.<id> -> compat`; default
+`~/.pi/agent/models.json`). The JSON only
 includes `sendSessionAffinityHeaders: true` when missing. `supportsLongCacheRetention`
 is explained as optional/risky guidance rather than treated as missing or inserted
 into the copyable safe snippet.
@@ -1241,14 +1267,14 @@ compat). It does NOT read or expose:
 - Request/response payloads
 - Prompts or model outputs
 - HTTP headers
-- Any content from `~/.pi/agent/models.json` beyond what the Pi runtime exposes
+- Any content from Pi's agent-dir `models.json` beyond what the Pi runtime exposes
   via `ctx.model`
 
 ### Validation matrix (additional rows)
 
 | Scenario | Expected behavior |
 |---|---|
-| `/cache-optimizer doctor` with generic proxy missing session affinity | Output includes `Missing compat flags: sendSessionAffinityHeaders`, a copyable safe JSON suggestion with `sendSessionAffinityHeaders: true`, the `~/.pi/agent/models.json -> providers["<id>"]` path, optional/risky guidance for `supportsLongCacheRetention`, and credential-safe guidance that keeps existing authentication as-is while placing only compat overrides in `models.json` |
+| `/cache-optimizer doctor` with generic proxy missing session affinity | Output includes `Missing compat flags: sendSessionAffinityHeaders`, a copyable safe JSON suggestion with `sendSessionAffinityHeaders: true`, the configured agent-dir `models.json -> providers["<id>"]` path (default `~/.pi/agent/models.json`), optional/risky guidance for `supportsLongCacheRetention`, and credential-safe guidance that keeps existing authentication as-is while placing only compat overrides in `models.json` |
 | `/cache-optimizer doctor` with DeepSeek-like Pi Mono model missing reasoning compat | Output includes missing `requiresReasoningContentOnAssistantMessages` and `thinkingFormat`, plus copyable JSON with `requiresReasoningContentOnAssistantMessages: true` and `thinkingFormat: "deepseek"`. For `openai-responses`, it does not suggest removed `sendSessionIdHeader`; Pi 0.80.7+ owns header shape through `sessionAffinityFormat`. |
 | Kimi Coding K3 custom `anthropic-messages` model missing adaptive compat | Footer/doctor/compat show missing `forceAdaptiveThinking` and `allowEmptySignature`; `/cache-optimizer fix` suggests both at model scope when sibling models are mixed. Moonshot/OpenRouter K3 variants on `openai-completions` remain in the Kimi/proxy path and do not receive Kimi Coding adaptive compat. |
 | `/cache-optimizer compat` with DeepSeek-like Pi Mono model missing reasoning compat | Shows the same DeepSeek-specific JSON suggestion and edit location; custom transports still show not-applicable. |
@@ -1272,7 +1298,7 @@ compat). It does NOT read or expose:
 | `/cache-optimizer doctor` with Vercel AI Gateway model | Output includes `🔀 Router/channel: Vercel AI Gateway detected` with `vercelGatewayRouting` suggestion |
 | `/cache-optimizer doctor` with LiteLLM/OneAPI/NewAPI/VoAPI model | Output includes `🔀 Router/channel: Self-hosted aggregation proxy detected` with sticky routing and prompt_cache_key guidance |
 | `/cache-optimizer doctor` with generic third-party OpenAI-compatible proxy | Output includes `🔀 Router/channel: Third-party OpenAI-compatible proxy` with general guidance |
-| `/cache-optimizer doctor` with official OpenAI or kiro-api model | Output does NOT include router/channel notes (not applicable) |
+| `/cache-optimizer doctor` with official OpenAI, local `llama.cpp`, or kiro-api model | Output does NOT include router/channel notes (not applicable) |
 | `/cache-optimizer compat` with missing-compat OpenRouter model | Shows missing flags + safe JSON + OpenRouter channel notes + credential-safe `models.json` guidance with provider-level and `modelOverrides` examples |
 | `/cache-optimizer compat` with fully-configured OpenRouter model | Shows `✅ Compat fully configured.` followed by OpenRouter channel notes; if `supportsLongCacheRetention` is enabled, also includes the `prompt_cache_retention` 400 recovery hint |
 | Router/channel diagnostics do not affect adapter selection | An OpenRouter Llama model still selects the Llama adapter, not an "OpenRouter" adapter |
