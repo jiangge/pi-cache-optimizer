@@ -1794,10 +1794,21 @@ function modelFromAssistantMessage(message: unknown, fallback: PiModel | undefin
   const api = firstNonEmptyString(record.api, fallback?.api) ?? "";
   if (!id || !provider) return fallback;
 
+  const fallbackName = isNonEmptyString(fallback?.name) ? fallback.name : undefined;
+  const preservesFallbackIdentity =
+    !isVirtualRoutingModel(fallback) &&
+    provider === fallback?.provider &&
+    id === fallback?.id &&
+    fallbackName !== undefined;
+
   return {
     ...(fallback ?? {}),
     id,
-    name: id,
+    // Direct providers such as kimi-coding may echo only a short model id
+    // (`k3`) while the active model name (`Kimi K3`) carries the adapter token.
+    // Preserve that display name only when response and fallback identities are
+    // exactly the same; routed/different identities keep message-local naming.
+    name: preservesFallbackIdentity ? fallbackName : id,
     provider,
     api,
     baseUrl: fallback?.baseUrl ?? "",
@@ -5954,6 +5965,7 @@ export const __internals_for_tests = {
   getAssistantMessageModelTokenValues,
   getCompat,
   modelKey,
+  modelFromAssistantMessage,
   consolidateDirectProviderStatsModel,
   // Platform-friendly path helpers
   getAgentDirDisplayPath,

@@ -27,6 +27,15 @@ assistant message's `model` and `name` fields on `message_end`. It MUST NOT use
 metadata for selection. Generic OpenAI-compatible proxies are NOT treated as
 OpenAI-family just because they use an OpenAI-shaped API.
 
+When `message_end` echoes the same direct, non-virtual provider and exact model
+id as the active model, `modelFromAssistantMessage()` preserves the active model's
+non-empty display name for id/name adapter selection. This covers short wire ids
+whose display name carries the family token (for example `kimi-coding/k3` named
+`Kimi K3`). If response provider or model id differs, the response id remains
+the derived name so routed/upstream identity stays authoritative and a stale
+fallback display name cannot affect classification. Bare `k3` is not a Kimi
+adapter token.
+
 | Adapter | Detection token (case-insensitive substring on id/name) | Footer label |
 |---|---|---|
 | DeepSeek | `deepseek` | `DS cache` |
@@ -423,7 +432,13 @@ and removing `_nosession`.
   Assistant message metadata (`provider`, `model`/`responseModel`, `api`) is
   authoritative for final stats identity — this keeps virtual routing providers
   correct (the active model may be a router shell while the message carries the
-  real upstream model). For **direct (non-virtual-routing) providers**, however,
+  real upstream model). When the response provider and model id exactly equal
+  the active direct, non-virtual model identity, `modelFromAssistantMessage` MUST preserve the
+  active model's non-empty display name for adapter selection. This prevents
+  short echoed ids such as `kimi-coding/k3` from discarding a meaningful active
+  name such as `Kimi K3`. If provider or id differs, the response identity wins
+  and the fallback display name MUST NOT leak into routed/upstream selection.
+  For **direct (non-virtual-routing) providers**, however,
   some OpenAI-compatible APIs normalize or rename the model id echoed in the
   response (e.g. a request to `zai-org/GLM-5.2-FP8` returns a message whose
   `model` field is `GLM5.2-FP8` or `glm-5.2`). Writing stats under the echoed
@@ -457,6 +472,7 @@ and removing `_nosession`.
 | Payload has `prompt_cache_key: undefined`, `null`, `""`, or whitespace | Treat as missing; extension may add the session-id fallback. |
 | Model id/name looks GPT-like or Kimi/Qwen/GLM/MiniMax/Mimo/Hunyuan-like but API is a custom transport (e.g. `kiro-api`) | Do not add OpenAI `prompt_cache_key`; do not assume compat layers reach custom transports. |
 | Pi 0.81+ built-in `llama.cpp` model with its untouched explicit compat fingerprint | Preserve Pi core/existing `prompt_cache_key` and add the session fallback if missing; strip `prompt_cache_retention` unless `models.json` explicitly opts in; skip generic proxy routing/session-affinity advice only while the built-in fingerprint remains untouched. Footer remains truthful from returned usage fields. |
+| Direct response repeats provider/id but only echoes a short id (e.g. active `kimi-coding/k3` named `Kimi K3`, response model `k3`) | Preserve the active display name while selecting the response adapter; record normalized cache usage under `kimi-coding/k3`. Different response provider/id must not inherit the fallback name. |
 | Third-party `openai-completions` proxy (GPT, Kimi, Qwen, GLM, MiniMax, Mimo, Hunyuan, Qwen Token Plan, etc.) missing cache/session-affinity compat | Warn once per model with a copyable `compat` suggestion; do not edit `models.json`. |
 | DeepSeek-like `openai-completions` model missing Pi Mono reasoning compat | Warn once; `/cache-optimizer doctor` and `/cache-optimizer compat` include copyable JSON with `requiresReasoningContentOnAssistantMessages: true` and `thinkingFormat: "deepseek"` plus any missing cache/session-affinity flags; do not edit `models.json`. |
 | DeepSeek-like `openai-responses` model on Pi 0.80.7+ | Diagnose DeepSeek reasoning/retention compat only; do not suggest the removed `sendSessionIdHeader`. Pi owns response session-affinity header selection through `sessionAffinityFormat` and its auto-detected default. |
@@ -469,6 +485,8 @@ and removing `_nosession`.
 | Active model is `router/auto`, exact last routed model exists but its provider/model total was reset/removed | `/reload` still restores that exact model's footer label with empty same-day stats (`0/0`, `0M/0M`). |
 | Active model is a virtual routing provider registered under `Symbol.for("pi.routing.registry.v1")` | Footer, doctor, compat, prompt-cache-key fallback, and reset resolve the live upstream provider/model when the registry returns a valid route snapshot. |
 | A virtual routing provider relays assistant message `provider` + `model`/`responseModel` + `api` metadata | `message_end` stats use the message-local upstream identity, even if the active model is a router shell or the live registry has changed. |
+| Direct `kimi-coding/k3` response echoes the active provider/id while the active display name is `Kimi K3` | Preserve the fallback display name for id/name-only selection, choose `Kimi cache`, and update both the session bucket and `totalsByModel["kimi-coding/k3"]` from real normalized usage. |
+| Response provider or model id differs from the active model, active model is a virtual router shell, or an unrelated model is only named `k3` | Do not preserve the active display name across identities/virtual shells; message-local identity wins and bare `k3` remains unmatched. |
 | Direct (non-virtual-routing) provider echoes a different/renamed model id in its response (e.g. request `zai-org/GLM-5.2-FP8` but message carries `GLM5.2-FP8`), same provider + same adapter | `message_end` consolidates stats to the active-model id (`ctx.model.id`); the footer shows the merged real hit rate instead of a fragmented 0% bucket. |
 | Direct provider echoes a model id that maps to a DIFFERENT adapter (e.g. `gpt-5.5` while active is a GLM model), or a different provider | No consolidation — stats stay under the response identity so genuinely different models are never merged. |
 | A router extension queries `Symbol.for("pi.cache.hints.v1")` while optimizer is enabled | Returns query-scoped optimized system prompt / prompt cache key / long-retention hint only when the query matches the latest session/route hint; existing request-level keys still remain authoritative. |
