@@ -3,7 +3,7 @@ import { copyFile, mkdir, readFile, rename, unlink, writeFile } from "node:fs/pr
 import { readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
-import type { BuildSystemPromptOptions, ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { getAgentDir, type BuildSystemPromptOptions, type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
 
 type MutableEnv = Record<string, string | undefined>;
 
@@ -63,30 +63,9 @@ type CacheProviderId = "deepseek" | "openai" | "claude" | "gemini";
 
 const LOG_PREFIX = "pi-cache-optimizer";
 const STATUS_KEY = "pi-cache-stats";
-const AGENT_DIR_ENV = "PI_CODING_AGENT_DIR";
-const CONFIG_DIR_ENV = "PI_CONFIG_DIR";
-const DEFAULT_CONFIG_DIR_NAME = ".pi";
 
-function expandLeadingTildePath(value: string, homeDir: string = homedir()): string {
-  if (value === "~") return homeDir;
-  if (value.startsWith("~/") || (process.platform === "win32" && value.startsWith("~\\"))) {
-    return join(homeDir, value.slice(2));
-  }
-  return value;
-}
-
-/** Resolve Pi's agent directory, respecting Pi 0.82+ custom agent-dir env overrides. */
-function resolvePiAgentDir(env: MutableEnv = process.env, homeDir: string = homedir()): string {
-  const explicitAgentDir = env[AGENT_DIR_ENV]?.trim();
-  if (explicitAgentDir) return expandLeadingTildePath(explicitAgentDir, homeDir);
-
-  const configRoot = env[CONFIG_DIR_ENV]?.trim();
-  if (configRoot) return join(expandLeadingTildePath(configRoot, homeDir), "agent");
-
-  return join(homeDir, DEFAULT_CONFIG_DIR_NAME, "agent");
-}
-
-const STATE_DIR = resolvePiAgentDir();
+/** Use Pi core's resolver so rebranded config names and env semantics stay aligned. */
+const STATE_DIR = getAgentDir();
 const STATE_FILE_PATH = join(STATE_DIR, "pi-cache-optimizer-stats.json");
 const LEGACY_STATE_FILE_PATH = join(STATE_DIR, "deepseek-cache-optimizer-stats.json");
 const CACHE_PROVIDER_IDS: CacheProviderId[] = ["deepseek", "openai", "claude", "gemini"];
@@ -164,6 +143,12 @@ const AYA_MODEL_PATTERN = /(^|[\/\s:_-])aya($|[\-_.:\/\s])/i;
 const ORION_MODEL_PATTERN = /(^|[\/\s:_-])orion($|[\-_.:\/\s])/i;
 
 type CacheCompat = {
+  supportsStore?: boolean;
+  supportsDeveloperRole?: boolean;
+  supportsReasoningEffort?: boolean;
+  supportsUsageInStreaming?: boolean;
+  supportsStrictMode?: boolean;
+  maxTokensField?: "max_completion_tokens" | "max_tokens";
   sendSessionAffinityHeaders?: boolean;
   sessionAffinityFormat?: "openai" | "openai-nosession" | "openrouter";
   supportsLongCacheRetention?: boolean;
@@ -1012,22 +997,27 @@ function joinDisplayPath(base: string, child: string, platform: string = process
 /**
  * Return a platform-friendly display path for Pi's agent directory.
  *
- * Defaults to `%USERPROFILE%\.pi\agent` on Windows and `~/.pi/agent` on
- * Unix-like systems. If Pi is running with a custom agent/config directory
- * (`PI_CODING_AGENT_DIR`, or the harness-level `PI_CONFIG_DIR` root), show
- * that configured location instead so doctor/fix guidance matches runtime I/O.
+ * Derives the display path from Pi core's `getAgentDir()` result. Home-relative
+ * paths use `%USERPROFILE%` on Windows and `~` on Unix-like systems; custom
+ * absolute or relative agent directories remain visible as configured.
  */
-function getAgentDirDisplayPath(platform: string = process.platform, env: MutableEnv = process.env): string {
-  const explicitAgentDir = env[AGENT_DIR_ENV]?.trim();
-  if (explicitAgentDir) return explicitAgentDir;
+function getAgentDirDisplayPath(
+  platform: string = process.platform,
+  agentDir: string = getAgentDir(),
+  homeDir: string = homedir(),
+): string {
+  const sep = platform.startsWith("win") ? "\\" : "/";
+  const normalizedAgentDir = agentDir.replace(/[\\/]+/g, sep);
+  const normalizedHomeDir = homeDir.replace(/[\\/]+/g, sep).replace(/[\\/]+$/, "");
+  const homePrefix = `${normalizedHomeDir}${sep}`;
 
-  const configRoot = env[CONFIG_DIR_ENV]?.trim();
-  if (configRoot) return joinDisplayPath(configRoot, "agent", platform);
-
-  if (platform.startsWith("win")) {
-    return `%USERPROFILE%\\.pi\\agent`;
+  if (normalizedAgentDir === normalizedHomeDir || normalizedAgentDir.startsWith(homePrefix)) {
+    const relative = normalizedAgentDir.slice(normalizedHomeDir.length).replace(/^[\\/]+/, "");
+    const homeLabel = platform.startsWith("win") ? "%USERPROFILE%" : "~";
+    return relative ? `${homeLabel}${sep}${relative}` : homeLabel;
   }
-  return "~/.pi/agent";
+
+  return normalizedAgentDir;
 }
 
 /**
@@ -1036,8 +1026,12 @@ function getAgentDirDisplayPath(platform: string = process.platform, env: Mutabl
  * This is a DISPLAY helper only. Actual I/O uses `MODELS_JSON_PATH`, resolved
  * from the same custom agent/config directory rules as `STATE_DIR`.
  */
-function getModelsJsonDisplayPath(platform: string = process.platform, env: MutableEnv = process.env): string {
-  return joinDisplayPath(getAgentDirDisplayPath(platform, env), "models.json", platform);
+function getModelsJsonDisplayPath(
+  platform: string = process.platform,
+  agentDir: string = getAgentDir(),
+  homeDir: string = homedir(),
+): string {
+  return joinDisplayPath(getAgentDirDisplayPath(platform, agentDir, homeDir), "models.json", platform);
 }
 
 function isEnabledEnv(value: string | undefined): boolean {
@@ -1139,12 +1133,26 @@ function isOpenAICompatibleProxyApi(api: unknown): boolean {
   return lower(api) === "openai-completions";
 }
 
-function isPiLocalLlamaCppModel(model: PiModel | undefined): boolean {
-  return lower(model?.provider) === "llama.cpp" && isOpenAICompatibleProxyApi(model?.api);
+function isPiBuiltInLlamaCppModel(model: PiModel | undefined): boolean {
+  if (lower(model?.provider) !== "llama.cpp" || !isOpenAICompatibleProxyApi(model?.api)) return false;
+
+  // Pi's built-in llama.cpp provider supplies this exact explicit compat
+  // fingerprint. Provider ids are extension-overridable and models.json can add
+  // cache/routing overrides, so provider id alone must never imply exemption.
+  const compat = getCompat(model);
+  return compat.supportsStore === false
+    && compat.supportsDeveloperRole === false
+    && compat.supportsReasoningEffort === false
+    && compat.supportsUsageInStreaming === false
+    && compat.supportsStrictMode === false
+    && compat.maxTokensField === "max_tokens"
+    && compat.sendSessionAffinityHeaders === undefined
+    && compat.sessionAffinityFormat === undefined
+    && compat.supportsLongCacheRetention === undefined;
 }
 
 function shouldInjectOpenAIPromptCacheKeyForModel(model: PiModel | undefined): boolean {
-  return isOpenAICompatibleApi(model?.api) && !isPiLocalLlamaCppModel(model);
+  return isOpenAICompatibleApi(model?.api);
 }
 
 function isResponsesPromptRewriteBypassApi(api: unknown): boolean {
@@ -2079,7 +2087,7 @@ function describeMissingOpenAICompatibleProxyCompat(model: PiModel): string[] {
 
   if (!isOpenAICompatibleProxyApi(model.api)) return missing;
   if (isOfficialOpenAIBaseUrl(model)) return missing;
-  if (isPiLocalLlamaCppModel(model)) return missing;
+  if (isPiBuiltInLlamaCppModel(model)) return missing;
 
   if (compat.sendSessionAffinityHeaders === undefined) {
     missing.push("sendSessionAffinityHeaders");
@@ -2107,7 +2115,7 @@ function describeOptionalOpenAICompatibleProxyCompat(model: PiModel): string[] {
 
   if (!isOpenAICompatibleProxyApi(model.api)) return optional;
   if (isOfficialOpenAIBaseUrl(model)) return optional;
-  if (isPiLocalLlamaCppModel(model)) return optional;
+  if (isPiBuiltInLlamaCppModel(model)) return optional;
 
   if (compat.supportsLongCacheRetention !== true) {
     optional.push("supportsLongCacheRetention");
@@ -2281,7 +2289,7 @@ function describeMissingDeepSeekCompat(model: PiModel): string[] {
 }
 
 function isDeepSeekCompatCheckApplicable(model: PiModel): boolean {
-  return isDeepSeekLikeModel(model) && isOpenAICompatibleApi(model.api) && !isPiLocalLlamaCppModel(model);
+  return isDeepSeekLikeModel(model) && isOpenAICompatibleApi(model.api) && !isPiBuiltInLlamaCppModel(model);
 }
 
 function describeMissingCacheCompatForModel(model: PiModel): string[] {
@@ -2387,7 +2395,7 @@ const CACHE_PROVIDER_ADAPTERS: CacheProviderAdapter[] = [
       return normalizeWithFallback(message, getAnthropicRawUsage);
     },
     warningText(model) {
-      if (!isClaudeLikeModel(model) || !isOpenAICompatibleApi(model.api) || isPiLocalLlamaCppModel(model)) return undefined;
+      if (!isClaudeLikeModel(model) || !isOpenAICompatibleApi(model.api) || isPiBuiltInLlamaCppModel(model)) return undefined;
       if (getCompat(model).cacheControlFormat === "anthropic") return undefined;
 
       return (
@@ -3997,13 +4005,13 @@ async function writePersistedCacheStats(
 
 
 function isCompatCheckApplicable(model: PiModel): boolean {
-  return isOpenAICompatibleProxyApi(model.api) && !isOfficialOpenAIBaseUrl(model) && !isPiLocalLlamaCppModel(model);
+  return isOpenAICompatibleProxyApi(model.api) && !isOfficialOpenAIBaseUrl(model) && !isPiBuiltInLlamaCppModel(model);
 }
 
 function isPromptCacheRetention400Applicable(model: PiModel): boolean {
   return isOpenAICompatibleApi(model.api) &&
     !isOfficialOpenAIBaseUrl(model) &&
-    !isPiLocalLlamaCppModel(model) &&
+    !isPiBuiltInLlamaCppModel(model) &&
     getCompat(model).supportsLongCacheRetention === true;
 }
 
@@ -4020,7 +4028,7 @@ function isPromptCacheRetention400Applicable(model: PiModel): boolean {
  */
 function isSessionAffinity403Applicable(model: PiModel): boolean {
   if (!isOpenAICompatibleProxyApi(model.api)) return false;
-  if (isPiLocalLlamaCppModel(model)) return false;
+  if (isPiBuiltInLlamaCppModel(model)) return false;
   return getCompat(model).sendSessionAffinityHeaders === true;
 }
 
@@ -4037,7 +4045,7 @@ function isSessionAffinity403Applicable(model: PiModel): boolean {
 function isOpenAISdkHeader403Applicable(model: PiModel): boolean {
   if (!isOpenAICompatibleProxyApi(model.api)) return false;
   if (isOfficialOpenAIBaseUrl(model)) return false;
-  if (isPiLocalLlamaCppModel(model)) return false;
+  if (isPiBuiltInLlamaCppModel(model)) return false;
   return getCompat(model).sendSessionAffinityHeaders !== true;
 }
 
@@ -4079,10 +4087,10 @@ function describeRouterChannelDiagnostics(model: PiModel): string[] {
     return notes;
   }
 
-  // Pi 0.81+ built-in local llama.cpp uses an OpenAI-shaped transport, but it
-  // is a local single-backend server rather than a third-party routing proxy.
-  // Session-affinity/proxy diagnostics do not apply.
-  if (isPiLocalLlamaCppModel(model)) {
+  // Pi 0.81+ built-in llama.cpp uses an OpenAI-shaped transport, but its
+  // untouched explicit compat fingerprint does not expose proxy-routing or
+  // session-affinity configuration. Same-id overrides are not exempt.
+  if (isPiBuiltInLlamaCppModel(model)) {
     return notes;
   }
 
@@ -5808,7 +5816,7 @@ export const __internals_for_tests = {
   shouldInjectOpenAIPromptCacheKeyForModel,
   isOpenAICompatibleApi,
   isOpenAICompatibleProxyApi,
-  isPiLocalLlamaCppModel,
+  isPiBuiltInLlamaCppModel,
   isResponsesPromptRewriteBypassApi,
   isMistralConversationsApi,
   isOpenAIFamilyModel,
@@ -5948,12 +5956,8 @@ export const __internals_for_tests = {
   modelKey,
   consolidateDirectProviderStatsModel,
   // Platform-friendly path helpers
-  expandLeadingTildePath,
-  resolvePiAgentDir,
   getAgentDirDisplayPath,
   getModelsJsonDisplayPath,
-  AGENT_DIR_ENV,
-  CONFIG_DIR_ENV,
   buildProviderCompatOverride,
   buildModelCompatOverride,
   captureCacheRetentionEnv,
@@ -6549,6 +6553,10 @@ export default function (pi: ExtensionAPI) {
 
   pi.on("before_agent_start", async (event, _ctx) => {
     latestCacheHint = undefined;
+    // Clear the legacy global before any bypass/disable early return. A valid
+    // rewrite path republishes the current session key below; otherwise callers
+    // must not observe a stale key from the previously selected model/route.
+    delete getProtocolGlobal().__piCacheOptimizerCacheKey__;
     const routeSnapshot = resolveActiveRouteSnapshot(_ctx.model, _ctx);
     const routedModel = routeSnapshot
       ? findModelInRegistry(_ctx.modelRegistry, routeSnapshot.provider, routeSnapshot.modelId) ?? routeSnapshotToPiModel(routeSnapshot, _ctx.model)
@@ -6618,8 +6626,8 @@ export default function (pi: ExtensionAPI) {
     // ships to the provider.
     const optimized = optimizeSystemPrompt(compressedPrompt, event.systemPromptOptions);
 
-    const promptCacheKey = isPiLocalLlamaCppModel(model) ? undefined : getSessionPromptCacheKey(_ctx);
-    const cacheRetention = !isPiLocalLlamaCppModel(model) && process.env[PI_CACHE_RETENTION_ENV] === LONG_CACHE_RETENTION_VALUE ? LONG_CACHE_RETENTION_VALUE : undefined;
+    const promptCacheKey = getSessionPromptCacheKey(_ctx);
+    const cacheRetention = process.env[PI_CACHE_RETENTION_ENV] === LONG_CACHE_RETENTION_VALUE ? LONG_CACHE_RETENTION_VALUE : undefined;
     const publishHint = (systemPrompt: string): void => {
       latestCacheHint = {
         sessionIdHash: currentSessionHashSet ? currentSessionHash : sessionHashFromContext(_ctx),
@@ -6670,31 +6678,27 @@ export default function (pi: ExtensionAPI) {
     // reject the parameter with 400 “Extra inputs are not permitted”.
     //
     // Gate order (first match wins):
-    //   1. Local llama.cpp          → strip (OpenAI-shaped local server; no provider prompt-cache retention)
-    //   2. Official OpenAI          → keep (trusted to support it)
-    //   3. 400 history              → strip (empirical evidence overrides user config)
-    //   4. Explicit opt-in in models.json → keep (user explicitly wants it)
-    //   5. Everything else          → strip (safe default for third-party APIs)
+    //   1. Official OpenAI          → keep (trusted to support it)
+    //   2. 400 history              → strip (empirical evidence overrides user config)
+    //   3. Explicit opt-in in models.json → keep (user explicitly wants it)
+    //   4. Everything else          → strip (safe default for third-party APIs)
     //
-    // Gate 3 before Gate 4 is critical: if a user explicitly opted in but
+    // Gate 2 before Gate 3 is critical: if a user explicitly opted in but
     // the API returned 400, we must strip — otherwise the 400 repeats forever.
     if (runtimeOptimizerEnabled) {
       const payload = event.payload as UnknownRecord;
       if (payload && typeof payload.prompt_cache_retention === 'string') {
         const rModel = resolveRouteModel(ctx.model, ctx) ?? ctx.model;
         if (rModel) {
-          if (isPiLocalLlamaCppModel(rModel)) {
-            // Gate 1: Local llama.cpp → strip
-            delete payload.prompt_cache_retention;
-          } else if (isOfficialOpenAIBaseUrl(rModel)) {
-            // Gate 2: Official OpenAI → keep
+          if (isOfficialOpenAIBaseUrl(rModel)) {
+            // Gate 1: Official OpenAI → keep
           } else if (promptCacheRetention400Models.has(modelKey(rModel))) {
-            // Gate 3: 400 history → strip (overrides user opt-in)
+            // Gate 2: 400 history → strip (overrides user opt-in)
             delete payload.prompt_cache_retention;
           } else if (hasExplicitLongRetentionOptIn(rModel)) {
-            // Gate 4: Explicit user opt-in → keep
+            // Gate 3: Explicit user opt-in → keep
           } else {
-            // Gate 5: Safe default → strip
+            // Gate 4: Safe default → strip
             delete payload.prompt_cache_retention;
           }
         }

@@ -30,7 +30,7 @@
 - 将稳定的 system prompt 内容移动到动态上下文之前。
 - 压缩 Pi skill 列表，并移除 session-overview 中的易变字段。
 - 在 Pi / provider compat 支持时请求长缓存保留。
-- 对 `openai-completions` / `openai-responses` 请求，在没有有效 key 时使用 Pi session id 补 `prompt_cache_key`（Pi 本地 `llama.cpp` provider 除外，因为代理 cache-key 语义不适用）。
+- 对 `openai-completions` / `openai-responses` 请求，在没有有效 key 时使用 Pi session id 补 `prompt_cache_key`；Pi 0.82 core 对内置 `llama.cpp` 也使用这一语义。
 - 对缺少缓存 / session-affinity compat 的第三方 OpenAI-compatible 代理给出一次性提醒。
 - 检测 Claude（opus-4.6+、sonnet-4.6+ 含 Sonnet 5、fable-5+）以及 Kimi Coding K3 / `kimi-for-coding` 自定义渠道的 adaptive-thinking compat。
 - 为支持的模型家族显示可跨 Pi 进程 / 终端重启延续的 provider/model footer 缓存统计。
@@ -82,7 +82,7 @@ Pi 0.79.7 及之后，`pi update` 默认只更新 Pi 本体。若要更新已安
 
 LiteLLM / OneAPI / NewAPI / 类 OpenRouter 渠道等第三方 `openai-completions` 代理，常会把同一个 session 分散到多个上游后端，导致 provider 侧 prompt cache 被拆散。
 
-Pi 0.81+ 也内置了使用 OpenAI-shaped transport 的本地 `llama.cpp` provider。它是本地单后端服务器，不是第三方路由代理，因此本扩展会对 provider `llama.cpp` 跳过 `prompt_cache_key` / long-retention fallback、proxy compat 提醒、`/cache-optimizer fix` 以及 403 session-affinity 诊断。
+Pi 0.81+ 也内置了使用 OpenAI-shaped transport 的 `llama.cpp` provider。Pi 0.82 core 在启用 cache retention 时会为它生成 session `prompt_cache_key`，因此本扩展会保留该 key，并在缺失时使用同样的保守 fallback。只有符合 Pi 内置 provider 明确 compat 指纹的模型会跳过通用 proxy 路由 / session-affinity 建议；仅复用 `llama.cpp` id 的自定义或覆盖 provider 仍按普通 OpenAI-compatible 渠道处理。`prompt_cache_retention` 继续遵循统一安全规则：仅官方 OpenAI 或在 `models.json` 中显式设置 `supportsLongCacheRetention: true` 时保留，否则发送前移除。
 
 对真正的代理，建议先启用 session affinity：
 

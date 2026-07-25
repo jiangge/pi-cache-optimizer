@@ -50,8 +50,8 @@ Primary hooks/events:
 
 ### `after_provider_response`
 
-- Record model-scoped 400 hints only for applicable prompt-cache-retention failures; local `llama.cpp` is excluded.
-- Record model-scoped 403 hints only for applicable third-party OpenAI-compatible proxy failures (session-affinity headers or OpenAI SDK header/User-Agent diagnostics). Local `llama.cpp` and custom transports are excluded.
+- Record model-scoped 400 hints only for applicable prompt-cache-retention failures; the untouched Pi built-in `llama.cpp` compat fingerprint is excluded, while same-id overrides with explicit cache compat remain eligible.
+- Record model-scoped 403 hints only for applicable third-party OpenAI-compatible proxy failures (session-affinity headers or OpenAI SDK header/User-Agent diagnostics). The untouched built-in `llama.cpp` fingerprint and custom transports are excluded; provider id alone is not an exemption.
 - Do not log payloads, headers, prompts, or credentials.
 
 ### `message_end`
@@ -73,5 +73,6 @@ Primary hooks/events:
 
 - Doing final stats attribution from live/global router state instead of assistant message metadata.
 - Injecting OpenAI cache keys into custom transports such as `kiro-api`.
+- Treating a provider id alone (including `llama.cpp`) as proof of transport capabilities; prefer Pi's explicit model/compat fingerprint and honor overrides.
 - Writing prompt or payload data to task reports, stats files, logs, or notifications.
 - Adding hook behavior that cannot be disabled by the established runtime/env gates.

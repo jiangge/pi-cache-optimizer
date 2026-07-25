@@ -30,7 +30,7 @@ Pi extension for improving provider-side KV / prompt cache hit rates. It keeps s
 - Reorders stable system-prompt content before dynamic context.
 - Compresses Pi skill listings and strips session-overview churn.
 - Requests long cache retention when Pi/provider compat supports it.
-- Adds a session-id `prompt_cache_key` fallback for `openai-completions` / `openai-responses` payloads when no effective key exists (except Pi's local `llama.cpp` provider, where proxy cache-key semantics do not apply).
+- Adds a session-id `prompt_cache_key` fallback for `openai-completions` / `openai-responses` payloads when no effective key exists, including Pi's built-in `llama.cpp` provider as Pi 0.82 core does.
 - Warns once for third-party OpenAI-compatible proxies missing cache/session-affinity compat flags.
 - Detects adaptive-thinking compat for Claude (opus-4.6+, sonnet-4.6+ including Sonnet 5, fable-5+) and Kimi Coding K3 / `kimi-for-coding` custom channels.
 - Shows restart-persistent provider/model footer stats for supported model families.
@@ -82,7 +82,7 @@ On Pi 0.79.7 and newer, `pi update` updates Pi itself only. To update installed 
 
 Third-party `openai-completions` proxies (LiteLLM / OneAPI / NewAPI / OpenRouter-like channels) often route one session across multiple upstream backends. That splits provider-side prompt caches.
 
-Pi 0.81+ also has a built-in local `llama.cpp` provider using an OpenAI-shaped transport. It is a local single-backend server, not a third-party routing proxy, so this extension deliberately skips `prompt_cache_key` / long-retention fallback, proxy compat warnings, `/cache-optimizer fix`, and 403 session-affinity diagnostics for provider `llama.cpp`.
+Pi 0.81+ also has a built-in `llama.cpp` provider using an OpenAI-shaped transport. Pi 0.82 core generates a session `prompt_cache_key` for it when cache retention is enabled, so this extension preserves that key and may add the same conservative fallback when missing. The built-in provider's explicit compat fingerprint is excluded from generic proxy routing/session-affinity advice, but a custom or overridden provider that merely reuses the id `llama.cpp` is treated like any other OpenAI-compatible channel. `prompt_cache_retention` remains subject to the normal safety rule: keep it only for official OpenAI or an explicit `supportsLongCacheRetention: true` opt-in in `models.json`; otherwise strip it before sending.
 
 For real proxies, start with session affinity:
 

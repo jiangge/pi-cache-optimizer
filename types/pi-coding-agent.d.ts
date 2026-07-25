@@ -1,4 +1,6 @@
 declare module "@earendil-works/pi-coding-agent" {
+  export function getAgentDir(): string;
+
   export type BuildSystemPromptOptions = {
     customPrompt?: string;
     appendSystemPrompt?: string;
