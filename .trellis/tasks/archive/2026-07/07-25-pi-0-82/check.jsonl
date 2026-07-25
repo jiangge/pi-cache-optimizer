@@ -1,0 +1,4 @@
+{"file":".trellis/spec/frontend/cache-adapter-footer-stats.md","reason":"Audit implementation against binding path/cache/provider/diagnostic/test contracts."}
+{"file":".trellis/spec/frontend/hook-guidelines.md","reason":"Review hook behavior, route attribution, disable gates, and diagnostics safety."}
+{"file":".trellis/tasks/07-25-pi-0-82/prd.md","reason":"Review questions and acceptance criteria for the independent solution/code review."}
+{"file":".trellis/tasks/archive/2026-07/06-19-pi/research/pi-0.82-compat.md","reason":"Cross-check original assumptions against official Pi evidence."}

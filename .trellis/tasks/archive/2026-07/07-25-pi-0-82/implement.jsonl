@@ -1,0 +1,4 @@
+{"file":".trellis/spec/frontend/cache-adapter-footer-stats.md","reason":"Binding runtime contracts for agent-dir paths, cache-key injection, llama.cpp exclusions, diagnostics, persistence, and verification."}
+{"file":".trellis/spec/frontend/hook-guidelines.md","reason":"Hook ordering, routing resolution, diagnostics, and sensitive-data constraints for implementation fixes."}
+{"file":".trellis/tasks/archive/2026-07/06-19-pi/research/pi-0.82-compat.md","reason":"Original Pi 0.82 compatibility rationale being independently reviewed."}
+{"file":".trellis/tasks/archive/2026-07/06-19-pi/research/compatibility-verification.md","reason":"Prior official-API compatibility evidence and validation conventions."}
