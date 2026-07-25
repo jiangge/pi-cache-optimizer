@@ -1,0 +1,5 @@
+{"file":".trellis/spec/frontend/cache-adapter-footer-stats.md","reason":"Core contract for cache optimizer hooks, stats, prompt rewrite, compat diagnostics, persistence, and footer behavior."}
+{"file":".trellis/spec/frontend/hook-guidelines.md","reason":"Pi extension hook behavior and constraints relevant to compatibility checks."}
+{"file":".trellis/spec/frontend/type-safety.md","reason":"TypeScript validation and local Pi API shim patterns."}
+{"file":".trellis/spec/frontend/quality-guidelines.md","reason":"Required quality checks and README/spec sync expectations."}
+{"file":".trellis/tasks/06-19-pi/research/pi-0.79-compat.md","reason":"Research notes from Pi 0.79.7 changelog/docs and current project state."}

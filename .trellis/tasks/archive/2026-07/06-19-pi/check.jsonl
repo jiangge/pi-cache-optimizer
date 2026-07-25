@@ -1,0 +1,5 @@
+{"file":".trellis/spec/frontend/cache-adapter-footer-stats.md","reason":"Verify any changes preserve cache optimizer contract and truthful footer behavior."}
+{"file":".trellis/spec/frontend/hook-guidelines.md","reason":"Review hook compatibility and gating behavior."}
+{"file":".trellis/spec/frontend/type-safety.md","reason":"Verify TypeScript validation and ambient Pi API shim updates if any."}
+{"file":".trellis/spec/frontend/quality-guidelines.md","reason":"Run required checks and ensure docs/spec alignment."}
+{"file":".trellis/tasks/06-19-pi/research/pi-0.79-compat.md","reason":"Review conclusions against Pi 0.79.7 docs/changelog findings."}
