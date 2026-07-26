@@ -1234,6 +1234,17 @@ function collectAnthropicCacheControlsInWireOrder(payload: unknown): UnknownReco
  * If the final serialized payload contains a short → long transition, downgrade
  * all 1h breakpoints to the default 5m so the request remains valid.
  */
+function downgradeAnthropicLongCacheControls(payload: unknown): boolean {
+  let changed = false;
+  for (const control of collectAnthropicCacheControlsInWireOrder(payload)) {
+    if (control.ttl === "1h") {
+      delete control.ttl;
+      changed = true;
+    }
+  }
+  return changed;
+}
+
 function normalizeAnthropicCacheControlTtlOrder(payload: unknown): boolean {
   const controls = collectAnthropicCacheControlsInWireOrder(payload);
   let seenShort = false;
@@ -1250,10 +1261,7 @@ function normalizeAnthropicCacheControlTtlOrder(payload: unknown): boolean {
   }
   if (!hasInvalidLongAfterShort) return false;
 
-  for (const control of controls) {
-    if (control.ttl === "1h") delete control.ttl;
-  }
-  return true;
+  return downgradeAnthropicLongCacheControls(payload);
 }
 
 function isResponsesPromptRewriteBypassApi(api: unknown): boolean {
@@ -2157,6 +2165,19 @@ function hasEffectivePromptCacheKey(record: UnknownRecord): boolean {
 
 function isNonEmptyString(value: unknown): value is string {
   return typeof value === "string" && value.trim().length > 0;
+}
+
+function isOfficialAnthropicBaseUrl(model: PiModel): boolean {
+  const value = lower(model.baseUrl).trim();
+  if (!value) {
+    return lower(model.provider) === "anthropic";
+  }
+
+  try {
+    return new URL(value).hostname === "api.anthropic.com";
+  } catch {
+    return value === "api.anthropic.com" || value.startsWith("api.anthropic.com/");
+  }
 }
 
 function isOfficialOpenAIBaseUrl(model: PiModel): boolean {
@@ -5939,7 +5960,9 @@ export const __internals_for_tests = {
   isAnthropicMessagesApi,
   isOpenAICompatibleProxyApi,
   collectAnthropicCacheControlsInWireOrder,
+  downgradeAnthropicLongCacheControls,
   normalizeAnthropicCacheControlTtlOrder,
+  isOfficialAnthropicBaseUrl,
   isPiBuiltInLlamaCppModel,
   isResponsesPromptRewriteBypassApi,
   isMistralConversationsApi,
@@ -6849,11 +6872,17 @@ export default function (pi: ExtensionAPI) {
     const requestModel = resolveRouteModel(ctx.model, ctx) ?? ctx.model;
 
     // Anthropic rejects mixed cache breakpoints when a 1h block appears after
-    // a 5m/default block in wire order (tools → system → messages). Normalize
-    // only provably-invalid final payloads; legal long-only and long→short
-    // payloads keep their original retention.
-    if (isAnthropicMessagesApi(requestModel?.api)) {
-      normalizeAnthropicCacheControlTtlOrder(event.payload);
+    // a 5m/default block in wire order (tools → system → messages). Third-party
+    // proxies may inject/rewrite cache breakpoints after this hook, so their
+    // hidden short TTLs cannot be proven from Pi's visible payload. Preserve 1h
+    // for official Anthropic; conservatively downgrade third-party Anthropic
+    // requests to default 5m, which is valid even when a proxy adds breakpoints.
+    if (requestModel && isAnthropicMessagesApi(requestModel.api)) {
+      if (isOfficialAnthropicBaseUrl(requestModel)) {
+        normalizeAnthropicCacheControlTtlOrder(event.payload);
+      } else {
+        downgradeAnthropicLongCacheControls(event.payload);
+      }
     }
 
     // ── Safety: strip prompt_cache_retention from payload for models that

@@ -51,7 +51,7 @@ Primary hooks/events:
 
 ### `before_provider_request`
 
-- For effective `anthropic-messages` models, validate final cache breakpoints in `tools → system → messages` order. If a 1-hour breakpoint occurs after a 5-minute/default breakpoint, downgrade all request-local 1-hour breakpoints to default 5-minute retention without inspecting/logging prompt content.
+- For official Anthropic, validate final cache breakpoints in `tools → system → messages` order and downgrade only a visible invalid 5-minute-to-1-hour transition. For non-official `anthropic-messages` endpoints, downgrade all request-local 1-hour breakpoints to default 5-minute retention because proxies may inject hidden short breakpoints after the hook. Never inspect/log prompt content.
 - Only inject OpenAI-compatible `prompt_cache_key` fallback for `openai-completions` / `openai-responses` APIs.
 - Preserve existing non-empty `prompt_cache_key` / `promptCacheKey` values.
 - Use Pi session id fallback; do not derive keys from prompt content.

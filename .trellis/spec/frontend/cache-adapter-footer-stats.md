@@ -215,13 +215,20 @@ breakpoints in wire processing order: `tools`, then `system`, then
 * `ttl: "5m"` and an ephemeral cache control with no `ttl` are short retention.
 * Anthropic permits long-only, short-only, and long-to-short ordering, but rejects
   any long breakpoint after a short breakpoint.
-* Only when a short-to-long transition is observed, every `ttl: "1h"` in the
-  known breakpoint locations MUST be downgraded by deleting `ttl`, producing
-  default 5-minute cache controls. This must not change prompt text, tool schemas,
-  model routing, or unrelated nested objects that merely contain a
-  `cache_control`-named key.
-* Detection MUST use the effective API and final payload shape, never provider id,
-  base URL, model id/name, adapter family, or compat flags.
+* For official Anthropic (`api.anthropic.com`, or the built-in `anthropic`
+  provider when no base URL is exposed), only when a visible short-to-long
+  transition is observed, every `ttl: "1h"` in the known breakpoint locations
+  MUST be downgraded by deleting `ttl`, producing default 5-minute controls.
+  Legal official long-only and long-to-short payloads remain unchanged.
+* For non-official `anthropic-messages` endpoints, every request-local `ttl: "1h"`
+  in the known breakpoint locations MUST be downgraded to default 5-minute
+  retention. Real Pi 0.82.1 testing showed that a third-party proxy can inject or
+  rewrite hidden short breakpoints after `before_provider_request`; Pi's visible
+  payload was long-only while the endpoint still rejected a later 1h block.
+* This must not change prompt text, tool schemas, model routing, or unrelated nested
+  objects that merely contain a `cache_control`-named key.
+* Detection MUST use the effective API and official endpoint check, never provider
+  id, model id/name, adapter family, or cache adapter selection.
 * The repair remains active even when runtime prompt optimization is disabled,
   because it prevents a provider-invalid request rather than optimizing prompts.
 * Legal payloads and non-Anthropic APIs MUST remain byte/structure-equivalent.
