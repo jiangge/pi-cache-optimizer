@@ -113,6 +113,14 @@ Pi 0.81+ 也内置了使用 OpenAI-shaped transport 的 `llama.cpp` provider。P
 - 对 DeepSeek 模型，Pi Mono 指南期望在支持时同时设置 `compat.requiresReasoningContentOnAssistantMessages: true` 和 `compat.thinkingFormat: "deepseek"`，再配合缓存 / session-affinity 相关 compat。
 - 本扩展的 `doctor` 和 `compat` 命令只给建议，不会修改 `models.json`。
 
+## Anthropic 缓存 TTL 兼容
+
+Anthropic 按 `tools → system → messages` 顺序处理 cache breakpoint，并拒绝位于 5 分钟 breakpoint 之后的 `ttl: "1h"` breakpoint。省略 `ttl` 的 ephemeral `cache_control` 使用默认 5 分钟保留时间。
+
+对于 `anthropic-messages` 渠道，本扩展会在发送前检查最终序列化 payload。如果检测到非法的短 TTL → 长 TTL 顺序，会保守地把该请求中的 `1h` breakpoint 降级为默认 5 分钟 TTL。合法的纯 `1h` 和 `1h → 5m` payload 保持不变。判断依据是 payload 结构，而不是 `pipi-cc` 等 provider 名称。
+
+如果代理在 Pi request hook 之后自行添加冲突的 cache control，可为该 provider/model 设置 `compat.supportsLongCacheRetention: false`，使 Pi 不再发送 `ttl: "1h"`。
+
 ## Adaptive thinking 模型
 
 Claude 从 opus-4.6 / sonnet-4.6（含 Sonnet 5）/ fable-5 开始需要在 compat 中设置 `forceAdaptiveThinking: true`。Kimi Coding K3（`k3`）和 `kimi-for-coding` 也使用 adaptive thinking，并需要 `allowEmptySignature: true`，以正确重放空 signature 的 thinking block。缺少这些 compat 时，Pi 可能发送旧版 thinking payload 或错误重放 thinking。

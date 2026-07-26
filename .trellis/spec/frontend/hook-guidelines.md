@@ -51,6 +51,7 @@ Primary hooks/events:
 
 ### `before_provider_request`
 
+- For effective `anthropic-messages` models, validate final cache breakpoints in `tools → system → messages` order. If a 1-hour breakpoint occurs after a 5-minute/default breakpoint, downgrade all request-local 1-hour breakpoints to default 5-minute retention without inspecting/logging prompt content.
 - Only inject OpenAI-compatible `prompt_cache_key` fallback for `openai-completions` / `openai-responses` APIs.
 - Preserve existing non-empty `prompt_cache_key` / `promptCacheKey` values.
 - Use Pi session id fallback; do not derive keys from prompt content.
@@ -81,6 +82,7 @@ Primary hooks/events:
 
 - Doing final stats attribution from live/global router state instead of assistant message metadata.
 - Injecting OpenAI cache keys into custom transports such as `kiro-api`.
+- Normalizing Anthropic TTLs by provider/model name instead of validating the effective API and final wire-order payload.
 - Treating a provider id alone (including `llama.cpp`) as proof of transport capabilities; prefer Pi's explicit model/compat fingerprint and honor overrides.
 - Writing prompt or payload data to task reports, stats files, logs, or notifications.
 - Adding hook behavior that cannot be disabled by the established runtime/env gates.

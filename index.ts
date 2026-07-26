@@ -1170,6 +1170,10 @@ function isOpenAICompatibleApi(api: unknown): boolean {
   return value === "openai-completions" || value === "openai-responses";
 }
 
+function isAnthropicMessagesApi(api: unknown): boolean {
+  return lower(api) === "anthropic-messages";
+}
+
 function isOpenAICompatibleProxyApi(api: unknown): boolean {
   return lower(api) === "openai-completions";
 }
@@ -1194,6 +1198,62 @@ function isPiBuiltInLlamaCppModel(model: PiModel | undefined): boolean {
 
 function shouldInjectOpenAIPromptCacheKeyForModel(model: PiModel | undefined): boolean {
   return isOpenAICompatibleApi(model?.api);
+}
+
+function collectAnthropicCacheControlsInWireOrder(payload: unknown): UnknownRecord[] {
+  const record = asRecord(payload);
+  if (!record) return [];
+
+  const controls: UnknownRecord[] = [];
+  const collectFromBlock = (value: unknown): void => {
+    const cacheControl = asRecord(asRecord(value)?.cache_control);
+    if (cacheControl?.type === "ephemeral") controls.push(cacheControl);
+  };
+
+  // Anthropic processes cache breakpoints in tools → system → messages order.
+  if (Array.isArray(record.tools)) {
+    for (const tool of record.tools) collectFromBlock(tool);
+  }
+  if (Array.isArray(record.system)) {
+    for (const block of record.system) collectFromBlock(block);
+  }
+  if (Array.isArray(record.messages)) {
+    for (const message of record.messages) {
+      const content = asRecord(message)?.content;
+      if (!Array.isArray(content)) continue;
+      for (const block of content) collectFromBlock(block);
+    }
+  }
+
+  return controls;
+}
+
+/**
+ * Anthropic requires every 1h cache breakpoint to precede every 5m breakpoint.
+ * An ephemeral cache_control without ttl uses Anthropic's default 5m retention.
+ * If the final serialized payload contains a short → long transition, downgrade
+ * all 1h breakpoints to the default 5m so the request remains valid.
+ */
+function normalizeAnthropicCacheControlTtlOrder(payload: unknown): boolean {
+  const controls = collectAnthropicCacheControlsInWireOrder(payload);
+  let seenShort = false;
+  let hasInvalidLongAfterShort = false;
+
+  for (const control of controls) {
+    const ttl = control.ttl;
+    if (ttl === undefined || ttl === "5m") {
+      seenShort = true;
+    } else if (ttl === "1h" && seenShort) {
+      hasInvalidLongAfterShort = true;
+      break;
+    }
+  }
+  if (!hasInvalidLongAfterShort) return false;
+
+  for (const control of controls) {
+    if (control.ttl === "1h") delete control.ttl;
+  }
+  return true;
 }
 
 function isResponsesPromptRewriteBypassApi(api: unknown): boolean {
@@ -5876,7 +5936,10 @@ export const __internals_for_tests = {
   shouldInjectOpenAIPromptCacheKey,
   shouldInjectOpenAIPromptCacheKeyForModel,
   isOpenAICompatibleApi,
+  isAnthropicMessagesApi,
   isOpenAICompatibleProxyApi,
+  collectAnthropicCacheControlsInWireOrder,
+  normalizeAnthropicCacheControlTtlOrder,
   isPiBuiltInLlamaCppModel,
   isResponsesPromptRewriteBypassApi,
   isMistralConversationsApi,
@@ -6783,6 +6846,16 @@ export default function (pi: ExtensionAPI) {
   });
 
   pi.on("before_provider_request", (event, ctx) => {
+    const requestModel = resolveRouteModel(ctx.model, ctx) ?? ctx.model;
+
+    // Anthropic rejects mixed cache breakpoints when a 1h block appears after
+    // a 5m/default block in wire order (tools → system → messages). Normalize
+    // only provably-invalid final payloads; legal long-only and long→short
+    // payloads keep their original retention.
+    if (isAnthropicMessagesApi(requestModel?.api)) {
+      normalizeAnthropicCacheControlTtlOrder(event.payload);
+    }
+
     // ── Safety: strip prompt_cache_retention from payload for models that
     // are not authorised to send it. Pi defaults supportsLongCacheRetention
     // to true for all openai-completions models, but most third-party APIs
@@ -6799,14 +6872,13 @@ export default function (pi: ExtensionAPI) {
     if (runtimeOptimizerEnabled) {
       const payload = event.payload as UnknownRecord;
       if (payload && typeof payload.prompt_cache_retention === 'string') {
-        const rModel = resolveRouteModel(ctx.model, ctx) ?? ctx.model;
-        if (rModel) {
-          if (isOfficialOpenAIBaseUrl(rModel)) {
+        if (requestModel) {
+          if (isOfficialOpenAIBaseUrl(requestModel)) {
             // Gate 1: Official OpenAI → keep
-          } else if (promptCacheRetention400Models.has(modelKey(rModel))) {
+          } else if (promptCacheRetention400Models.has(modelKey(requestModel))) {
             // Gate 2: 400 history → strip (overrides user opt-in)
             delete payload.prompt_cache_retention;
-          } else if (hasExplicitLongRetentionOptIn(rModel)) {
+          } else if (hasExplicitLongRetentionOptIn(requestModel)) {
             // Gate 3: Explicit user opt-in → keep
           } else {
             // Gate 4: Safe default → strip
@@ -6817,7 +6889,6 @@ export default function (pi: ExtensionAPI) {
     }
 
     if (!shouldInjectOpenAIPromptCacheKey()) return undefined;
-    const requestModel = resolveRouteModel(ctx.model, ctx) ?? ctx.model;
     if (!shouldInjectOpenAIPromptCacheKeyForModel(requestModel)) return undefined;
 
     return addOpenAIPromptCacheKey(event.payload, getSessionPromptCacheKey(ctx));

@@ -113,6 +113,14 @@ Notes:
 - For DeepSeek models, the Pi Mono guidance expects `compat.requiresReasoningContentOnAssistantMessages: true` and `compat.thinkingFormat: "deepseek"` alongside cache/session-affinity flags when the endpoint supports them.
 - This extension's `doctor` and `compat` commands only advise; they do not modify `models.json`.
 
+## Anthropic cache TTL compatibility
+
+Anthropic processes cache breakpoints in `tools → system → messages` order and rejects a `ttl: "1h"` breakpoint that appears after a 5-minute breakpoint. An ephemeral `cache_control` without `ttl` uses the default 5-minute retention.
+
+For `anthropic-messages` channels, the extension checks the final serialized payload before sending. If it detects an invalid short-to-long transition, it conservatively downgrades that request's `1h` breakpoints to the default 5-minute TTL. Legal long-only and `1h → 5m` payloads are left unchanged. This is based on payload structure, not provider names such as `pipi-cc`.
+
+If a proxy adds its own conflicting cache controls after Pi's request hook, set `compat.supportsLongCacheRetention: false` for that provider/model so Pi does not emit `ttl: "1h"`.
+
 ## Adaptive thinking models
 
 Claude models from opus-4.6 / sonnet-4.6 (including Sonnet 5) / fable-5 onwards require `forceAdaptiveThinking: true` in compat. Kimi Coding K3 (`k3`) and `kimi-for-coding` also use adaptive thinking and need `allowEmptySignature: true` so replayed empty-signature thinking blocks remain valid. Without the required compat, Pi may send a legacy thinking payload or replay thinking incorrectly.

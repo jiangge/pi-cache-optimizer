@@ -204,6 +204,28 @@ core's own cache transport.
   `before_agent_start` hook still avoids prompt rewriting for
   `openai-codex-responses` and `openai-responses`.
 
+### Anthropic cache-control TTL order safety
+
+For an effective model using `api: "anthropic-messages"`, the
+`before_provider_request` hook MUST validate the final serialized Anthropic cache
+breakpoints in wire processing order: `tools`, then `system`, then
+`messages[].content`.
+
+* An ephemeral `cache_control` with `ttl: "1h"` is long retention.
+* `ttl: "5m"` and an ephemeral cache control with no `ttl` are short retention.
+* Anthropic permits long-only, short-only, and long-to-short ordering, but rejects
+  any long breakpoint after a short breakpoint.
+* Only when a short-to-long transition is observed, every `ttl: "1h"` in the
+  known breakpoint locations MUST be downgraded by deleting `ttl`, producing
+  default 5-minute cache controls. This must not change prompt text, tool schemas,
+  model routing, or unrelated nested objects that merely contain a
+  `cache_control`-named key.
+* Detection MUST use the effective API and final payload shape, never provider id,
+  base URL, model id/name, adapter family, or compat flags.
+* The repair remains active even when runtime prompt optimization is disabled,
+  because it prevents a provider-invalid request rather than optimizing prompts.
+* Legal payloads and non-Anthropic APIs MUST remain byte/structure-equivalent.
+
 #### Third-party OpenAI-compatible proxy compat warning
 
 For models using `api: "openai-completions"` through a non-official
