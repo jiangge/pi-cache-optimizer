@@ -11,6 +11,7 @@ This repository does not use React hooks. “Hooks” here are Pi extension life
 Primary hooks/events:
 
 - `session_start`
+- `session_shutdown`
 - `model_select`
 - `before_agent_start`
 - `before_provider_request`
@@ -27,6 +28,13 @@ Primary hooks/events:
 - On reload, preserve session-scoped stats and restore exact last routed model metadata.
 - Notify compat only when runtime optimizer is enabled.
 - Publish footer status after restore.
+
+### `session_shutdown`
+
+- Cancel any pending debounced stats timer and await a final serialized persistence write before Pi tears down the runtime.
+- Uninstall the extension-owned `Symbol.for("pi.cache.hints.v1")` service without deleting a newer replacement owner.
+- Clear extension-owned legacy cache-key globals and transient hint state.
+- Restore the process-original `PI_CACHE_RETENTION` value. The baseline is process-scoped and must survive extension module reloads.
 
 ### `model_select`
 
@@ -76,3 +84,5 @@ Primary hooks/events:
 - Treating a provider id alone (including `llama.cpp`) as proof of transport capabilities; prefer Pi's explicit model/compat fingerprint and honor overrides.
 - Writing prompt or payload data to task reports, stats files, logs, or notifications.
 - Adding hook behavior that cannot be disabled by the established runtime/env gates.
+- Leaving debounced writes, global protocol services, legacy hint globals, or extension-mutated environment values alive after `session_shutdown`.
+- Allowing same-instance stats writes to overlap; atomic rename prevents partial files but does not preserve write order.

@@ -51,6 +51,7 @@ declare module "@earendil-works/pi-coding-agent" {
 
   export type ExtensionAPI = {
     on(event: "session_start", handler: (event: { reason?: string }, ctx: ExtensionContext) => unknown): void;
+    on(event: "session_shutdown", handler: (event: { reason: "quit" | "reload" | "new" | "resume" | "fork"; targetSessionFile?: string }, ctx: ExtensionContext) => unknown): void;
     on(event: "model_select", handler: (event: { model?: ExtensionModel }, ctx: ExtensionContext) => unknown): void;
     on(event: "before_agent_start", handler: (event: { systemPrompt: string; systemPromptOptions: BuildSystemPromptOptions }, ctx: ExtensionContext) => unknown): void;
     on(event: "before_provider_request", handler: (event: { payload: unknown }, ctx: ExtensionContext) => unknown): void;

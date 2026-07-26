@@ -340,11 +340,19 @@ type PersistedCacheStatsV6 = {
   outputs, or provider config snapshots.
 * Writes MUST remain atomic: write a temp file then `rename` into the resolved
   Pi agent-dir `pi-cache-optimizer-stats.json`; never update the JSON in place.
-* Concurrent writes are best-effort only. Before writing, the extension re-reads
-  the persisted file and preserves other session buckets it can see, but there
-  is **no inter-process lock**. If two Pi processes write at the same time,
-  last-writer-wins can still lose a concurrent update. Do not document or test
-  stronger durability than best-effort sequential preservation.
+* Writes from one extension instance MUST be serialized in invocation order.
+  Debounced `message_end` persistence and immediate reset/enable/disable/rollover/
+  shutdown writes must not overlap and rename out of order; otherwise an older
+  write can resurrect counters deleted by a newer reset. Each queued write owns
+  the delete/replace intent captured with its immutable state snapshot, so later
+  usage writes do not inherit a stale reset deletion. Atomic temp + rename remains
+  required for every individual write.
+* Concurrent writes from different Pi processes are best-effort only. Before
+  writing, the extension re-reads the persisted file and preserves other session
+  buckets it can see, but there is **no inter-process lock**. If two Pi processes
+  write at the same time, last-writer-wins can still lose a concurrent update.
+  Do not document or test stronger durability than best-effort sequential
+  preservation.
 
 ### Session buckets and restart continuity
 
@@ -457,7 +465,11 @@ and removing `_nosession`.
 * Local day rollover resets stale entries in session-stats, `totalsByModel`, and
   `legacyFamily`.
 * Debounced persistence is allowed for ordinary `message_end` writes; reload, reset,
-  and day rollover MUST flush/persist immediately.
+  day rollover, and `session_shutdown` MUST flush/persist immediately. Shutdown
+  cancels the pending timer, awaits the serialized final write, clears transient
+  cache hints/legacy cache-key globals, uninstalls the extension-owned cache-hints
+  service, and restores the process-original `PI_CACHE_RETENTION` value before Pi
+  tears down the runtime.
 
 ---
 
@@ -500,6 +512,8 @@ and removing `_nosession`.
 | `/cache-optimizer reset` only targets one model | Other provider/model totals remain unaffected. Old session buckets may remain for migration/audit compatibility, but the authoritative total for the reset model is removed. |
 | `/reload` or process restart after `/cache-optimizer reset` | The provider/model total remains reset; transient state stays cleared; no `_nosession`, legacy v3 bucket, or old session bucket resurrects the deleted footer stats. |
 | New v4 stats file contains `_nosession` | Restore migrates `_nosession:<provider>/<model>` entries into the current session hash. The first explicit current-session write removes `_nosession` from disk. |
+| Debounced `message_end` write is in flight when reset/enable/disable/rollover/shutdown requests another write | Same-instance writes execute serially in invocation order; newer delete/replace state remains authoritative and cannot be overwritten by an older rename. |
+| `session_shutdown` occurs before the 2-second message debounce expires | Cancel the timer, await a final serialized stats write, uninstall owned cache-hints state, clear legacy hints, and restore the process-original retention env before teardown. |
 | Concurrent Pi processes write stats | Each write preserves other session buckets visible at its pre-write read, but there is no inter-process locking guarantee; concurrent last-writer-wins races are possible and accepted. |
 | Local day changes | Reset every stale session-scoped stats entry, `totalsByModel` entry, and `legacyFamily` entry to empty current-day stats before publishing/updating, and persist immediately. |
 | New stats path corrupt | Log warning, fall back to empty in-memory counters; do not delete. Next valid write may replace it atomically. |
@@ -1061,12 +1075,14 @@ These are current-process runtime switches, not persistent config writes.
   republishes the footer, and shows a status summary for prompt rewrite,
   OpenAI-compatible `prompt_cache_key` fallback, footer stats, compat warnings, and
   `PI_CACHE_RETENTION`.
-* `disable` turns runtime optimization off, restores the startup `PI_CACHE_RETENTION`
-  value (or unsets it if it was originally unset), suppresses prompt mutations,
+* `disable` turns runtime optimization off, restores the process-original
+  `PI_CACHE_RETENTION` value (or unsets it if it was originally unset), suppresses prompt mutations,
   OpenAI-compatible `prompt_cache_key` fallback, and compat warnings, resets
   local footer stats/recent samples, keeps collecting footer stats in disabled
   comparison mode, republishes the footer as `Cache Optimizer disabled · <stats>`
-  for adapter-matched models, and shows the same status summary.
+  for adapter-matched models, and shows the same status summary. The retention
+  baseline is stored as a validated process-global versioned snapshot so an
+  extension module reload cannot mistake its own `long` mutation for the original value.
 * Neither command writes environment files, Pi settings, or `models.json`. They do
   persist the local stats reset so the comparison footer starts from 0/0.
   Run `/reload` or restart Pi to return optimizer runtime behavior to startup defaults.
@@ -1310,7 +1326,7 @@ compat). It does NOT read or expose:
 | `/cache-optimizer compat` with a fully configured applicable model | Shows `✅ Compat fully configured.` |
 | `/cache-optimizer compat` with a non-applicable model | Shows `ℹ️ Compat check not applicable for this model.` |
 | `/cache-optimizer enable` | Runtime optimizer becomes enabled, `PI_CACHE_RETENTION=long` is requested, local footer stats/recent samples reset, footer republishes, and notification lists active feature states |
-| `/cache-optimizer disable` | Runtime optimizer becomes disabled for this Pi process, startup `PI_CACHE_RETENTION` is restored/unset, local footer stats/recent samples reset, adapter-matched footer shows `Cache Optimizer disabled · <stats>`, and notification lists disabled feature states |
+| `/cache-optimizer disable` | Runtime optimizer becomes disabled for this Pi process, the process-original `PI_CACHE_RETENTION` is restored/unset even after extension reload, local footer stats/recent samples reset, adapter-matched footer shows `Cache Optimizer disabled · <stats>`, and notification lists disabled feature states |
 | Runtime disabled before hooks fire | `before_agent_start` returns `{}`, `before_provider_request` does not add `prompt_cache_key`, `message_end` continues updating comparison stats, and session/model compat warnings are suppressed |
 | `/cache-optimizer` (no args) with UI supports select | Shows interactive selection menu (Enable / Disable / Doctor / Stats / Compat / Reset / Cancel) |
 | `/cache-optimizer` (no args) without UI | Text help lists `enable`, `disable`, `doctor`, `stats`, `compat`, `reset` subcommands plus runtime state |

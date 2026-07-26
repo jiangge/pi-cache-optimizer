@@ -14,6 +14,12 @@ type CacheRetentionEnvSnapshot = {
 
 const PI_CACHE_RETENTION_ENV = "PI_CACHE_RETENTION";
 const LONG_CACHE_RETENTION_VALUE = "long";
+const PI_CACHE_RETENTION_BASELINE_SYMBOL = Symbol.for("pi.cache.optimizer.retention-baseline.v1");
+
+type CacheRetentionBaselineV1 = {
+  version: 1;
+  snapshot: CacheRetentionEnvSnapshot;
+};
 
 function captureCacheRetentionEnv(env: MutableEnv = process.env): CacheRetentionEnvSnapshot {
   return {
@@ -36,7 +42,28 @@ function restoreCacheRetentionEnv(snapshot: CacheRetentionEnvSnapshot, env: Muta
   }
 }
 
-const STARTUP_CACHE_RETENTION_ENV = captureCacheRetentionEnv();
+function isCacheRetentionBaselineV1(value: unknown): value is CacheRetentionBaselineV1 {
+  if (typeof value !== "object" || value === null) return false;
+  const record = value as { version?: unknown; snapshot?: unknown };
+  if (record.version !== 1 || typeof record.snapshot !== "object" || record.snapshot === null) return false;
+  const snapshot = record.snapshot as { wasSet?: unknown; value?: unknown };
+  return typeof snapshot.wasSet === "boolean" &&
+    (snapshot.value === undefined || typeof snapshot.value === "string");
+}
+
+function getOrCaptureCacheRetentionBaseline(
+  env: MutableEnv = process.env,
+  globals: Record<symbol, unknown> = globalThis as Record<symbol, unknown>,
+): CacheRetentionEnvSnapshot {
+  const existing = globals[PI_CACHE_RETENTION_BASELINE_SYMBOL];
+  if (isCacheRetentionBaselineV1(existing)) return { ...existing.snapshot };
+
+  const snapshot = captureCacheRetentionEnv(env);
+  globals[PI_CACHE_RETENTION_BASELINE_SYMBOL] = { version: 1, snapshot: { ...snapshot } };
+  return snapshot;
+}
+
+const STARTUP_CACHE_RETENTION_ENV = getOrCaptureCacheRetentionBaseline();
 
 /**
  * Pi Cache Optimizer (formerly pi-deepseek-cache-optimizer)
@@ -76,6 +103,7 @@ const NO_SKILL_COMPRESSION_ENV = "PI_CACHE_OPTIMIZER_NO_SKILL_COMPRESSION";
 const NO_PROMPT_REWRITE_ENV = "PI_CACHE_OPTIMIZER_NO_PROMPT_REWRITE";
 const PI_ROUTING_REGISTRY_SYMBOL = Symbol.for("pi.routing.registry.v1");
 const PI_CACHE_HINTS_SYMBOL = Symbol.for("pi.cache.hints.v1");
+const PI_CACHE_HINTS_OWNER_SYMBOL = Symbol.for("pi.cache.optimizer.hints-owner.v1");
 
 let runtimeOptimizerEnabled = true;
 
@@ -921,16 +949,29 @@ function getCacheHintsService(): PiCacheHintsV1 | undefined {
   return isCacheHintsServiceV1(candidate) ? candidate : undefined;
 }
 
-function installCacheHintsService(service: PiCacheHintsV1): () => void {
+function markOptimizerOwnedCacheHintsService(service: PiCacheHintsV1): PiCacheHintsV1 {
+  (service as PiCacheHintsV1 & Record<symbol, unknown>)[PI_CACHE_HINTS_OWNER_SYMBOL] = true;
+  return service;
+}
+
+function isOptimizerOwnedCacheHintsService(value: unknown): boolean {
+  return typeof value === "object" && value !== null &&
+    (value as Record<symbol, unknown>)[PI_CACHE_HINTS_OWNER_SYMBOL] === true;
+}
+
+function installCacheHintsService(
+  service: PiCacheHintsV1,
+  options: { discardPrevious?: (value: unknown) => boolean } = {},
+): () => void {
   const globals = getProtocolGlobal();
   const previous = globals[PI_CACHE_HINTS_SYMBOL];
   globals[PI_CACHE_HINTS_SYMBOL] = service;
   return () => {
     if (globals[PI_CACHE_HINTS_SYMBOL] !== service) return;
-    if (previous === undefined) {
-      delete globals[PI_CACHE_HINTS_SYMBOL];
-    } else {
+    if (previous !== undefined && !options.discardPrevious?.(previous)) {
       globals[PI_CACHE_HINTS_SYMBOL] = previous;
+    } else {
+      delete globals[PI_CACHE_HINTS_SYMBOL];
     }
   };
 }
@@ -3919,6 +3960,15 @@ function mergeCacheSessions(
   return sessions;
 }
 
+function createSerializedAsyncRunner(): <T>(operation: () => Promise<T>) => Promise<T> {
+  let tail: Promise<unknown> = Promise.resolve();
+  return <T>(operation: () => Promise<T>): Promise<T> => {
+    const result = tail.then(operation);
+    tail = result.catch(() => undefined);
+    return result;
+  };
+}
+
 function mergeCacheTotals(
   existingTotalsByModel: Record<string, CacheStats>,
   stateTotalsByModel: Record<string, CacheStats>,
@@ -6025,10 +6075,15 @@ export const __internals_for_tests = {
   isVirtualRoutingModel,
   installCacheHintsService,
   getCacheHintsService,
+  markOptimizerOwnedCacheHintsService,
+  isOptimizerOwnedCacheHintsService,
+  getOrCaptureCacheRetentionBaseline,
+  PI_CACHE_RETENTION_BASELINE_SYMBOL,
   // Persistence helpers (for reload/reset tests)
   mergeCacheSessions,
   mergeCacheTotals,
   mergeLastRoutedModels,
+  createSerializedAsyncRunner,
   writePersistedCacheStats,
   readPersistedCacheStats,
   STATE_FILE_PATH,
@@ -6078,7 +6133,9 @@ export default function (pi: ExtensionAPI) {
   let lastStatusText: string | undefined;
   let persistenceWarningShown = false;
   let persistTimer: ReturnType<typeof setTimeout> | null = null;
+  const enqueuePersist = createSerializedAsyncRunner();
   let replacePersistedTotalsOnNextWrite = false;
+  let forceReplaceTotalsAfterFailure = false;
   const pendingDeletedTotalModelKeys = new Set<string>();
   let integrityNotificationShown = false;
   let currentSessionId = "";
@@ -6100,7 +6157,7 @@ export default function (pi: ExtensionAPI) {
     }
   }
 
-  const uninstallCacheHintsService = installCacheHintsService({
+  const uninstallCacheHintsService = installCacheHintsService(markOptimizerOwnedCacheHintsService({
     version: 1,
     getHints(input: PiCacheHintsInput): PiCacheHintsOutput | undefined {
       if (!runtimeOptimizerEnabled || isEnabledEnv(process.env[NO_PROMPT_REWRITE_ENV])) return undefined;
@@ -6119,8 +6176,7 @@ export default function (pi: ExtensionAPI) {
         cacheRetention: hint.cacheRetention,
       };
     },
-  });
-  void uninstallCacheHintsService;
+  }), { discardPrevious: isOptimizerOwnedCacheHintsService });
 
   /**
    * Build a session-scoped stats key from the current session hash + model key.
@@ -6243,28 +6299,59 @@ export default function (pi: ExtensionAPI) {
     lastStatusText = undefined;
   }
 
-  async function persistCacheStats(ctx?: ExtensionContext): Promise<void> {
-    try {
-      await writePersistedCacheStats(
-        getCacheStatsState(),
-        currentSessionHashSet ? currentSessionHash : undefined,
-        {
-          deleteModelKeys: Array.from(pendingDeletedTotalModelKeys),
-          replaceTotals: replacePersistedTotalsOnNextWrite,
-        },
-      );
-      pendingDeletedTotalModelKeys.clear();
-      replacePersistedTotalsOnNextWrite = false;
-    } catch (error) {
-      console.warn(`${LOG_PREFIX}: failed to persist cache stats`, error);
-      if (!persistenceWarningShown) {
-        persistenceWarningShown = true;
-        ctx?.ui.notify(
-          `${LOG_PREFIX}: failed to persist footer stats; using in-memory stats for this process.`,
-          "warning",
-        );
-      }
+  function snapshotCacheStatsState(): CacheStatsState {
+    const state = getCacheStatsState();
+    const statsByModel = Object.fromEntries(
+      Object.entries(state.statsByModel).map(([key, stats]) => [key, { ...stats }]),
+    );
+    const totalsByModel = Object.fromEntries(
+      Object.entries(state.totalsByModel).map(([key, stats]) => [key, { ...stats }]),
+    );
+    const legacyFamily: Partial<Record<CacheProviderId, CacheStats>> = {};
+    for (const id of CACHE_PROVIDER_IDS) {
+      const stats = state.legacyFamily[id];
+      if (stats) legacyFamily[id] = { ...stats };
     }
+    const lastRoutedModelBySession = state.lastRoutedModelBySession
+      ? Object.fromEntries(
+        Object.entries(state.lastRoutedModelBySession).map(([key, model]) => [key, { ...model }]),
+      )
+      : undefined;
+    return { statsByModel, totalsByModel, legacyFamily, lastRoutedModelBySession };
+  }
+
+  function persistCacheStats(ctx?: ExtensionContext): Promise<void> {
+    const state = snapshotCacheStatsState();
+    const sessionHash = currentSessionHashSet ? currentSessionHash : undefined;
+    const deleteModelKeys = Array.from(pendingDeletedTotalModelKeys);
+    const replaceTotals = replacePersistedTotalsOnNextWrite;
+    // This queued write owns the current intents. Later mutations can enqueue
+    // independent intents without an earlier completion clearing them.
+    pendingDeletedTotalModelKeys.clear();
+    replacePersistedTotalsOnNextWrite = false;
+
+    return enqueuePersist(async () => {
+      const recoverFromEarlierFailure = forceReplaceTotalsAfterFailure;
+      try {
+        await writePersistedCacheStats(state, sessionHash, {
+          deleteModelKeys,
+          replaceTotals: replaceTotals || recoverFromEarlierFailure,
+        });
+        if (recoverFromEarlierFailure) forceReplaceTotalsAfterFailure = false;
+      } catch (error) {
+        // The next queued write must replace totals authoritatively so a failed
+        // reset/delete cannot merge stale persisted counters back into state.
+        forceReplaceTotalsAfterFailure = true;
+        console.warn(`${LOG_PREFIX}: failed to persist cache stats`, error);
+        if (!persistenceWarningShown) {
+          persistenceWarningShown = true;
+          ctx?.ui.notify(
+            `${LOG_PREFIX}: failed to persist footer stats; using in-memory stats for this process.`,
+            "warning",
+          );
+        }
+      }
+    });
   }
 
   /** Schedule a debounced persist. Coalesces rapid message_end writes
@@ -6554,8 +6641,20 @@ export default function (pi: ExtensionAPI) {
   }
 
   pi.on("session_start", async (event, ctx) => {
+    if (runtimeOptimizerEnabled) requestLongCacheRetention();
     await restoreCacheStats(event.reason, ctx);
     await publishStatus(ctx);
+  });
+
+  pi.on("session_shutdown", async (_event, ctx) => {
+    try {
+      await flushPersistCacheStats(ctx);
+    } finally {
+      latestCacheHint = undefined;
+      delete getProtocolGlobal().__piCacheOptimizerCacheKey__;
+      uninstallCacheHintsService();
+      restoreCacheRetentionEnv(STARTUP_CACHE_RETENTION_ENV);
+    }
   });
 
   pi.on("model_select", async (event, ctx) => {
