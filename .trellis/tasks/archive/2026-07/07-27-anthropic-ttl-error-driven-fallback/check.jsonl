@@ -1,0 +1,5 @@
+{"file":".trellis/spec/frontend/cache-adapter-footer-stats.md","reason":"Audit error-driven fallback and doctor/fix semantics."}
+{"file":".trellis/spec/frontend/hook-guidelines.md","reason":"Verify hook gates and error early-return ordering."}
+{"file":".trellis/spec/frontend/type-safety.md","reason":"Review external error-message parsing and model identity guards."}
+{"file":".trellis/spec/frontend/quality-guidelines.md","reason":"Run full regression and privacy/package checks."}
+{"file":".trellis/tasks/07-27-anthropic-ttl-error-driven-fallback/research/live-evidence.md","reason":"Ensure implementation matches real evidence without overgeneralizing."}

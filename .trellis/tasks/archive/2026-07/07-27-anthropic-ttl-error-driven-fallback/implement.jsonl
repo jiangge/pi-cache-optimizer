@@ -1,0 +1,5 @@
+{"file":".trellis/spec/frontend/cache-adapter-footer-stats.md","reason":"Binding Anthropic TTL fallback, diagnostics, and fix contracts."}
+{"file":".trellis/spec/frontend/hook-guidelines.md","reason":"before_provider_request and message_end hook ordering/privacy requirements."}
+{"file":".trellis/spec/frontend/type-safety.md","reason":"Safe assistant error parsing and request-local identity."}
+{"file":".trellis/spec/frontend/quality-guidelines.md","reason":"Required regression, privacy, and package validation."}
+{"file":".trellis/tasks/07-27-anthropic-ttl-error-driven-fallback/research/live-evidence.md","reason":"Real Pi 0.82.1 evidence and rationale against blanket downgrade."}
