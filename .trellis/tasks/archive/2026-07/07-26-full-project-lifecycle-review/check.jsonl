@@ -1,0 +1,5 @@
+{"file":".trellis/spec/frontend/cache-adapter-footer-stats.md","reason":"Audit implementation against binding persistence, shutdown, and cache-hints contracts."}
+{"file":".trellis/spec/frontend/hook-guidelines.md","reason":"Verify session_shutdown cleanup and existing hook semantics."}
+{"file":".trellis/spec/frontend/quality-guidelines.md","reason":"Run required regression, package, privacy, and formatting checks."}
+{"file":".trellis/spec/frontend/type-safety.md","reason":"Review process-global state guards and Pi API shim changes."}
+{"file":".trellis/tasks/07-26-full-project-lifecycle-review/research/review-findings.md","reason":"Ensure every confirmed review finding has a tested resolution."}

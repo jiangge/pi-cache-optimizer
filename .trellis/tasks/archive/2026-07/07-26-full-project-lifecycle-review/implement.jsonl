@@ -1,0 +1,5 @@
+{"file":".trellis/spec/frontend/cache-adapter-footer-stats.md","reason":"Binding persistence, runtime disable, routing/cache-hints, and footer stats contracts."}
+{"file":".trellis/spec/frontend/hook-guidelines.md","reason":"Pi hook lifecycle and message_end behavior requirements."}
+{"file":".trellis/spec/frontend/quality-guidelines.md","reason":"Required verification and privacy/package checks."}
+{"file":".trellis/spec/frontend/type-safety.md","reason":"Runtime validation and ambient Pi API shim conventions."}
+{"file":".trellis/tasks/07-26-full-project-lifecycle-review/research/review-findings.md","reason":"Confirmed lifecycle failures and Pi 0.82 runtime evidence."}
