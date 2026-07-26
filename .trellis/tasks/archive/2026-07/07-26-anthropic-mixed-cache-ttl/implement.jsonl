@@ -1,0 +1,5 @@
+{"file":".trellis/spec/frontend/cache-adapter-footer-stats.md","reason":"Binding cache retention and provider payload safety contracts."}
+{"file":".trellis/spec/frontend/hook-guidelines.md","reason":"before_provider_request lifecycle and payload mutation constraints."}
+{"file":".trellis/spec/frontend/type-safety.md","reason":"Safe parsing of unknown provider payloads."}
+{"file":".trellis/spec/frontend/quality-guidelines.md","reason":"Required regression, privacy, and package validation."}
+{"file":".trellis/tasks/07-26-anthropic-mixed-cache-ttl/research/pi-082-anthropic-ttl.md","reason":"Pi 0.82 serializer behavior and Anthropic TTL ordering evidence."}

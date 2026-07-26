@@ -1,0 +1,5 @@
+{"file":".trellis/spec/frontend/cache-adapter-footer-stats.md","reason":"Audit TTL normalization against binding cache behavior."}
+{"file":".trellis/spec/frontend/hook-guidelines.md","reason":"Verify hook gating and non-destructive payload handling."}
+{"file":".trellis/spec/frontend/type-safety.md","reason":"Check runtime guards for unknown payload shapes."}
+{"file":".trellis/spec/frontend/quality-guidelines.md","reason":"Run all required tests and privacy/package checks."}
+{"file":".trellis/tasks/07-26-anthropic-mixed-cache-ttl/research/pi-082-anthropic-ttl.md","reason":"Confirm implementation matches Pi 0.82 wire ordering evidence."}
