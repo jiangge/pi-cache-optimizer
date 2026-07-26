@@ -1,0 +1,5 @@
+{"type":"context","path":".trellis/spec/frontend/quality-guidelines.md","reason":"Verification gates and privacy checks"}
+{"type":"context","path":".trellis/spec/frontend/type-safety.md","reason":"Type and runtime validation"}
+{"type":"context","path":".trellis/spec/frontend/cache-adapter-footer-stats.md","reason":"Behavioral acceptance contracts"}
+{"type":"context","path":".trellis/spec/frontend/hook-guidelines.md","reason":"Hook ordering and error handling acceptance"}
+{"type":"context","path":".trellis/tasks/archive/2026-07/07-27-anthropic-ttl-error-driven-fallback/verify-error-driven-fallback.ts","reason":"Regression script for direct archived execution and reload/placement coverage"}

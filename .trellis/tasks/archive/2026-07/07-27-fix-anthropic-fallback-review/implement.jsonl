@@ -1,0 +1,6 @@
+{"type":"context","path":".trellis/spec/frontend/index.md","reason":"Frontend package scope and pre-development checklist"}
+{"type":"context","path":".trellis/spec/frontend/quality-guidelines.md","reason":"Required quality, privacy, testing, and documentation rules"}
+{"type":"context","path":".trellis/spec/frontend/type-safety.md","reason":"TypeScript and external input safety rules"}
+{"type":"context","path":".trellis/spec/frontend/cache-adapter-footer-stats.md","reason":"Cache fallback, stats, persistence, and routing contracts"}
+{"type":"context","path":".trellis/spec/frontend/hook-guidelines.md","reason":"Hook lifecycle and message_end behavior"}
+{"type":"context","path":".trellis/tasks/archive/2026-07/07-27-anthropic-ttl-error-driven-fallback/research/live-evidence.md","reason":"Original live evidence and constraints for hidden TTL fallback"}
