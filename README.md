@@ -117,9 +117,9 @@ Notes:
 
 Anthropic processes cache breakpoints in `tools → system → messages` order and rejects a `ttl: "1h"` breakpoint that appears after a 5-minute breakpoint. An ephemeral `cache_control` without `ttl` uses the default 5-minute retention.
 
-For official Anthropic (`api.anthropic.com`), the extension checks the final serialized payload and only downgrades a visibly invalid short-to-long transition; legal long-only and `1h → 5m` payloads remain unchanged.
+For every `anthropic-messages` channel, the extension checks the final serialized payload and immediately downgrades a visibly invalid short-to-long transition. Legal long-only and `1h → 5m` payloads remain unchanged, including third-party endpoints that genuinely support 1-hour retention.
 
-Third-party `anthropic-messages` proxies may rewrite or insert cache breakpoints after Pi's request hook, so their hidden 5-minute blocks cannot be validated from Pi's visible payload. The extension therefore conservatively downgrades request-local `1h` breakpoints to the default 5-minute TTL for non-official Anthropic endpoints. This is based on the effective API and official endpoint check, not provider names such as `pipi-cc`.
+Some proxies rewrite or insert hidden 5-minute breakpoints after Pi's request hook. If a provider returns Anthropic's explicit TTL-ordering error, the extension records a process-local provider/model fallback so the next automatic retry and later requests use the default 5-minute TTL. `/cache-optimizer doctor` reports the fallback and `/cache-optimizer fix` can persist `supportsLongCacheRetention: false` with the normal confirmation/backup flow. Other 400 errors and prompt-too-long failures do not activate this fallback.
 
 ## Adaptive thinking models
 

@@ -215,20 +215,26 @@ breakpoints in wire processing order: `tools`, then `system`, then
 * `ttl: "5m"` and an ephemeral cache control with no `ttl` are short retention.
 * Anthropic permits long-only, short-only, and long-to-short ordering, but rejects
   any long breakpoint after a short breakpoint.
-* For official Anthropic (`api.anthropic.com`, or the built-in `anthropic`
-  provider when no base URL is exposed), only when a visible short-to-long
-  transition is observed, every `ttl: "1h"` in the known breakpoint locations
-  MUST be downgraded by deleting `ttl`, producing default 5-minute controls.
-  Legal official long-only and long-to-short payloads remain unchanged.
-* For non-official `anthropic-messages` endpoints, every request-local `ttl: "1h"`
-  in the known breakpoint locations MUST be downgraded to default 5-minute
-  retention. Real Pi 0.82.1 testing showed that a third-party proxy can inject or
-  rewrite hidden short breakpoints after `before_provider_request`; Pi's visible
-  payload was long-only while the endpoint still rejected a later 1h block.
+* For every `anthropic-messages` endpoint, when a visible short-to-long transition
+  is observed, every `ttl: "1h"` in the known breakpoint locations MUST be
+  downgraded by deleting `ttl`, producing default 5-minute controls. Legal
+  long-only and long-to-short payloads remain unchanged.
+* Some proxies can inject or rewrite hidden short breakpoints after
+  `before_provider_request`. The extension MUST NOT infer this from provider id or
+  endpoint. Only an assistant error message containing Anthropic's explicit
+  `cache_control`, `ttl='1h'`, `ttl='5m'`, and `must not come after` signals may
+  activate a process-local provider/model fallback.
+* Pi emits failed `message_end` before automatic retry. Once the exact error is
+  observed, the next retry and later requests for that provider/model downgrade
+  request-local 1h controls to default 5m. Other 400s and prompt-too-long errors
+  MUST NOT activate the fallback.
+* Doctor MUST report the observed fallback; `/cache-optimizer fix` MAY persist
+  `supportsLongCacheRetention: false` through the existing confirmation/backup
+  flow. Runtime error history is not persisted.
 * This must not change prompt text, tool schemas, model routing, or unrelated nested
   objects that merely contain a `cache_control`-named key.
-* Detection MUST use the effective API and official endpoint check, never provider
-  id, model id/name, adapter family, or cache adapter selection.
+* Detection MUST use the effective API and request-local provider/model identity,
+  never provider name patterns, base URL, adapter family, or cache adapter selection.
 * The repair remains active even when runtime prompt optimization is disabled,
   because it prevents a provider-invalid request rather than optimizing prompts.
 * Legal payloads and non-Anthropic APIs MUST remain byte/structure-equivalent.

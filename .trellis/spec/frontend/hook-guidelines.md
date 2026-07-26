@@ -51,7 +51,7 @@ Primary hooks/events:
 
 ### `before_provider_request`
 
-- For official Anthropic, validate final cache breakpoints in `tools → system → messages` order and downgrade only a visible invalid 5-minute-to-1-hour transition. For non-official `anthropic-messages` endpoints, downgrade all request-local 1-hour breakpoints to default 5-minute retention because proxies may inject hidden short breakpoints after the hook. Never inspect/log prompt content.
+- For every effective `anthropic-messages` model, validate final cache breakpoints in `tools → system → messages` order and downgrade a visible invalid 5-minute-to-1-hour transition. Preserve legal third-party 1-hour retention unless this exact provider/model previously returned Anthropic's explicit TTL-ordering error in the current process.
 - Only inject OpenAI-compatible `prompt_cache_key` fallback for `openai-completions` / `openai-responses` APIs.
 - Preserve existing non-empty `prompt_cache_key` / `promptCacheKey` values.
 - Use Pi session id fallback; do not derive keys from prompt content.
@@ -65,6 +65,7 @@ Primary hooks/events:
 
 ### `message_end`
 
+- Before the normal error/aborted stats early return, detect only Anthropic's explicit mixed-TTL ordering error and record a process-local provider/model fallback for the next retry. Do not classify generic 400 or prompt-too-long errors.
 - Assistant message metadata is authoritative for final stats identity.
 - Use message-local provider/model/api/usage when available; do not use global route state for final stats.
 - Update session-scoped stats and recent samples only with numeric counters.

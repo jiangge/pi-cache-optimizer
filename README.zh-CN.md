@@ -117,9 +117,9 @@ Pi 0.81+ 也内置了使用 OpenAI-shaped transport 的 `llama.cpp` provider。P
 
 Anthropic 按 `tools → system → messages` 顺序处理 cache breakpoint，并拒绝位于 5 分钟 breakpoint 之后的 `ttl: "1h"` breakpoint。省略 `ttl` 的 ephemeral `cache_control` 使用默认 5 分钟保留时间。
 
-对于官方 Anthropic（`api.anthropic.com`），本扩展会检查最终序列化 payload，只在可见的短 TTL → 长 TTL 顺序非法时降级；合法的纯 `1h` 和 `1h → 5m` payload 保持不变。
+对于所有 `anthropic-messages` 渠道，本扩展都会检查最终序列化 payload，并立即降级可见的非法短 TTL → 长 TTL 顺序。合法的纯 `1h` 和 `1h → 5m` payload 保持不变，包括真正支持 1 小时保留的第三方 endpoint。
 
-第三方 `anthropic-messages` 代理可能在 Pi request hook 之后重写或插入 cache breakpoint，因此扩展无法从 Pi 可见 payload 判断代理内部隐藏的 5 分钟 block。对于非官方 Anthropic endpoint，本扩展会保守地把请求中的 `1h` breakpoint 降级为默认 5 分钟 TTL。判断依据是有效 API 和官方 endpoint 检查，而不是 `pipi-cc` 等 provider 名称。
+部分代理会在 Pi request hook 之后重写或插入隐藏的 5 分钟 breakpoint。如果 provider 返回 Anthropic 明确的 TTL 顺序错误，本扩展会记录当前进程内的 provider/model fallback，使下一次自动重试和后续请求使用默认 5 分钟 TTL。`/cache-optimizer doctor` 会显示该 fallback，`/cache-optimizer fix` 可通过现有确认/备份流程持久写入 `supportsLongCacheRetention: false`。其它 400 和 prompt-too-long 错误不会触发该 fallback。
 
 ## Adaptive thinking 模型
 

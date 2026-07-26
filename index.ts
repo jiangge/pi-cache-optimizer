@@ -1245,6 +1245,17 @@ function downgradeAnthropicLongCacheControls(payload: unknown): boolean {
   return changed;
 }
 
+function hasAnthropicCacheTtlOrderError(message: unknown): boolean {
+  const record = getAssistantRecord(message);
+  if (record?.stopReason !== "error" || typeof record.errorMessage !== "string") return false;
+
+  const error = lower(record.errorMessage);
+  return error.includes("cache_control") &&
+    error.includes("ttl='1h'") &&
+    error.includes("ttl='5m'") &&
+    error.includes("must not come after");
+}
+
 function normalizeAnthropicCacheControlTtlOrder(payload: unknown): boolean {
   const controls = collectAnthropicCacheControlsInWireOrder(payload);
   let seenShort = false;
@@ -2165,19 +2176,6 @@ function hasEffectivePromptCacheKey(record: UnknownRecord): boolean {
 
 function isNonEmptyString(value: unknown): value is string {
   return typeof value === "string" && value.trim().length > 0;
-}
-
-function isOfficialAnthropicBaseUrl(model: PiModel): boolean {
-  const value = lower(model.baseUrl).trim();
-  if (!value) {
-    return lower(model.provider) === "anthropic";
-  }
-
-  try {
-    return new URL(value).hostname === "api.anthropic.com";
-  } catch {
-    return value === "api.anthropic.com" || value.startsWith("api.anthropic.com/");
-  }
 }
 
 function isOfficialOpenAIBaseUrl(model: PiModel): boolean {
@@ -4395,7 +4393,7 @@ function getCompatCheckNotApplicableLines(model: PiModel): string[] {
   return ["ℹ️ Compat check not applicable for this model."];
 }
 
-function buildDoctorDiagnosis(model: PiModel, options: { promptCacheRetention400?: boolean; sessionAffinity403?: boolean; openAISdkHeader403?: boolean } = {}): string {
+function buildDoctorDiagnosis(model: PiModel, options: { promptCacheRetention400?: boolean; anthropicTtlOrderError?: boolean; sessionAffinity403?: boolean; openAISdkHeader403?: boolean } = {}): string {
   const lines: string[] = [];
   lines.push(`Provider: ${model.provider}`);
   lines.push(`Model:    ${model.id}`);
@@ -4452,6 +4450,13 @@ function buildDoctorDiagnosis(model: PiModel, options: { promptCacheRetention400
     } else {
       lines.push(`ℹ️ Long retention is enabled. ${getPromptCacheRetentionUnsupportedHint()}`);
     }
+  }
+
+  if (options.anthropicTtlOrderError) {
+    lines.push("");
+    lines.push("⚠️  An Anthropic cache-control TTL ordering error was observed for this model.");
+    lines.push("   Runtime requests now fall back from 1h to the default 5-minute cache TTL.");
+    lines.push(`   Run /cache-optimizer fix to set supportsLongCacheRetention: false in ${getModelsJsonDisplayPath()}.`);
   }
 
   // ── Session affinity 403 diagnostics ──
@@ -5961,8 +5966,8 @@ export const __internals_for_tests = {
   isOpenAICompatibleProxyApi,
   collectAnthropicCacheControlsInWireOrder,
   downgradeAnthropicLongCacheControls,
+  hasAnthropicCacheTtlOrderError,
   normalizeAnthropicCacheControlTtlOrder,
-  isOfficialAnthropicBaseUrl,
   isPiBuiltInLlamaCppModel,
   isResponsesPromptRewriteBypassApi,
   isMistralConversationsApi,
@@ -6209,6 +6214,8 @@ export default function (pi: ExtensionAPI) {
   const warnedModels = new Set<string>();
   const promptCacheRetention400Models = new Set<string>();
   const warnedPromptCacheRetention400Models = new Set<string>();
+  const anthropicTtlOrderErrorModels = new Set<string>();
+  const warnedAnthropicTtlOrderErrorModels = new Set<string>();
   const sendSessionAffinityHeaders403Models = new Set<string>();
   const warnedSendSessionAffinityHeaders403Models = new Set<string>();
   const openAISdkHeader403Models = new Set<string>();
@@ -6230,6 +6237,35 @@ export default function (pi: ExtensionAPI) {
   let lastActualRoutedModel: PersistedRoutedModelRef | undefined;
   let latestCacheHint: PiCacheHintSnapshot | undefined;
   const PERSIST_DEBOUNCE_MS = 2000;
+
+  function buildObservedRuntimeFixSuggestion(model: PiModel): FixSuggestion | undefined {
+    const key = modelKey(model);
+    const slashIdx = key.indexOf("/");
+    const providerLabel = slashIdx > 0 ? key.slice(0, slashIdx) : key;
+
+    if (
+      anthropicTtlOrderErrorModels.has(key) ||
+      (isPromptCacheRetention400Applicable(model) && promptCacheRetention400Models.has(key))
+    ) {
+      return { providerLabel, modelId: model.id, compatKeys: { supportsLongCacheRetention: false } };
+    }
+    if (isSessionAffinity403Applicable(model) && sendSessionAffinityHeaders403Models.has(key)) {
+      return { providerLabel, modelId: model.id, compatKeys: { sendSessionAffinityHeaders: false } };
+    }
+    return undefined;
+  }
+
+  function buildCommandFixSuggestion(model: PiModel): FixSuggestion | undefined {
+    const regular = buildFixSuggestion(model);
+    const observed = buildObservedRuntimeFixSuggestion(model);
+    if (!regular) return observed;
+    if (!observed) return regular;
+    return {
+      providerLabel: regular.providerLabel,
+      modelId: regular.modelId,
+      compatKeys: { ...regular.compatKeys, ...observed.compatKeys },
+    };
+  }
   /** In-memory recent usage samples per model key (not persisted, cleared on reload). */
   const recentSamplesByModelKey = new Map<string, CacheUsageSample[]>();
 
@@ -6872,15 +6908,13 @@ export default function (pi: ExtensionAPI) {
     const requestModel = resolveRouteModel(ctx.model, ctx) ?? ctx.model;
 
     // Anthropic rejects mixed cache breakpoints when a 1h block appears after
-    // a 5m/default block in wire order (tools → system → messages). Third-party
-    // proxies may inject/rewrite cache breakpoints after this hook, so their
-    // hidden short TTLs cannot be proven from Pi's visible payload. Preserve 1h
-    // for official Anthropic; conservatively downgrade third-party Anthropic
-    // requests to default 5m, which is valid even when a proxy adds breakpoints.
+    // a 5m/default block in wire order (tools → system → messages). Repair any
+    // conflict visible in Pi's final payload immediately. Some proxies inject
+    // hidden short breakpoints after this hook; only models that have actually
+    // returned the explicit TTL-order error receive the process-local 5m fallback.
     if (requestModel && isAnthropicMessagesApi(requestModel.api)) {
-      if (isOfficialAnthropicBaseUrl(requestModel)) {
-        normalizeAnthropicCacheControlTtlOrder(event.payload);
-      } else {
+      const visibleConflictFixed = normalizeAnthropicCacheControlTtlOrder(event.payload);
+      if (!visibleConflictFixed && anthropicTtlOrderErrorModels.has(modelKey(requestModel))) {
         downgradeAnthropicLongCacheControls(event.payload);
       }
     }
@@ -6986,6 +7020,29 @@ export default function (pi: ExtensionAPI) {
 
   pi.on("message_end", async (event, ctx) => {
     syncSessionHash(ctx);
+    const msgRecord = asRecord(event.message);
+
+    // Pi emits message_end for failed attempts before auto-retry. Record only
+    // Anthropic's explicit mixed-TTL ordering error so the very next retry for
+    // this exact provider/model falls back to the default 5-minute cache TTL.
+    if (hasAnthropicCacheTtlOrderError(event.message)) {
+      const fallbackModel = resolveRouteModel(ctx.model, ctx) ?? ctx.model;
+      const errorModel = modelFromAssistantMessage(event.message, fallbackModel) ?? fallbackModel;
+      if (errorModel && isAnthropicMessagesApi(errorModel.api)) {
+        const key = modelKey(errorModel);
+        anthropicTtlOrderErrorModels.add(key);
+        if (!warnedAnthropicTtlOrderErrorModels.has(key)) {
+          warnedAnthropicTtlOrderErrorModels.add(key);
+          ctx.ui.notify(
+            `⚠️ ${LOG_PREFIX}: ${key} returned an Anthropic cache-control TTL ordering error. ` +
+            `This process will retry/fallback with the default 5-minute cache TTL. ` +
+            `Run /cache-optimizer fix to set supportsLongCacheRetention: false persistently.`,
+            "warning",
+          );
+        }
+      }
+    }
+
     const adapter = selectAdapterForAssistantMessage(event.message, ctx.model);
     if (!adapter) return;
 
@@ -6996,7 +7053,6 @@ export default function (pi: ExtensionAPI) {
     // returns as a valid (non-undefined) snapshot, which would inflate
     // totalRequests and skew cache hit-rate accuracy. The final successful
     // response is emitted as a separate message_end with real usage data.
-    const msgRecord = asRecord(event.message);
     if (msgRecord?.stopReason === "error" || msgRecord?.stopReason === "aborted") {
       return;
     }
@@ -7103,7 +7159,7 @@ export default function (pi: ExtensionAPI) {
           cmdCtx.ui.notify("No active model selected. Select a model first with /model or pi --model.", "warning");
           return;
         }
-        const diagnosis = buildDoctorDiagnosis(model, { promptCacheRetention400: promptCacheRetention400Models.has(modelKey(model)), sessionAffinity403: sendSessionAffinityHeaders403Models.has(modelKey(model)), openAISdkHeader403: openAISdkHeader403Models.has(modelKey(model)) });
+        const diagnosis = buildDoctorDiagnosis(model, { promptCacheRetention400: promptCacheRetention400Models.has(modelKey(model)), anthropicTtlOrderError: anthropicTtlOrderErrorModels.has(modelKey(model)), sessionAffinity403: sendSessionAffinityHeaders403Models.has(modelKey(model)), openAISdkHeader403: openAISdkHeader403Models.has(modelKey(model)) });
         const adapter = selectAdapterForModel(model);
         const sk = model ? sessionModelKey(model) : undefined;
         const statsState = model ? cacheStatsTotalsByModel[modelKey(model)] : undefined;
@@ -7176,37 +7232,7 @@ export default function (pi: ExtensionAPI) {
           return;
         }
 
-        let suggestion = buildFixSuggestion(model);
-
-        // If no regular missing compat flags but the model has a recorded
-        // prompt_cache_retention 400 (Pi sent `prompt_cache_retention` and
-        // the provider rejected it), offer to override
-        // `supportsLongCacheRetention` to false in models.json.
-        if (!suggestion && isPromptCacheRetention400Applicable(model) && promptCacheRetention400Models.has(modelKey(model))) {
-          const key = modelKey(model);
-          const slashIdx = key.indexOf("/");
-          const providerLabel = slashIdx > 0 ? key.slice(0, slashIdx) : key;
-          suggestion = {
-            providerLabel,
-            modelId: model.id,
-            compatKeys: { supportsLongCacheRetention: false },
-          };
-        }
-
-        // If no regular missing compat flags but the model has a recorded
-        // 403 while sendSessionAffinityHeaders was enabled (Pi sent custom
-        // session-affinity HTTP headers and the proxy/CDN blocked them), offer
-        // to override `sendSessionAffinityHeaders` to false in models.json.
-        if (!suggestion && isSessionAffinity403Applicable(model) && sendSessionAffinityHeaders403Models.has(modelKey(model))) {
-          const key = modelKey(model);
-          const slashIdx = key.indexOf("/");
-          const providerLabel = slashIdx > 0 ? key.slice(0, slashIdx) : key;
-          suggestion = {
-            providerLabel,
-            modelId: model.id,
-            compatKeys: { sendSessionAffinityHeaders: false },
-          };
-        }
+        const suggestion = buildCommandFixSuggestion(model);
 
         if (!suggestion) {
           const key = modelKey(model);
@@ -7229,6 +7255,13 @@ export default function (pi: ExtensionAPI) {
             manualLines.push(
               "",
               "💡 This model returned HTTP 400 for prompt_cache_retention.",
+              "Create or edit the entry below to override supportsLongCacheRetention to false.",
+            );
+          }
+          if (anthropicTtlOrderErrorModels.has(modelKey(model))) {
+            manualLines.push(
+              "",
+              "💡 This model returned an Anthropic cache-control TTL ordering error.",
               "Create or edit the entry below to override supportsLongCacheRetention to false.",
             );
           }
@@ -7524,7 +7557,7 @@ export default function (pi: ExtensionAPI) {
             if (!model) {
               cmdCtx.ui.notify("No active model selected. Select a model first with /model or pi --model.", "warning");
             } else {
-              const diagnosis = buildDoctorDiagnosis(model, { promptCacheRetention400: promptCacheRetention400Models.has(modelKey(model)), sessionAffinity403: sendSessionAffinityHeaders403Models.has(modelKey(model)), openAISdkHeader403: openAISdkHeader403Models.has(modelKey(model)) });
+              const diagnosis = buildDoctorDiagnosis(model, { promptCacheRetention400: promptCacheRetention400Models.has(modelKey(model)), anthropicTtlOrderError: anthropicTtlOrderErrorModels.has(modelKey(model)), sessionAffinity403: sendSessionAffinityHeaders403Models.has(modelKey(model)), openAISdkHeader403: openAISdkHeader403Models.has(modelKey(model)) });
               const adapter = selectAdapterForModel(model);
               const sk = model ? sessionModelKey(model) : undefined;
               const statsState = model ? cacheStatsTotalsByModel[modelKey(model)] : undefined;
@@ -7568,7 +7601,7 @@ export default function (pi: ExtensionAPI) {
               cmdCtx.ui.notify("No active model selected. Select a model first with /model or pi --model.", "warning");
               return;
             }
-            const suggestion = buildFixSuggestion(model);
+            const suggestion = buildCommandFixSuggestion(model);
             if (!suggestion) {
               const key = modelKey(model);
               cmdCtx.ui.notify(`✅ Nothing to fix for "${key}". Compat already configured.`, "info");
