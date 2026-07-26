@@ -223,14 +223,19 @@ breakpoints in wire processing order: `tools`, then `system`, then
   `before_provider_request`. The extension MUST NOT infer this from provider id or
   endpoint. Only an assistant error message containing Anthropic's explicit
   `cache_control`, `ttl='1h'`, `ttl='5m'`, and `must not come after` signals may
-  activate a process-local provider/model fallback.
-* Pi emits failed `message_end` before automatic retry. Once the exact error is
-  observed, the next retry and later requests for that provider/model downgrade
-  request-local 1h controls to default 5m. Other 400s and prompt-too-long errors
-  MUST NOT activate the fallback.
+  activate a process-local provider/model fallback. Any persisted fix derived
+  from that observation is model-scoped, even when ordinary channel-capability
+  fixes may use provider-level placement.
+* The exact Anthropic TTL-order error is a non-retryable HTTP 400 in Pi 0.82.1.
+  Once observed, the next subsequent request for that provider/model (and any
+  retry initiated by another layer) MUST downgrade request-local 1h controls to
+  default 5m. The extension MUST NOT claim that Pi's built-in automatic retry
+  reruns this failed turn. Other 400s and prompt-too-long errors MUST NOT
+  activate the fallback.
 * Doctor MUST report the observed fallback; `/cache-optimizer fix` MAY persist
-  `supportsLongCacheRetention: false` through the existing confirmation/backup
-  flow. Runtime error history is not persisted.
+  a model-scoped `supportsLongCacheRetention: false` through the existing
+  confirmation/backup flow. Runtime error history is not written to disk and
+  survives extension reloads only within the current process.
 * This must not change prompt text, tool schemas, model routing, or unrelated nested
   objects that merely contain a `cache_control`-named key.
 * Detection MUST use the effective API and request-local provider/model identity,

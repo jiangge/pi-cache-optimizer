@@ -104,6 +104,32 @@ const NO_PROMPT_REWRITE_ENV = "PI_CACHE_OPTIMIZER_NO_PROMPT_REWRITE";
 const PI_ROUTING_REGISTRY_SYMBOL = Symbol.for("pi.routing.registry.v1");
 const PI_CACHE_HINTS_SYMBOL = Symbol.for("pi.cache.hints.v1");
 const PI_CACHE_HINTS_OWNER_SYMBOL = Symbol.for("pi.cache.optimizer.hints-owner.v1");
+const ANTHROPIC_TTL_FALLBACK_SYMBOL = Symbol.for("pi.cache.optimizer.anthropic-ttl-fallback.v1");
+
+type AnthropicTtlFallbackStateV1 = {
+  version: 1;
+  modelKeys: Set<string>;
+  warnedModelKeys: Set<string>;
+};
+
+function getAnthropicTtlFallbackState(): AnthropicTtlFallbackStateV1 {
+  const globals = globalThis as Record<symbol, unknown>;
+  const existing = globals[ANTHROPIC_TTL_FALLBACK_SYMBOL] as Partial<AnthropicTtlFallbackStateV1> | undefined;
+  if (
+    existing?.version === 1 &&
+    existing.modelKeys instanceof Set &&
+    existing.warnedModelKeys instanceof Set
+  ) {
+    return existing as AnthropicTtlFallbackStateV1;
+  }
+  const state: AnthropicTtlFallbackStateV1 = {
+    version: 1,
+    modelKeys: new Set<string>(),
+    warnedModelKeys: new Set<string>(),
+  };
+  globals[ANTHROPIC_TTL_FALLBACK_SYMBOL] = state;
+  return state;
+}
 
 let runtimeOptimizerEnabled = true;
 
@@ -4456,7 +4482,7 @@ function buildDoctorDiagnosis(model: PiModel, options: { promptCacheRetention400
     lines.push("");
     lines.push("⚠️  An Anthropic cache-control TTL ordering error was observed for this model.");
     lines.push("   Runtime requests now fall back from 1h to the default 5-minute cache TTL.");
-    lines.push(`   Run /cache-optimizer fix to set supportsLongCacheRetention: false in ${getModelsJsonDisplayPath()}.`);
+    lines.push(`   Run /cache-optimizer fix to set model-level supportsLongCacheRetention: false in ${getModelsJsonDisplayPath()}.`);
   }
 
   // ── Session affinity 403 diagnostics ──
@@ -4884,6 +4910,8 @@ interface FixSuggestion {
   providerLabel: string;
   modelId: string;
   compatKeys: Record<string, unknown>;
+  /** Runtime-observed failures must never broaden a model-specific fix. */
+  forceModelLevel?: boolean;
 }
 
 /**
@@ -5545,8 +5573,9 @@ function syntheticModelForId(providerLabel: string, id: string): PiModel {
  * Decide whether the fix should write provider-level or model-level compat.
  *
  * Strategy (auto-detect, prefer provider level when safe):
- * - Channel-capability keys (session affinity / long retention) are always
- *   provider-safe.
+ * - Channel-capability keys (session affinity / long retention) are normally
+ *   provider-safe; runtime-observed model failures explicitly override this
+ *   default through chooseFixPlacement(..., forceModelLevel=true).
  * - Model-behavior keys (forceAdaptiveThinking, allowEmptySignature,
  *   thinkingFormat, ...) are provider-safe ONLY when every sibling model in
  *   the provider also matches the same detection (all adaptive-generation /
@@ -5625,7 +5654,15 @@ function chooseFixPlacement(
   location: ModelNodeLocation,
   compatKeys: Record<string, unknown>,
   providerLabel: string,
+  forceModelLevel = false,
 ): { placement: "provider" | "model"; reason: string } {
+  if (forceModelLevel) {
+    return {
+      placement: "model",
+      reason: "runtime-observed provider/model failure — scoping the repair to the affected model",
+    };
+  }
+
   const decision = decideFixPlacement(compatKeys, providerLabel, location.allModelIds);
   const existingModelKeys = findExistingCompatKeysInJsonc(
     original,
@@ -6214,8 +6251,9 @@ export default function (pi: ExtensionAPI) {
   const warnedModels = new Set<string>();
   const promptCacheRetention400Models = new Set<string>();
   const warnedPromptCacheRetention400Models = new Set<string>();
-  const anthropicTtlOrderErrorModels = new Set<string>();
-  const warnedAnthropicTtlOrderErrorModels = new Set<string>();
+  const anthropicTtlFallbackState = getAnthropicTtlFallbackState();
+  const anthropicTtlOrderErrorModels = anthropicTtlFallbackState.modelKeys;
+  const warnedAnthropicTtlOrderErrorModels = anthropicTtlFallbackState.warnedModelKeys;
   const sendSessionAffinityHeaders403Models = new Set<string>();
   const warnedSendSessionAffinityHeaders403Models = new Set<string>();
   const openAISdkHeader403Models = new Set<string>();
@@ -6247,7 +6285,12 @@ export default function (pi: ExtensionAPI) {
       anthropicTtlOrderErrorModels.has(key) ||
       (isPromptCacheRetention400Applicable(model) && promptCacheRetention400Models.has(key))
     ) {
-      return { providerLabel, modelId: model.id, compatKeys: { supportsLongCacheRetention: false } };
+      return {
+        providerLabel,
+        modelId: model.id,
+        compatKeys: { supportsLongCacheRetention: false },
+        forceModelLevel: true,
+      };
     }
     if (isSessionAffinity403Applicable(model) && sendSessionAffinityHeaders403Models.has(key)) {
       return { providerLabel, modelId: model.id, compatKeys: { sendSessionAffinityHeaders: false } };
@@ -6264,6 +6307,7 @@ export default function (pi: ExtensionAPI) {
       providerLabel: regular.providerLabel,
       modelId: regular.modelId,
       compatKeys: { ...regular.compatKeys, ...observed.compatKeys },
+      forceModelLevel: regular.forceModelLevel || observed.forceModelLevel,
     };
   }
   /** In-memory recent usage samples per model key (not persisted, cleared on reload). */
@@ -7022,9 +7066,9 @@ export default function (pi: ExtensionAPI) {
     syncSessionHash(ctx);
     const msgRecord = asRecord(event.message);
 
-    // Pi emits message_end for failed attempts before auto-retry. Record only
-    // Anthropic's explicit mixed-TTL ordering error so the very next retry for
-    // this exact provider/model falls back to the default 5-minute cache TTL.
+    // Record only Anthropic's explicit mixed-TTL ordering error. This is a
+    // non-retryable 400 in Pi 0.82.1, so the fallback applies to the next
+    // subsequent request (and to a retry only if another layer initiates one).
     if (hasAnthropicCacheTtlOrderError(event.message)) {
       const fallbackModel = resolveRouteModel(ctx.model, ctx) ?? ctx.model;
       const errorModel = modelFromAssistantMessage(event.message, fallbackModel) ?? fallbackModel;
@@ -7035,8 +7079,8 @@ export default function (pi: ExtensionAPI) {
           warnedAnthropicTtlOrderErrorModels.add(key);
           ctx.ui.notify(
             `⚠️ ${LOG_PREFIX}: ${key} returned an Anthropic cache-control TTL ordering error. ` +
-            `This process will retry/fallback with the default 5-minute cache TTL. ` +
-            `Run /cache-optimizer fix to set supportsLongCacheRetention: false persistently.`,
+            `The next request will fall back to the default 5-minute cache TTL. ` +
+            `Run /cache-optimizer fix to set model-level supportsLongCacheRetention: false persistently.`,
             "warning",
           );
         }
@@ -7427,9 +7471,15 @@ export default function (pi: ExtensionAPI) {
           return;
         }
 
-        // Compose the modified text — auto-detect the best placement level:
-        // provider level (channel-wide) when safe for all sibling models, else model level.
-        const decision = chooseFixPlacement(originalText, location, suggestion.compatKeys, suggestion.providerLabel);
+        // Compose the modified text — observed runtime failures are always
+        // model-scoped; ordinary compat fixes use the safety-based placement.
+        const decision = chooseFixPlacement(
+          originalText,
+          location,
+          suggestion.compatKeys,
+          suggestion.providerLabel,
+          suggestion.forceModelLevel,
+        );
         const modifiedText = composeFixInsertion(originalText, location, suggestion.compatKeys, decision.placement);
 
         // Self-check
@@ -7629,7 +7679,13 @@ export default function (pi: ExtensionAPI) {
               return;
             }
 
-            const menuDecision = chooseFixPlacement(originalText, location, suggestion.compatKeys, suggestion.providerLabel);
+            const menuDecision = chooseFixPlacement(
+              originalText,
+              location,
+              suggestion.compatKeys,
+              suggestion.providerLabel,
+              suggestion.forceModelLevel,
+            );
             const modifiedText = composeFixInsertion(originalText, location, suggestion.compatKeys, menuDecision.placement);
             const checkError = selfCheckFix(originalText, modifiedText, suggestion.providerLabel, suggestion.modelId, suggestion.compatKeys, menuDecision.placement);
             if (checkError !== null) {

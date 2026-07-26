@@ -119,7 +119,7 @@ Anthropic 按 `tools → system → messages` 顺序处理 cache breakpoint，�
 
 对于所有 `anthropic-messages` 渠道，本扩展都会检查最终序列化 payload，并立即降级可见的非法短 TTL → 长 TTL 顺序。合法的纯 `1h` 和 `1h → 5m` payload 保持不变，包括真正支持 1 小时保留的第三方 endpoint。
 
-部分代理会在 Pi request hook 之后重写或插入隐藏的 5 分钟 breakpoint。如果 provider 返回 Anthropic 明确的 TTL 顺序错误，本扩展会记录当前进程内的 provider/model fallback，使下一次自动重试和后续请求使用默认 5 分钟 TTL。`/cache-optimizer doctor` 会显示该 fallback，`/cache-optimizer fix` 可通过现有确认/备份流程持久写入 `supportsLongCacheRetention: false`。其它 400 和 prompt-too-long 错误不会触发该 fallback。
+部分代理会在 Pi request hook 之后重写或插入隐藏的 5 分钟 breakpoint。如果 provider 返回 Anthropic 明确的 TTL 顺序错误，本扩展会记录当前进程内的 provider/model fallback，使下一次后续请求使用默认 5 分钟 TTL。Pi 0.82.1 将此错误视为不可自动重试的 HTTP 400，因此扩展不会声称 Pi 会自动重跑失败 turn；如果其它层发起重试，该重试也会使用 fallback。`/cache-optimizer doctor` 会显示该 fallback，`/cache-optimizer fix` 可通过现有确认/备份流程，以 model level 持久写入 `supportsLongCacheRetention: false`。其它 400 和 prompt-too-long 错误不会触发该 fallback。运行时观测会持续到当前进程退出，并会在同一进程内的扩展 reload 后保留。
 
 ## Adaptive thinking 模型
 

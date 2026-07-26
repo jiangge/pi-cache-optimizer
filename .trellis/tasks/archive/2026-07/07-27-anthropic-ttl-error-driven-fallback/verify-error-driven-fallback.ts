@@ -1,7 +1,7 @@
 #!/usr/bin/env bun
 /** Regression coverage for error-driven Anthropic long-TTL fallback. */
 
-const moduleUrl = new URL(`../../../index.ts?ttl-fallback=${Date.now()}`, import.meta.url).href;
+const moduleUrl = new URL(`../../../../../index.ts?ttl-fallback=${Date.now()}`, import.meta.url).href;
 const { default: extension, __internals_for_tests: I } = await import(moduleUrl);
 
 let passed = 0;
@@ -71,7 +71,7 @@ beforeRequest?.({ payload: firstPayload }, ctx(model()));
 check("legal third-party long-only payload is preserved before evidence", ttls(firstPayload).every((ttl) => ttl === "1h"), JSON.stringify(ttls(firstPayload)));
 
 await messageEnd?.({ message: exactError }, ctx(model()));
-check("TTL error emits one actionable warning", notifications.some((text) => text.includes("default 5-minute") && text.includes("supportsLongCacheRetention: false")), JSON.stringify(notifications));
+check("TTL error emits one actionable warning", notifications.some((text) => text.includes("next request") && text.includes("supportsLongCacheRetention: false")), JSON.stringify(notifications));
 
 const retryPayload = payload();
 beforeRequest?.({ payload: retryPayload }, ctx(model()));
@@ -79,6 +79,17 @@ check("same provider/model retry falls back to default 5m", ttls(retryPayload).e
 
 await messageEnd?.({ message: exactError }, ctx(model()));
 check("repeated error warning is deduplicated", notifications.filter((text) => text.includes("TTL ordering error")).length === 1, JSON.stringify(notifications));
+
+// A Pi reload creates a new extension instance, but the process-local observation
+// remains available to the replacement instance.
+const reloadedHandlers = new Map<string, (event: any, ctx: any) => unknown>();
+extension({
+  on(event: string, handler: (event: any, ctx: any) => unknown) { reloadedHandlers.set(event, handler); },
+  registerCommand() {},
+} as any);
+const reloadedPayload = payload();
+reloadedHandlers.get("before_provider_request")?.({ payload: reloadedPayload }, ctx(model()));
+check("observed fallback survives extension reload", ttls(reloadedPayload).every((ttl) => ttl === "5m-default"), JSON.stringify(ttls(reloadedPayload)));
 
 const otherProviderPayload = payload();
 beforeRequest?.({ payload: otherProviderPayload }, ctx(model("proxy-b")));
@@ -110,6 +121,19 @@ check(
   combinedFix.includes("forceAdaptiveThinking") && combinedFix.includes("supportsLongCacheRetention") && combinedFix.includes("false"),
   combinedFix,
 );
+
+const placement = I.chooseFixPlacement(
+  "{}",
+  {
+    modelObjectBrace: 0, modelObjectEnd: 1, compatKeyStart: -1, compatObjectBrace: -1,
+    compatObjectEnd: -1, indent: "  ", providerObjectBrace: 0, providerObjectEnd: 1,
+    providerCompatBrace: -1, providerCompatEnd: -1, allModelIds: ["claude-opus-5", "claude-sonnet-5"],
+  },
+  { supportsLongCacheRetention: false },
+  "proxy-combined",
+  true,
+);
+check("observed TTL fix placement is model-scoped", placement.placement === "model", JSON.stringify(placement));
 
 // Routed shell: assistant metadata remains authoritative for the real upstream key.
 const registry = I.ensureRoutingRegistry();
