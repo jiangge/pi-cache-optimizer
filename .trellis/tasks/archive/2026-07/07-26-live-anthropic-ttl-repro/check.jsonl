@@ -1,0 +1,5 @@
+{"file":".trellis/spec/frontend/cache-adapter-footer-stats.md","reason":"Audit fix against Anthropic wire-order contract."}
+{"file":".trellis/spec/frontend/hook-guidelines.md","reason":"Verify hook behavior and privacy safety."}
+{"file":".trellis/spec/frontend/type-safety.md","reason":"Review external payload guards."}
+{"file":".trellis/spec/frontend/quality-guidelines.md","reason":"Run required tests and package checks."}
+{"file":".trellis/tasks/07-26-live-anthropic-ttl-repro/research/live-evidence.md","reason":"Require real Pi 0.82.1 session evidence before completion."}

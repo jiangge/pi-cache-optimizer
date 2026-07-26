@@ -1,0 +1,5 @@
+{"file":".trellis/spec/frontend/cache-adapter-footer-stats.md","reason":"Binding Anthropic TTL payload safety contract."}
+{"file":".trellis/spec/frontend/hook-guidelines.md","reason":"before_provider_request ordering and privacy constraints."}
+{"file":".trellis/spec/frontend/type-safety.md","reason":"Unknown payload validation requirements."}
+{"file":".trellis/spec/frontend/quality-guidelines.md","reason":"Verification and privacy gates."}
+{"file":".trellis/tasks/07-26-live-anthropic-ttl-repro/research/live-evidence.md","reason":"Pi 0.82.1 real-session failure evidence."}
