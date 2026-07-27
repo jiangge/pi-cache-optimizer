@@ -1,4 +1,4 @@
 {"file":".trellis/spec/frontend/cache-adapter-footer-stats.md","reason":"Review all behavioral invariants and regression matrix."}
 {"file":".trellis/spec/frontend/state-management.md","reason":"Verify configuration writes remain scoped and recoverable."}
 {"file":".trellis/spec/frontend/quality-guidelines.md","reason":"Run required checks and confirm permanent regression coverage."}
-{"file":".trellis/tasks/07-27-fix-review-findings/prd.md","reason":"Audit every acceptance criterion before completion."}
+{"file":".trellis/tasks/archive/2026-07/07-27-fix-review-findings/prd.md","reason":"Audit every acceptance criterion before completion."}

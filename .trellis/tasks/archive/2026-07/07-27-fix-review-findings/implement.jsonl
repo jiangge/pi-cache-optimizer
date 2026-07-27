@@ -3,4 +3,4 @@
 {"file":".trellis/spec/frontend/state-management.md","reason":"models.json mutation and backup constraints."}
 {"file":".trellis/spec/frontend/type-safety.md","reason":"TypeScript and external JSON validation conventions."}
 {"file":".trellis/spec/frontend/quality-guidelines.md","reason":"Required repository validation commands and test expectations."}
-{"file":".trellis/tasks/07-27-fix-review-findings/prd.md","reason":"Task requirements and acceptance criteria."}
+{"file":".trellis/tasks/archive/2026-07/07-27-fix-review-findings/prd.md","reason":"Task requirements and acceptance criteria."}
