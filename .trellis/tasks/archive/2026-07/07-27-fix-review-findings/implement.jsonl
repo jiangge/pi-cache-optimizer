@@ -1,0 +1,6 @@
+{"file":".trellis/spec/frontend/cache-adapter-footer-stats.md","reason":"Authoritative prompt optimization, compat precedence, fix, and regression contracts."}
+{"file":".trellis/spec/frontend/hook-guidelines.md","reason":"before_agent_start and before_provider_request safety rules."}
+{"file":".trellis/spec/frontend/state-management.md","reason":"models.json mutation and backup constraints."}
+{"file":".trellis/spec/frontend/type-safety.md","reason":"TypeScript and external JSON validation conventions."}
+{"file":".trellis/spec/frontend/quality-guidelines.md","reason":"Required repository validation commands and test expectations."}
+{"file":".trellis/tasks/07-27-fix-review-findings/prd.md","reason":"Task requirements and acceptance criteria."}
