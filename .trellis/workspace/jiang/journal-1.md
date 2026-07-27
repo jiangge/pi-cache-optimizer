@@ -19,7 +19,10 @@ Renamed npm package from pi-deepseek-cache-optimizer to pi-cache-optimizer (v2.0
 
 ### Main Changes
 
-(Add details)
+- Prevented ambiguous and nested stable prompt candidates from deleting dynamic content.
+- Added effective compat resolution for `modelOverrides > models[] > provider`.
+- Made both `/cache-optimizer fix` paths repair or create comment-preserving model overrides with three-layer self-checks.
+- Added permanent regression tests, repository-local npm checks, package import aliases, bilingual docs, and updated code specs.
 
 ### Git Commits
 
@@ -31,7 +34,11 @@ Renamed npm package from pi-deepseek-cache-optimizer to pi-cache-optimizer (v2.0
 
 ### Testing
 
-- [OK] (Add test results)
+- [OK] `npm run check` (typecheck, 12/12 tests, diff check, package dry run)
+- [OK] Archived fix self-check verifier (17/17)
+- [OK] Archived prompt pollution verifier
+- [OK] Archived Anthropic TTL verifier (17/17)
+- [OK] Trellis task context validation
 
 ### Status
 
@@ -393,6 +400,39 @@ Checked pi-cache-optimizer against Pi 0.82.0, synced local validation SDK, added
 | Hash | Message |
 |------|---------|
 | `3777927` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
+
+
+## Session 4: 修复 prompt 完整性与 modelOverrides 优先级
+
+**Date**: 2026-07-27
+**Task**: 修复 prompt 完整性与 modelOverrides 优先级
+**Branch**: `master`
+
+### Summary
+
+修复重复/嵌套稳定候选误删；按 modelOverrides > models[] > provider 解析 long retention；增强 /cache-optimizer fix 的 override JSONC 写入与三层自检；新增 12 项永久测试、本地 npm 检查、归档 verifier 别名、双语文档与规范；npm run check 及代表性旧 verifier 通过。
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `3ed6214` | (see git log) |
 
 ### Testing
 

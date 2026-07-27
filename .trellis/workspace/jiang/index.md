@@ -8,8 +8,8 @@
 
 <!-- @@@auto:current-status -->
 - **Active File**: `journal-1.md`
-- **Total Sessions**: 3
-- **Last Active**: 2026-07-25
+- **Total Sessions**: 4
+- **Last Active**: 2026-07-27
 <!-- @@@/auto:current-status -->
 
 ---
@@ -19,7 +19,7 @@
 <!-- @@@auto:active-documents -->
 | File | Lines | Status |
 |------|-------|--------|
-| `journal-1.md` | ~407 | Active |
+| `journal-1.md` | ~440 | Active |
 <!-- @@@/auto:active-documents -->
 
 ---
@@ -29,6 +29,7 @@
 <!-- @@@auto:session-history -->
 | # | Date | Title | Commits | Branch |
 |---|------|-------|---------|--------|
+| 4 | 2026-07-27 | 修复 prompt 完整性与 modelOverrides 优先级 | `3ed6214` | `master` |
 | 3 | 2026-07-25 | Pi 0.82 compatibility update | `3777927` | `master` |
 | 2 | 2026-06-07 | Finish Otokapi GPT cache optimization | `12b30a8` | `master` |
 | 1 | 2026-05-16 | Rename to pi-cache-optimizer and auto-config DeepSeek | `b5584a5`, `32f33d3`, `b94fcad` | `master` |
