@@ -9,8 +9,9 @@ const tempAgentDir = await mkdtemp(join(tmpdir(), "pi-cache-lifecycle-"));
 process.env.PI_CODING_AGENT_DIR = tempAgentDir;
 process.env.PI_CACHE_RETENTION = "custom-before-extension";
 
-const moduleUrl = new URL(`../../../index.ts?lifecycle=${Date.now()}`, import.meta.url).href;
-const { default: extension, __internals_for_tests: I } = await import(moduleUrl);
+const loadedExtension = await import("#extension");
+const extensionModule = "__internals_for_tests" in loadedExtension ? loadedExtension : loadedExtension.default;
+const { default: extension, __internals_for_tests: I } = extensionModule;
 
 let passed = 0;
 let failed = 0;

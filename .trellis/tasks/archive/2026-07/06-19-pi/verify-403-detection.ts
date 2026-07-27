@@ -27,7 +27,7 @@
  * official OpenAI would never set this flag in practice.
  */
 
-import { __internals_for_tests as I } from "../../../index.ts";
+import { __internals_for_tests as I } from "#extension";
 
 const {
   isSessionAffinity403Applicable,

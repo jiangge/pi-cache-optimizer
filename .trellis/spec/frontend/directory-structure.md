@@ -19,6 +19,7 @@ There is intentionally no `src/` tree, component hierarchy, route layer, or asse
 ├── index.ts                         # Pi extension implementation and test internals
 ├── types/
 │   └── pi-coding-agent.d.ts         # Local ambient Pi type augmentation/shim
+├── tests/                            # Permanent runtime regression tests
 ├── README.md                        # English user docs
 ├── README.zh-CN.md                  # Chinese user docs
 ├── package.json                     # npm/pi package metadata; files includes index.ts
@@ -55,7 +56,8 @@ Create a new file only when there is a strong reason (for example local `.d.ts` 
 
 - Runtime entry: keep `index.ts` as the Pi extension entry.
 - Type shims: place under `types/**/*.d.ts` so `tsconfig.json` includes them.
-- Trellis task verification scripts: place under the relevant `.trellis/tasks/<task>/verify.ts` while active; archive with the task.
+- Permanent regression tests: place under `tests/` and run them through `npm test`.
+- Trellis task verification scripts: use them only for task-specific investigation or additional evidence; archive with the task. They must not be the sole coverage for runtime contracts.
 - User docs: keep English and Chinese READMEs in sync for user-visible behavior.
 
 ---

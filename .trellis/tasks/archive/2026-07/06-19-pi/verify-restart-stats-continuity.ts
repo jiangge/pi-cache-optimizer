@@ -13,7 +13,7 @@
  * tombstones do not resurrect stale old session buckets.
  */
 
-import { __internals_for_tests as I } from "../../../index.ts";
+import { __internals_for_tests as I } from "#extension";
 
 const {
   parsePersistedCacheStats,

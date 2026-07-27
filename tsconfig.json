@@ -11,6 +11,7 @@
   },
   "include": [
     "index.ts",
+    "tests/**/*.ts",
     "types/**/*.d.ts"
   ]
 }

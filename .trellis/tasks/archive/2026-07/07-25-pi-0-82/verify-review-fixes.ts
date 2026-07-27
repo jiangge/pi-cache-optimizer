@@ -1,7 +1,7 @@
 #!/usr/bin/env bun
 /** Direct regression coverage for findings from the Pi 0.82 code review. */
 
-import extension, { __internals_for_tests as I } from "../../../index.ts";
+import extension, { __internals_for_tests as I } from "#extension";
 
 const {
   getAgentDirDisplayPath,
@@ -223,14 +223,13 @@ check("STATE_DIR is non-empty and resolved by Pi core", typeof STATE_DIR === "st
 
 // Verify official env semantics in fresh module processes: PI_CONFIG_DIR is ignored,
 // while PI_CODING_AGENT_DIR is the full agent-directory override.
-const moduleUrl = new URL("../../../index.ts", import.meta.url).href;
 function childStateDir(env: Record<string, string | undefined>): string {
   const childEnv: Record<string, string> = {};
   for (const [key, value] of Object.entries({ ...process.env, ...env })) {
     if (value !== undefined) childEnv[key] = value;
   }
   const result = Bun.spawnSync({
-    cmd: [process.execPath, "-e", `import { __internals_for_tests as I } from ${JSON.stringify(moduleUrl)}; console.log(I.STATE_DIR);`],
+    cmd: [process.execPath, "-e", `const loaded = await import("#extension"); const module = "__internals_for_tests" in loaded ? loaded : loaded.default; console.log(module.__internals_for_tests.STATE_DIR);`],
     env: childEnv,
     stdout: "pipe",
     stderr: "pipe",

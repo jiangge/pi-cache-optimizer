@@ -133,8 +133,8 @@ function getAnthropicTtlFallbackState(): AnthropicTtlFallbackStateV1 {
 
 let runtimeOptimizerEnabled = true;
 
-// WORM-flag: if optimizeSystemPrompt ever detects that its blind-replace
-// logic has accidentally truncated a structural marker (any XML tag or
+// WORM-flag: if optimizeSystemPrompt ever detects that candidate extraction
+// has accidentally truncated a structural marker (any XML tag or
 // HTML comment boundary marker present in the original prompt), we flip
 // this. publishStatus reads it once, appends a footer warning, then
 // resets it. The flag surface is kept separate from the regular
@@ -161,12 +161,10 @@ const SKILL_COMPRESSION_MIN_COUNT = 4;
 
 // Minimum trimmed length for a candidate to qualify as a stable-prefix "part".
 //
-// `optimizeSystemPrompt` removes each accepted candidate from the dynamic
-// remainder via `rest.replace(part, "")`. Short or character-class candidates
-// (think: `S`, `- u`, `- (`, `- }`) match the FIRST occurrence of those bytes
-// anywhere in `rest`, ripping unrelated text out of the prompt and yielding a
-// non-deterministic dynamic remainder per request. Both behaviors poison the
-// provider's prompt-prefix cache.
+// `optimizeSystemPrompt` removes each uniquely occurring accepted candidate
+// from the dynamic remainder. Short or character-class candidates (think: `S`,
+// `- u`, `- (`, `- }`) are too likely to match unrelated prompt text, so they
+// are never eligible for lifting.
 //
 // The threshold also caps the upstream string-vs-array regression we saw with
 // trellis 0.5.16 / 0.6.0-beta.17 (subagent tool registration passing
@@ -644,7 +642,7 @@ function stripSessionOverviewChurn(prompt: string): string {
  * Extract structural markers from a prompt for the integrity guard.
  *
  * The guard runs in `optimizeSystemPrompt` to catch cases where the
- * blind `rest.replace(part, "")` reorder accidentally eats text inside
+ * candidate extraction accidentally eats text inside
  * an extension-injected structural block (e.g., trellis
  * `<workflow-state>`, a hypothetical `<task-tracker>`, or AGENTS.md
  * `<!-- TRELLIS:START -->` markers). When the original prompt contains
@@ -704,16 +702,43 @@ function optimizeSystemPrompt(
   const seen = new Set<string>();
   let rest = original;
 
-  // Stable layer: content likely to be identical across sessions/turns.
-  // Short / single-char candidates are dropped: see MIN_STABLE_CANDIDATE_LENGTH.
+  // Classify candidate ambiguity against one immutable snapshot. Candidates
+  // can be nested (a full context-file block also contains its bare content),
+  // so recomputing occurrence counts after each removal is unsafe: deleting
+  // the full block can make the dynamic copy of its bare content appear unique.
+  const candidates: string[] = [];
   for (const candidate of buildStableCandidates(opts)) {
     const part = candidate.trim();
-    if (!part || part.length < MIN_STABLE_CANDIDATE_LENGTH) continue;
-    if (seen.has(part) || !rest.includes(part)) continue;
+    if (!part || part.length < MIN_STABLE_CANDIDATE_LENGTH || seen.has(part)) continue;
+    seen.add(part);
+    candidates.push(part);
+  }
+
+  const initialRemainder = rest;
+  const occurrenceCount = new Map<string, number>();
+  for (const part of candidates) {
+    let count = 0;
+    let searchFrom = 0;
+    while (searchFrom < initialRemainder.length) {
+      const occurrence = initialRemainder.indexOf(part, searchFrom);
+      if (occurrence < 0) break;
+      count++;
+      if (count > 1) break;
+      searchFrom = occurrence + 1;
+    }
+    occurrenceCount.set(part, count);
+  }
+
+  // Stable layer: content likely to be identical across sessions/turns.
+  // Short / single-char candidates are dropped: see MIN_STABLE_CANDIDATE_LENGTH.
+  for (const part of candidates) {
+    if (occurrenceCount.get(part) !== 1) continue;
+
+    const firstOccurrence = rest.indexOf(part);
+    if (firstOccurrence < 0) continue;
 
     stableParts.push(part);
-    seen.add(part);
-    rest = rest.replace(part, "");
+    rest = rest.slice(0, firstOccurrence) + rest.slice(firstOccurrence + part.length);
   }
 
   const stablePrefix = stableParts.join("\n\n");
@@ -731,8 +756,8 @@ function optimizeSystemPrompt(
 
   // Sanity check: scan ALL structural markers (XML tags + HTML comment
   // boundary markers) in the original and verify each one survives the
-  // reorder. If any marker drops, the blind `rest.replace(part, "")`
-  // logic ate something it shouldn't have — fall back to the original
+  // reorder. If any marker drops, candidate extraction ate something it
+  // shouldn't have — fall back to the original
   // prompt and flag the footer warning. This is provider-agnostic and
   // extension-agnostic: trellis `<workflow-state>`, a hypothetical
   // `<task-tracker>`, AGENTS.md `<!-- TRELLIS:START -->`, etc., are all
@@ -5040,6 +5065,63 @@ function parseJsonc(text: string): unknown {
   return JSON.parse(stripJsoncTrailingCommas(stripJsoncComments(text)));
 }
 
+type ExplicitCompatSource = "modelOverride" | "model" | "provider";
+
+interface ExplicitCompatValue {
+  source: ExplicitCompatSource;
+  value: unknown;
+}
+
+/**
+ * Resolve one explicitly configured compat value using Pi's models.json
+ * precedence. Built-in model overrides win over custom model definitions,
+ * which in turn win over provider defaults.
+ */
+function resolveExplicitCompatValue(
+  config: unknown,
+  providerLabel: string,
+  modelId: string,
+  compatKey: string,
+): ExplicitCompatValue | undefined {
+  const providers = asRecord(asRecord(config)?.providers);
+  const provider = asRecord(providers?.[providerLabel]);
+  if (!provider) return undefined;
+
+  const override = asRecord(asRecord(provider.modelOverrides)?.[modelId]);
+  const overrideCompat = asRecord(override?.compat);
+  if (overrideCompat && Object.prototype.hasOwnProperty.call(overrideCompat, compatKey)) {
+    return { source: "modelOverride", value: overrideCompat[compatKey] };
+  }
+
+  if (Array.isArray(provider.models)) {
+    const model = provider.models.find((entry: unknown) => asRecord(entry)?.id === modelId);
+    const modelCompat = asRecord(asRecord(model)?.compat);
+    if (modelCompat && Object.prototype.hasOwnProperty.call(modelCompat, compatKey)) {
+      return { source: "model", value: modelCompat[compatKey] };
+    }
+  }
+
+  const providerCompat = asRecord(provider.compat);
+  if (providerCompat && Object.prototype.hasOwnProperty.call(providerCompat, compatKey)) {
+    return { source: "provider", value: providerCompat[compatKey] };
+  }
+
+  return undefined;
+}
+
+function hasExplicitLongRetentionOptInFromConfig(
+  config: unknown,
+  providerLabel: string,
+  modelId: string,
+): boolean {
+  return resolveExplicitCompatValue(
+    config,
+    providerLabel,
+    modelId,
+    "supportsLongCacheRetention",
+  )?.value === true;
+}
+
 /**
  * JSONC scanner: locate the provider block and model entry in models.json text.
  * Returns the byte offsets for surgical insertion, or undefined if ambiguous.
@@ -5065,8 +5147,97 @@ interface ModelNodeLocation {
   providerCompatBrace: number;
   /** Offset of the provider-level compat object's closing `}`, or -1 if absent */
   providerCompatEnd: number;
+  /** Offset of the target modelOverrides entry's opening `{`, or -1 if absent */
+  modelOverrideObjectBrace: number;
+  /** Offset of the target modelOverrides entry's closing `}`, or -1 if absent */
+  modelOverrideObjectEnd: number;
+  /** Offset of the target override compat object's opening `{`, or -1 if absent */
+  modelOverrideCompatBrace: number;
+  /** Offset of the target override compat object's closing `}`, or -1 if absent */
+  modelOverrideCompatEnd: number;
   /** All model ids found in this provider's models array (for placement safety analysis) */
   allModelIds: string[];
+}
+
+interface ModelOverrideNodeLocation {
+  providerObjectBrace: number;
+  providerObjectEnd: number;
+  modelOverridesObjectBrace: number;
+  modelOverridesObjectEnd: number;
+  modelOverrideObjectBrace: number;
+  modelOverrideObjectEnd: number;
+  modelOverrideCompatBrace: number;
+  modelOverrideCompatEnd: number;
+}
+
+/** Locate a provider and optional modelOverrides entry without requiring models[]. */
+function locateModelOverrideInJsonc(
+  text: string,
+  providerLabel: string,
+  modelId: string,
+): ModelOverrideNodeLocation | undefined {
+  const clean = stripJsoncComments(text);
+  const rootBrace = skipJsonWhitespace(clean, 0);
+  if (clean[rootBrace] !== "{") return undefined;
+  const providersKey = findJsonObjectKey(clean, rootBrace, "providers");
+  if (!providersKey) return undefined;
+  const providersBrace = skipJsonWhitespace(clean, providersKey.valueStart);
+  if (clean[providersBrace] !== "{") return undefined;
+  const providersEnd = findMatchingBracket(clean, providersBrace);
+  if (providersEnd === undefined) return undefined;
+  const providerKey = findJsonObjectKey(clean, providersBrace, providerLabel);
+  if (!providerKey || providerKey.keyStart > providersEnd) return undefined;
+  const providerObjectBrace = skipJsonWhitespace(clean, providerKey.valueStart);
+  if (clean[providerObjectBrace] !== "{") return undefined;
+  const providerObjectEnd = findMatchingBracket(clean, providerObjectBrace);
+  if (providerObjectEnd === undefined || providerObjectEnd > providersEnd) return undefined;
+
+  let modelOverridesObjectBrace = -1;
+  let modelOverridesObjectEnd = -1;
+  let modelOverrideObjectBrace = -1;
+  let modelOverrideObjectEnd = -1;
+  let modelOverrideCompatBrace = -1;
+  let modelOverrideCompatEnd = -1;
+  const overridesKey = findJsonObjectKey(clean, providerObjectBrace, "modelOverrides");
+  if (overridesKey && overridesKey.keyStart < providerObjectEnd) {
+    const brace = skipJsonWhitespace(clean, overridesKey.valueStart);
+    if (clean[brace] !== "{") return undefined;
+    const end = findMatchingBracket(clean, brace);
+    if (end === undefined || end > providerObjectEnd) return undefined;
+    modelOverridesObjectBrace = brace;
+    modelOverridesObjectEnd = end;
+
+    const overrideKey = findJsonObjectKey(clean, brace, modelId);
+    if (overrideKey && overrideKey.keyStart < end) {
+      const entryBrace = skipJsonWhitespace(clean, overrideKey.valueStart);
+      if (clean[entryBrace] !== "{") return undefined;
+      const entryEnd = findMatchingBracket(clean, entryBrace);
+      if (entryEnd === undefined || entryEnd > end) return undefined;
+      modelOverrideObjectBrace = entryBrace;
+      modelOverrideObjectEnd = entryEnd;
+
+      const compatKey = findJsonObjectKey(clean, entryBrace, "compat");
+      if (compatKey && compatKey.keyStart < entryEnd) {
+        const compatBrace = skipJsonWhitespace(clean, compatKey.valueStart);
+        if (clean[compatBrace] !== "{") return undefined;
+        const compatEnd = findMatchingBracket(clean, compatBrace);
+        if (compatEnd === undefined || compatEnd > entryEnd) return undefined;
+        modelOverrideCompatBrace = compatBrace;
+        modelOverrideCompatEnd = compatEnd;
+      }
+    }
+  }
+
+  return {
+    providerObjectBrace,
+    providerObjectEnd,
+    modelOverridesObjectBrace,
+    modelOverridesObjectEnd,
+    modelOverrideObjectBrace,
+    modelOverrideObjectEnd,
+    modelOverrideCompatBrace,
+    modelOverrideCompatEnd,
+  };
 }
 
 /**
@@ -5120,6 +5291,12 @@ function locateModelInJsonc(
       }
     }
   }
+
+  const overrideLocation = locateModelOverrideInJsonc(text, providerLabel, modelId);
+  const modelOverrideObjectBrace = overrideLocation?.modelOverrideObjectBrace ?? -1;
+  const modelOverrideObjectEnd = overrideLocation?.modelOverrideObjectEnd ?? -1;
+  const modelOverrideCompatBrace = overrideLocation?.modelOverrideCompatBrace ?? -1;
+  const modelOverrideCompatEnd = overrideLocation?.modelOverrideCompatEnd ?? -1;
 
   const modelsKey = findJsonObjectKey(clean, providerBrace, "models");
   if (!modelsKey || modelsKey.keyStart > providerEndBrace) return undefined;
@@ -5208,6 +5385,10 @@ function locateModelInJsonc(
     providerObjectEnd: providerEndBrace,
     providerCompatBrace,
     providerCompatEnd,
+    modelOverrideObjectBrace,
+    modelOverrideObjectEnd,
+    modelOverrideCompatBrace,
+    modelOverrideCompatEnd,
     allModelIds,
   };
 }
@@ -5217,7 +5398,7 @@ function locateModelInJsonc(
  * `locateModelInJsonc` cannot find the target provider/model.
  */
 type MissingEntryDiagnosis =
-  | { scenario: "provider_missing"; providersEnd: number }
+  | { scenario: "provider_missing"; providersBrace: number; providersEnd: number }
   | { scenario: "model_missing"; modelsEnd: number; providerBrace: number; providerEndBrace: number }
   | { scenario: "provider_without_models"; providerBrace: number; providerEndBrace: number };
 
@@ -5248,7 +5429,7 @@ function analyzeModelsJsonForMissingEntry(
 
   const providerKey = findJsonObjectKey(clean, providersBrace, providerLabel);
   if (!providerKey || providerKey.keyStart > providersEnd) {
-    return { scenario: "provider_missing", providersEnd };
+    return { scenario: "provider_missing", providersBrace, providersEnd };
   }
 
   // Provider exists. Check for a models array so we know where to append.
@@ -5286,18 +5467,124 @@ function formatMissingEntryManualSnippet(
 ): string {
   const lines: string[] = [];
   const sorted = Object.entries(compatKeys).sort(([a], [b]) => a.localeCompare(b));
-  const compatItems = sorted.map(([k, v]) => `      ${JSON.stringify(k)}: ${JSON.stringify(v)}`);
+  const compatItems = sorted.map(([k, v]) => `          ${JSON.stringify(k)}: ${JSON.stringify(v)}`);
   lines.push(`"${providerLabel}": {`);
-  lines.push(`    "models": [`);
-  lines.push(`      {`);
-  lines.push(`        "id": ${JSON.stringify(modelId)},`);
+  lines.push(`    "modelOverrides": {`);
+  lines.push(`      ${JSON.stringify(modelId)}: {`);
   lines.push(`        "compat": {`);
   lines.push(compatItems.join(",\n"));
   lines.push(`        }`);
   lines.push(`      }`);
-  lines.push(`    ]`);
+  lines.push(`    }`);
   lines.push(`  }`);
   return lines.join("\n");
+}
+
+/**
+ * Insert or repair a modelOverrides entry without creating a custom models[]
+ * definition. This is the safest representation for built-in/API-login models
+ * and has the same highest precedence Pi applies at runtime.
+ */
+function composeModelOverrideInsertion(
+  originalText: string,
+  providerLabel: string,
+  modelId: string,
+  compatKeys: Record<string, unknown>,
+): { modifiedText: string; placementLabel: string } | undefined {
+  const location = locateModelOverrideInJsonc(originalText, providerLabel, modelId);
+
+  if (location?.modelOverrideObjectBrace !== undefined && location.modelOverrideObjectBrace >= 0) {
+    const modelLocation: ModelNodeLocation = {
+      modelObjectBrace: -1,
+      modelObjectEnd: -1,
+      compatKeyStart: -1,
+      compatObjectBrace: -1,
+      compatObjectEnd: -1,
+      indent: "",
+      providerObjectBrace: location.providerObjectBrace,
+      providerObjectEnd: location.providerObjectEnd,
+      providerCompatBrace: -1,
+      providerCompatEnd: -1,
+      modelOverrideObjectBrace: location.modelOverrideObjectBrace,
+      modelOverrideObjectEnd: location.modelOverrideObjectEnd,
+      modelOverrideCompatBrace: location.modelOverrideCompatBrace,
+      modelOverrideCompatEnd: location.modelOverrideCompatEnd,
+      allModelIds: [],
+    };
+    return {
+      modifiedText: composeFixInsertion(originalText, modelLocation, compatKeys, "modelOverride"),
+      placementLabel: `providers["${providerLabel}"] -> modelOverrides["${modelId}"] -> compat`,
+    };
+  }
+
+  const sortedEntries = Object.entries(compatKeys).sort(([a], [b]) => a.localeCompare(b));
+  const formatOverrideEntry = (keyIndent: string, unit: string): string => {
+    const propertyIndent = keyIndent + unit;
+    const compatIndent = propertyIndent + unit;
+    const compatLines = sortedEntries
+      .map(([key, value]) => `${compatIndent}${JSON.stringify(key)}: ${JSON.stringify(value)}`)
+      .join(",\n");
+    return `${keyIndent}${JSON.stringify(modelId)}: {\n` +
+      `${propertyIndent}"compat": {\n${compatLines}\n${propertyIndent}}\n${keyIndent}}`;
+  };
+  const previousTokenNeedsComma = (clean: string, closeBrace: number): boolean => {
+    let pos = closeBrace - 1;
+    while (pos >= 0 && isJsonWhitespace(clean[pos])) pos--;
+    return clean[pos] !== "{" && clean[pos] !== ",";
+  };
+
+  if (location) {
+    const clean = stripJsoncComments(originalText);
+    if (location.modelOverridesObjectBrace >= 0) {
+      const containerIndent = lineIndentOf(originalText, location.modelOverridesObjectBrace);
+      const keyIndent = deriveInnerIndent(
+        originalText,
+        location.modelOverridesObjectBrace,
+        location.modelOverridesObjectEnd,
+      );
+      const unit = keyIndent.length > containerIndent.length
+        ? keyIndent.slice(containerIndent.length)
+        : "  ";
+      const comma = previousTokenNeedsComma(clean, location.modelOverridesObjectEnd) ? "," : "";
+      const insertion = `${comma}\n${formatOverrideEntry(keyIndent, unit)}\n${containerIndent}`;
+      return {
+        modifiedText: originalText.slice(0, location.modelOverridesObjectEnd) + insertion + originalText.slice(location.modelOverridesObjectEnd),
+        placementLabel: `providers["${providerLabel}"] -> modelOverrides -> (new entry "${modelId}")`,
+      };
+    }
+
+    const providerIndent = lineIndentOf(originalText, location.providerObjectBrace);
+    const propertyIndent = deriveInnerIndent(originalText, location.providerObjectBrace, location.providerObjectEnd);
+    const unit = propertyIndent.length > providerIndent.length
+      ? propertyIndent.slice(providerIndent.length)
+      : "  ";
+    const entryIndent = propertyIndent + unit;
+    const block = `\n${propertyIndent}"modelOverrides": {\n` +
+      `${formatOverrideEntry(entryIndent, unit)}\n${propertyIndent}},`;
+    return {
+      modifiedText: originalText.slice(0, location.providerObjectBrace + 1) + block + originalText.slice(location.providerObjectBrace + 1),
+      placementLabel: `providers["${providerLabel}"] -> (new modelOverrides entry "${modelId}")`,
+    };
+  }
+
+  const diagnosis = analyzeModelsJsonForMissingEntry(originalText, providerLabel, modelId);
+  if (!diagnosis || diagnosis.scenario !== "provider_missing") return undefined;
+  const clean = stripJsoncComments(originalText);
+  const providersIndent = lineIndentOf(originalText, diagnosis.providersEnd);
+  const providerIndent = deriveInnerIndent(originalText, diagnosis.providersBrace, diagnosis.providersEnd);
+  const unit = providerIndent.length > providersIndent.length
+    ? providerIndent.slice(providersIndent.length)
+    : "  ";
+  const overridesIndent = providerIndent + unit;
+  const entryIndent = overridesIndent + unit;
+  const comma = previousTokenNeedsComma(clean, diagnosis.providersEnd) ? "," : "";
+  const block = `${comma}\n${providerIndent}${JSON.stringify(providerLabel)}: {\n` +
+    `${overridesIndent}"modelOverrides": {\n${formatOverrideEntry(entryIndent, unit)}\n` +
+    `${overridesIndent}}\n${providerIndent}}\n${providersIndent}`;
+  return {
+    modifiedText: originalText.slice(0, diagnosis.providersEnd) + block + originalText.slice(diagnosis.providersEnd),
+    placementLabel: `providers -> (new modelOverrides-only entry "${providerLabel}/${modelId}")`,
+  };
 }
 
 /**
@@ -5458,10 +5745,10 @@ function composeMissingEntryInsertion(
 }
 
 /**
- * Lightweight self-check for a newly inserted entry.
+ * Lightweight self-check for a newly inserted model or modelOverrides entry.
  * Parses the modified text as JSONC and confirms:
- *   1. The target model exists under the provider.
- *   2. Every compat key has the expected value (merged provider+model).
+ *   1. The target exists under models[] or modelOverrides.
+ *   2. Every compat key has the expected effective three-layer value.
  * Returns null on success, an error string on failure.
  */
 function selfCheckMissingEntryInsertion(
@@ -5472,34 +5759,88 @@ function selfCheckMissingEntryInsertion(
   compatKeys: Record<string, unknown>,
 ): string | null {
   try {
+    const origParsed = parseJsonc(originalText);
     const modParsed = parseJsonc(modifiedText);
     const providers = asRecord(asRecord(modParsed)?.providers);
     if (!providers) return "Modified file: providers object missing or invalid";
     const provider = asRecord(providers[providerLabel]);
     if (!provider) return `Modified file: provider "${providerLabel}" not found`;
     const models = provider.models;
-    if (!Array.isArray(models)) return `Modified file: provider "${providerLabel}".models is not an array`;
-    const targetModel = models.find((m: unknown) => asRecord(m)?.id === modelId);
-    if (!targetModel || typeof targetModel !== "object")
-      return `Modified file: model "${modelId}" not found in provider after insertion`;
-
-    // Validate effective merged compat
-    const provCompatRaw = (provider as Record<string, unknown>).compat;
-    const provCompat = (provCompatRaw && typeof provCompatRaw === "object" && !Array.isArray(provCompatRaw))
-      ? provCompatRaw as Record<string, unknown>
-      : {};
-    const mdlCompatRaw = (targetModel as Record<string, unknown>).compat;
-    const mdlCompat = (mdlCompatRaw && typeof mdlCompatRaw === "object" && !Array.isArray(mdlCompatRaw))
-      ? mdlCompatRaw as Record<string, unknown>
-      : {};
-    const merged = { ...provCompat, ...mdlCompat };
-    for (const [k, v] of Object.entries(compatKeys)) {
-      if (!(k in merged)) return `Modified file: effective compat.${k} not found`;
-      if (merged[k] !== v) return `Modified file: effective compat.${k} wrong value`;
+    const targetModel = Array.isArray(models)
+      ? models.find((m: unknown) => asRecord(m)?.id === modelId)
+      : undefined;
+    const targetOverride = asRecord(asRecord(provider.modelOverrides)?.[modelId]);
+    if (!targetModel && !targetOverride) {
+      return `Modified file: model or modelOverrides entry "${modelId}" not found in provider after insertion`;
     }
 
-    if (modifiedText.length < originalText.length)
-      return "Modified file: content is shorter than original (possible truncation)";
+    for (const [k, v] of Object.entries(compatKeys)) {
+      const effective = resolveExplicitCompatValue(modParsed, providerLabel, modelId, k);
+      if (!effective) return `Modified file: effective compat.${k} not found`;
+      if (effective.value !== v) {
+        return `Modified file: effective compat.${k} wrong value: expected ${JSON.stringify(v)}, got ${JSON.stringify(effective.value)} from ${effective.source}`;
+      }
+    }
+
+    // Normalize only the intended override edit back to its original shape,
+    // then require the complete parsed structure to match. This catches data
+    // loss while allowing legitimate shorter repairs such as false -> true.
+    const normalized = JSON.parse(JSON.stringify(modParsed)) as Record<string, unknown>;
+    const origProviders = asRecord(asRecord(origParsed)?.providers);
+    const origProvider = asRecord(origProviders?.[providerLabel]);
+    const normalizedProviders = asRecord(normalized.providers);
+    if (!normalizedProviders) return "Modified file: normalized providers object missing";
+
+    if (!origProvider) {
+      delete normalizedProviders[providerLabel];
+    } else if (targetOverride) {
+      const normalizedProvider = asRecord(normalizedProviders[providerLabel]);
+      const normalizedOverrides = asRecord(normalizedProvider?.modelOverrides);
+      const origOverrides = asRecord(origProvider.modelOverrides);
+      const origOverride = asRecord(origOverrides?.[modelId]);
+
+      if (!normalizedProvider || !normalizedOverrides) {
+        return `Modified file: modelOverrides["${modelId}"] missing during structure validation`;
+      }
+      if (!origOverride) {
+        delete normalizedOverrides[modelId];
+        if (!origOverrides) delete normalizedProvider.modelOverrides;
+      } else {
+        const normalizedOverride = asRecord(normalizedOverrides[modelId]);
+        if (!normalizedOverride) return `Modified file: modelOverrides["${modelId}"] invalid`;
+        const origCompat = asRecord(origOverride.compat);
+        const normalizedCompat = asRecord(normalizedOverride.compat);
+        if (!origCompat) {
+          delete normalizedOverride.compat;
+        } else {
+          if (!normalizedCompat) return `Modified file: modelOverrides["${modelId}"].compat invalid`;
+          for (const key of Object.keys(compatKeys)) {
+            if (Object.prototype.hasOwnProperty.call(origCompat, key)) {
+              normalizedCompat[key] = origCompat[key];
+            } else {
+              delete normalizedCompat[key];
+            }
+          }
+        }
+      }
+    } else {
+      // Backward-compatible validation for the legacy models[] insertion
+      // helper retained in __internals_for_tests.
+      const normalizedProvider = asRecord(normalizedProviders[providerLabel]);
+      const normalizedModels = normalizedProvider?.models;
+      const origModels = origProvider.models;
+      if (!normalizedProvider || !Array.isArray(normalizedModels)) {
+        return `Modified file: provider "${providerLabel}".models missing during structure validation`;
+      }
+      normalizedProvider.models = normalizedModels.filter(
+        (entry: unknown) => asRecord(entry)?.id !== modelId,
+      );
+      if (!Array.isArray(origModels)) delete normalizedProvider.models;
+    }
+
+    if (!deepEqualIgnoringKeys(normalized, origParsed, [])) {
+      return "Modified file: original structure was altered (data loss detected)";
+    }
 
     const modClean = stripJsoncComments(modifiedText);
     const rootStart = skipJsonWhitespace(modClean, 0);
@@ -5655,7 +5996,14 @@ function chooseFixPlacement(
   compatKeys: Record<string, unknown>,
   providerLabel: string,
   forceModelLevel = false,
-): { placement: "provider" | "model"; reason: string } {
+): { placement: "provider" | "model" | "modelOverride"; reason: string } {
+  if (location.modelOverrideObjectBrace >= 0) {
+    return {
+      placement: "modelOverride",
+      reason: "an existing modelOverrides entry has Pi's highest precedence — repairing it directly",
+    };
+  }
+
   if (forceModelLevel) {
     return {
       placement: "model",
@@ -5689,12 +6037,24 @@ function composeFixInsertion(
   original: string,
   location: ModelNodeLocation,
   compatKeys: Record<string, unknown>,
-  placement: "provider" | "model" = "model",
+  placement: "provider" | "model" | "modelOverride" = "model",
 ): string {
   // Resolve the target compat object and its container based on placement.
-  const targetCompatBrace = placement === "provider" ? location.providerCompatBrace : location.compatObjectBrace;
-  const targetCompatEnd = placement === "provider" ? location.providerCompatEnd : location.compatObjectEnd;
-  const containerBrace = placement === "provider" ? location.providerObjectBrace : location.modelObjectBrace;
+  const targetCompatBrace = placement === "provider"
+    ? location.providerCompatBrace
+    : placement === "modelOverride"
+      ? location.modelOverrideCompatBrace
+      : location.compatObjectBrace;
+  const targetCompatEnd = placement === "provider"
+    ? location.providerCompatEnd
+    : placement === "modelOverride"
+      ? location.modelOverrideCompatEnd
+      : location.compatObjectEnd;
+  const containerBrace = placement === "provider"
+    ? location.providerObjectBrace
+    : placement === "modelOverride"
+      ? location.modelOverrideObjectBrace
+      : location.modelObjectBrace;
 
   // Helper: format key/value pairs as lines with the given indent,
   // alphabetically sorted for stable previews and deterministic edits.
@@ -5796,7 +6156,7 @@ function selfCheckFix(
   providerLabel: string,
   modelId: string,
   compatKeys: Record<string, unknown>,
-  placement: "provider" | "model" = "model",
+  placement: "provider" | "model" | "modelOverride" = "model",
 ): string | null {
   try {
     // Step 1: Parse both versions as JSONC (comments + trailing commas allowed).
@@ -5840,9 +6200,9 @@ function selfCheckFix(
       return `Original file: provider/model "${providerLabel}/${modelId}" not found`;
     }
 
-    // Step 5: Compute the EFFECTIVE merged compat (provider-level + model-level),
-    // mirroring Pi's mergeCompat behavior (model wins on conflicts). The fix may
-    // have written either level, so validation must check the merged result.
+    // Step 5: Compute the EFFECTIVE merged compat using Pi's precedence:
+    // provider, custom model, then modelOverrides. The fix may have written any
+    // level, so validation must check what Pi will actually use.
     const provCompatRaw = (provider as Record<string, unknown>).compat;
     const provCompat = (provCompatRaw && typeof provCompatRaw === 'object' && !Array.isArray(provCompatRaw))
       ? provCompatRaw as Record<string, unknown>
@@ -5852,7 +6212,13 @@ function selfCheckFix(
       return `Modified file: model "${modelId}" compat is not an object`;
     }
     const mdlCompat = (modelCompatRaw ?? {}) as Record<string, unknown>;
-    const mergedCompat: Record<string, unknown> = { ...provCompat, ...mdlCompat };
+    const override = asRecord(asRecord(provider.modelOverrides)?.[modelId]);
+    const overrideCompatRaw = override?.compat;
+    if (overrideCompatRaw !== undefined && !asRecord(overrideCompatRaw)) {
+      return `Modified file: modelOverrides["${modelId}"].compat is not an object`;
+    }
+    const overrideCompat = asRecord(overrideCompatRaw) ?? {};
+    const mergedCompat: Record<string, unknown> = { ...provCompat, ...mdlCompat, ...overrideCompat };
 
     // Step 6: Validate all inserted keys are effective in the merged compat
     for (const [k, v] of Object.entries(compatKeys)) {
@@ -5900,7 +6266,8 @@ function selfCheckFix(
             // the placement-resolved object's own compat may be exempt.
             const mayRepairThisCompat =
               (placement === "provider" && origObj === origProvider) ||
-              (placement === "model" && origObj === origTargetModelRecord);
+              (placement === "model" && origObj === origTargetModelRecord) ||
+              (placement === "modelOverride" && origObj === asRecord(asRecord(origProvider.modelOverrides)?.[modelId]));
             for (const ck of Object.keys(origCompat)) {
               if (!(ck in modCompat)) return false;
               // The fix may repair an existing wrong compat value (for example
@@ -6222,11 +6589,15 @@ export const __internals_for_tests = {
   stripJsoncComments,
   stripJsoncTrailingCommas,
   parseJsonc,
+  resolveExplicitCompatValue,
+  hasExplicitLongRetentionOptInFromConfig,
   locateModelInJsonc,
+  locateModelOverrideInJsonc,
   composeFixInsertion,
   selfCheckFix,
   analyzeModelsJsonForMissingEntry,
   composeMissingEntryInsertion,
+  composeModelOverrideInsertion,
   selfCheckMissingEntryInsertion,
   decideFixPlacement,
   chooseFixPlacement,
@@ -6760,9 +7131,8 @@ export default function (pi: ExtensionAPI) {
 
   /**
    * Check whether a model has an EXPLICIT supportsLongCacheRetention: true
-   * opt-in in models.json (either at provider-level or model-level).
-   * Model-level compat takes precedence over provider-level (mirrors Pi's
-   * mergeCompat behaviour: model wins on conflicts).
+   * opt-in in models.json. Precedence mirrors Pi's effective model config:
+   * modelOverrides[model.id].compat, then models[].compat, then provider.compat.
    *
    * Returns true ONLY when the user explicitly opted in. Returns false for:
    *   - Explicit false (opt-out)
@@ -6776,31 +7146,7 @@ export default function (pi: ExtensionAPI) {
     try {
       const text = readFileSync(MODELS_JSON_PATH, "utf8");
       const parsed = parseJsonc(text);
-      const providers = asRecord(asRecord(parsed)?.providers);
-      if (!providers) return false;
-
-      const prov = asRecord(providers[model.provider]);
-      if (!prov) return false;
-
-      // Check model-level first (higher priority in Pi's merge logic)
-      const models = prov.models;
-      if (Array.isArray(models)) {
-        const modelEntry = models.find(m => asRecord(m)?.id === model.id);
-        if (modelEntry) {
-          const modelCompat = asRecord(asRecord(modelEntry)?.compat);
-          if (modelCompat?.supportsLongCacheRetention !== undefined) {
-            return modelCompat.supportsLongCacheRetention === true;
-          }
-        }
-      }
-
-      // Check provider-level
-      const provCompat = asRecord(prov.compat);
-      if (provCompat?.supportsLongCacheRetention !== undefined) {
-        return provCompat.supportsLongCacheRetention === true;
-      }
-
-      return false;
+      return hasExplicitLongRetentionOptInFromConfig(parsed, model.provider, model.id);
     } catch {
       return false;
     }
@@ -7318,8 +7664,8 @@ export default function (pi: ExtensionAPI) {
           }
           manualLines.push(
             "",
-            "If the provider/model already exists in models.json, add these compat keys under",
-            `providers["${suggestion.providerLabel}"] -> models -> entry with id "${suggestion.modelId}" -> compat:`,
+            "Add these compat keys at Pi's highest-precedence model override path:",
+            `providers["${suggestion.providerLabel}"] -> modelOverrides -> "${suggestion.modelId}" -> compat:`,
             formatCompatKeysForInsertion(suggestion.compatKeys),
           );
           if (snippet.length > 0) {
@@ -7353,11 +7699,21 @@ export default function (pi: ExtensionAPI) {
         if (!location) {
           const diagnosis = analyzeModelsJsonForMissingEntry(originalText, suggestion.providerLabel, suggestion.modelId);
           if (diagnosis && cmdCtx.hasUI) {
-            // Offer to create the missing entry.
-            const plan = composeMissingEntryInsertion(
-              originalText, diagnosis,
-              suggestion.providerLabel, suggestion.modelId, suggestion.compatKeys,
+            const overrideLocation = locateModelOverrideInJsonc(
+              originalText, suggestion.providerLabel, suggestion.modelId,
             );
+            const repairsExistingOverride = (overrideLocation?.modelOverrideObjectBrace ?? -1) >= 0;
+            // Prefer a modelOverrides edit when models[] has no target entry.
+            const plan = composeModelOverrideInsertion(
+              originalText, suggestion.providerLabel, suggestion.modelId, suggestion.compatKeys,
+            );
+            if (!plan) {
+              cmdCtx.ui.notify(
+                `❌ Could not safely locate a modelOverrides insertion point.\n` +
+                `Falling back to manual guidance. No changes were made.`,
+                "error",
+              );
+            } else {
             const checkError = selfCheckMissingEntryInsertion(
               originalText, plan.modifiedText,
               suggestion.providerLabel, suggestion.modelId, suggestion.compatKeys,
@@ -7382,7 +7738,9 @@ export default function (pi: ExtensionAPI) {
                 keysPreview,
                 ``,
                 `⚠️  Risk notice:`,
-                `  1. This creates a new entry in models.json. Existing auth (e.g. login API tokens) is not affected.`,
+                repairsExistingOverride
+                  ? `  1. This updates the existing modelOverrides entry for "${suggestion.modelId}". Existing auth is not affected.`
+                  : `  1. This creates a modelOverrides entry in models.json. Existing auth (e.g. login API tokens) is not affected.`,
                 `  2. A timestamped backup will be written to: ${backupPath}`,
                 `  3. You must run /reload or restart Pi for the change to take effect.`,
                 `  4. If the file contains comments or unusual formatting, please verify the result after write.`,
@@ -7397,7 +7755,10 @@ export default function (pi: ExtensionAPI) {
                 );
               }
               previewLines.push("", `Apply these changes?`);
-              const confirmed = await cmdCtx.ui.confirm("Cache Optimizer — Fix (new entry)", previewLines.join("\n"));
+              const confirmed = await cmdCtx.ui.confirm(
+                repairsExistingOverride ? "Cache Optimizer — Fix (model override)" : "Cache Optimizer — Fix (new override)",
+                previewLines.join("\n"),
+              );
               if (confirmed) {
                 try {
                   await copyFile(MODELS_JSON_PATH, backupPath);
@@ -7436,6 +7797,7 @@ export default function (pi: ExtensionAPI) {
               cmdCtx.ui.notify("No changes were made. Canceled by user.", "info");
               return;
             }
+            }
           }
 
           // Non-interactive or no diagnosis: show manual guidance.
@@ -7448,7 +7810,7 @@ export default function (pi: ExtensionAPI) {
               `❌ Could not locate model "${suggestion.modelId}" or provider "${suggestion.providerLabel}" in ${getModelsJsonDisplayPath()}.`,
               "",
               "Providers that were added via Pi /login API (e.g. opencode go) do not have",
-              "entries in models.json. You can create a minimal compat-only entry by hand:",
+              "entries in models.json. You can create a minimal modelOverrides entry by hand:",
             );
           } else if (diagnosis.scenario === "provider_missing") {
             adviceLines.push(
@@ -7463,7 +7825,7 @@ export default function (pi: ExtensionAPI) {
               `ℹ️ Model "${suggestion.modelId}" was not found in ${getModelsJsonDisplayPath()}`,
               `under providers["${suggestion.providerLabel}"].`,
               "",
-              "Add the following entry to the models array (keep existing auth):",
+              "Add the following modelOverrides entry (keep existing auth):",
             );
           }
           adviceLines.push("", snippet, "", "Then save and run /reload.");
@@ -7496,11 +7858,17 @@ export default function (pi: ExtensionAPI) {
         // Build preview snippet as copyable JSON (the surgical editor will
         // insert or repair these exact compat key/value pairs).
         const keysPreview = JSON.stringify(suggestion.compatKeys, null, 2);
-        const targetHasCompat = decision.placement === "provider" ? location.providerCompatBrace >= 0 : location.compatObjectBrace >= 0;
+        const targetHasCompat = decision.placement === "provider"
+          ? location.providerCompatBrace >= 0
+          : decision.placement === "modelOverride"
+            ? location.modelOverrideCompatBrace >= 0
+            : location.compatObjectBrace >= 0;
         const placementDesc = targetHasCompat ? `existing "compat" object` : `new "compat" object`;
         const locationDesc = decision.placement === "provider"
           ? `providers["${suggestion.providerLabel}"] -> compat (provider level, ${placementDesc})`
-          : `providers["${suggestion.providerLabel}"] -> models -> "${suggestion.modelId}" -> compat (model level, ${placementDesc})`;
+          : decision.placement === "modelOverride"
+            ? `providers["${suggestion.providerLabel}"] -> modelOverrides -> "${suggestion.modelId}" -> compat (${placementDesc})`
+            : `providers["${suggestion.providerLabel}"] -> models -> "${suggestion.modelId}" -> compat (model level, ${placementDesc})`;
 
         const ts = backupTimestamp();
         const backupPath = `${MODELS_JSON_PATH}.backup-cache-optimizer-${ts}`;
@@ -7668,26 +8036,38 @@ export default function (pi: ExtensionAPI) {
             }
 
             const location = locateModelInJsonc(originalText, suggestion.providerLabel, suggestion.modelId);
-            if (!location) {
+            const menuDecision = location
+              ? chooseFixPlacement(
+                originalText,
+                location,
+                suggestion.compatKeys,
+                suggestion.providerLabel,
+                suggestion.forceModelLevel,
+              )
+              : undefined;
+            const overridePlan = location
+              ? undefined
+              : composeModelOverrideInsertion(
+                originalText,
+                suggestion.providerLabel,
+                suggestion.modelId,
+                suggestion.compatKeys,
+              );
+            if (!location && !overridePlan) {
               cmdCtx.ui.notify(
-                `❌ Could not locate model "${suggestion.modelId}" in ${getModelsJsonDisplayPath()}.\n` +
-                `Manual edit required: open the file and add:\n` +
-                `${formatCompatKeysForInsertion(suggestion.compatKeys)}\n` +
+                `❌ Could not safely locate a modelOverrides insertion point in ${getModelsJsonDisplayPath()}.\n` +
+                `Manual edit required:\n${formatMissingEntryManualSnippet(suggestion.providerLabel, suggestion.modelId, suggestion.compatKeys)}\n` +
                 `Then run /reload.`,
                 "warning",
               );
               return;
             }
-
-            const menuDecision = chooseFixPlacement(
-              originalText,
-              location,
-              suggestion.compatKeys,
-              suggestion.providerLabel,
-              suggestion.forceModelLevel,
-            );
-            const modifiedText = composeFixInsertion(originalText, location, suggestion.compatKeys, menuDecision.placement);
-            const checkError = selfCheckFix(originalText, modifiedText, suggestion.providerLabel, suggestion.modelId, suggestion.compatKeys, menuDecision.placement);
+            const modifiedText = location && menuDecision
+              ? composeFixInsertion(originalText, location, suggestion.compatKeys, menuDecision.placement)
+              : overridePlan!.modifiedText;
+            const checkError = location && menuDecision
+              ? selfCheckFix(originalText, modifiedText, suggestion.providerLabel, suggestion.modelId, suggestion.compatKeys, menuDecision.placement)
+              : selfCheckMissingEntryInsertion(originalText, modifiedText, suggestion.providerLabel, suggestion.modelId, suggestion.compatKeys);
             if (checkError !== null) {
               cmdCtx.ui.notify(`❌ Self-check failed: ${checkError}\nNo changes made.`, "error");
               return;
@@ -7697,17 +8077,19 @@ export default function (pi: ExtensionAPI) {
             const ts = backupTimestamp();
             const backupPath = `${MODELS_JSON_PATH}.backup-cache-optimizer-${ts}`;
 
-            const menuLocationDesc = menuDecision.placement === "provider"
+            const menuLocationDesc = overridePlan?.placementLabel ?? (menuDecision?.placement === "provider"
               ? `providers["${suggestion.providerLabel}"] -> compat (provider level)`
-              : `providers["${suggestion.providerLabel}"] -> models -> "${suggestion.modelId}" -> compat (model level)`;
-            const menuScopeRiskLine = menuDecision.placement === "provider"
-              ? `  1. This change applies to ALL ${location.allModelIds.length || 1} model(s) in the "${suggestion.providerLabel}" provider, across all sessions.`
+              : menuDecision?.placement === "modelOverride"
+                ? `providers["${suggestion.providerLabel}"] -> modelOverrides -> "${suggestion.modelId}" -> compat`
+                : `providers["${suggestion.providerLabel}"] -> models -> "${suggestion.modelId}" -> compat (model level)`);
+            const menuScopeRiskLine = menuDecision?.placement === "provider"
+              ? `  1. This change applies to ALL ${location?.allModelIds.length || 1} model(s) in the "${suggestion.providerLabel}" provider, across all sessions.`
               : `  1. This change affects ALL sessions using the "${suggestion.providerLabel}" provider/channel (scoped to model "${suggestion.modelId}").`;
 
             const previewLines = [
               `📝 Preview of changes to ${getModelsJsonDisplayPath()}:`,
               `Location: ${menuLocationDesc}`,
-              `Placement: ${menuDecision.placement} level — ${menuDecision.reason}`,
+              `Placement: ${menuDecision ? `${menuDecision.placement} level — ${menuDecision.reason}` : "modelOverrides — built-in/API-login-safe model override"}`,
               `Compat JSON to write:`,
               keysPreview,
               ``,
@@ -7733,7 +8115,9 @@ export default function (pi: ExtensionAPI) {
               await rename(tempPath, MODELS_JSON_PATH);
 
               const writtenText = await readFile(MODELS_JSON_PATH, "utf8");
-              const postCheck = selfCheckFix(originalText, writtenText, suggestion.providerLabel, suggestion.modelId, suggestion.compatKeys, menuDecision.placement);
+              const postCheck = location && menuDecision
+                ? selfCheckFix(originalText, writtenText, suggestion.providerLabel, suggestion.modelId, suggestion.compatKeys, menuDecision.placement)
+                : selfCheckMissingEntryInsertion(originalText, writtenText, suggestion.providerLabel, suggestion.modelId, suggestion.compatKeys);
               if (postCheck !== null) {
                 await copyFile(backupPath, MODELS_JSON_PATH);
                 cmdCtx.ui.notify(`❌ Post-write check failed: ${postCheck}\nBackup restored.`, "error");

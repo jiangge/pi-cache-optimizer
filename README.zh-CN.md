@@ -27,7 +27,7 @@
 
 ## 功能
 
-- 将稳定的 system prompt 内容移动到动态上下文之前。
+- 将能唯一定位的稳定 system prompt 内容移动到动态上下文之前。如果同一候选出现多次（例如动态上下文引用了它），则保持原样，避免删除错误的那一处。
 - 压缩 Pi skill 列表，并移除 session-overview 中的易变字段。
 - 在 Pi / provider compat 支持时请求长缓存保留。
 - 对 `openai-completions` / `openai-responses` 请求，在没有有效 key 时使用 Pi session id 补 `prompt_cache_key`；Pi 0.82 core 对内置 `llama.cpp` 也使用这一语义。
@@ -82,7 +82,7 @@ Pi 0.79.7 及之后，`pi update` 默认只更新 Pi 本体。若要更新已安
 
 LiteLLM / OneAPI / NewAPI / 类 OpenRouter 渠道等第三方 `openai-completions` 代理，常会把同一个 session 分散到多个上游后端，导致 provider 侧 prompt cache 被拆散。
 
-Pi 0.81+ 也内置了使用 OpenAI-shaped transport 的 `llama.cpp` provider。Pi 0.82 core 在启用 cache retention 时会为它生成 session `prompt_cache_key`，因此本扩展会保留该 key，并在缺失时使用同样的保守 fallback。只有符合 Pi 内置 provider 明确 compat 指纹的模型会跳过通用 proxy 路由 / session-affinity 建议；仅复用 `llama.cpp` id 的自定义或覆盖 provider 仍按普通 OpenAI-compatible 渠道处理。`prompt_cache_retention` 继续遵循统一安全规则：仅官方 OpenAI 或在 `models.json` 中显式设置 `supportsLongCacheRetention: true` 时保留，否则发送前移除。
+Pi 0.81+ 也内置了使用 OpenAI-shaped transport 的 `llama.cpp` provider。Pi 0.82 core 在启用 cache retention 时会为它生成 session `prompt_cache_key`，因此本扩展会保留该 key，并在缺失时使用同样的保守 fallback。只有符合 Pi 内置 provider 明确 compat 指纹的模型会跳过通用 proxy 路由 / session-affinity 建议；仅复用 `llama.cpp` id 的自定义或覆盖 provider 仍按普通 OpenAI-compatible 渠道处理。`prompt_cache_retention` 继续遵循统一安全规则：仅官方 OpenAI 或 `models.json` 中有效配置为 `supportsLongCacheRetention: true` 时保留，否则发送前移除。有效值遵循 Pi 的优先级：先看 `modelOverrides[modelId].compat`，再看匹配的 `models[].compat`，最后看 provider 级 `compat`；高层显式 `false` 会覆盖低层的 `true`。
 
 对真正的代理，建议先启用 session affinity：
 
@@ -204,6 +204,8 @@ Pi 0.80.9+ 已在内置 Kimi Coding、Moonshot AI / 中国区、OpenRouter 和 V
 4. 需要用户明确确认（交互式提示或 `ui.select`）
 5. 原子写入（temp + rename）；写入后自我验证
 6. 如果 JSONC 扫描器无法置信定位目标，回退到手动修改指引
+
+已有的 `modelOverrides[modelId]` 具有 Pi 的最高优先级，因此 `fix` 会直接修复该 entry。对于没有自定义 `models[]` entry 的内置模型或 API-login 模型，`fix` 会创建仅含 compat 的 `modelOverrides` entry，而不会凭空添加自定义模型定义。自检会验证三层合并后的有效 compat，因此被更高层 override 遮蔽的低层修改会被拒绝。
 
 **非交互模式：** 拒绝写入，显示手动编辑指引。
 

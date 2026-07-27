@@ -1,6 +1,6 @@
 {
   "name": "pi-cache-optimizer",
-  "version": "2.6.24",
+  "version": "2.6.25",
   "description": "Improve Pi prompt/KV cache hit rates with stable prompts, OpenAI-compatible cache keys, proxy compat warnings, and footer cache stats.",
   "keywords": [
     "pi-package",
@@ -23,6 +23,21 @@
       "./index.ts"
     ],
     "image": "https://img.shields.io/badge/Pi-Cache%20Optimizer-4A90D9"
+  },
+  "imports": {
+    "#extension": "./index.ts"
+  },
+  "scripts": {
+    "test": "node --import jiti/register tests/review-findings.test.ts",
+    "typecheck": "tsc --noEmit --pretty false",
+    "check:diff": "git diff --check",
+    "check:pack": "npm pack --dry-run --cache node_modules/.cache/npm",
+    "check": "npm run typecheck && npm test && npm run check:diff && npm run check:pack"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "jiti": "^2.7.0",
+    "typescript": "^5.8.3"
   },
   "peerDependencies": {
     "@earendil-works/pi-coding-agent": "*"

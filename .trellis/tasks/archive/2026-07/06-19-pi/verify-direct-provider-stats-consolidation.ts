@@ -20,7 +20,7 @@
  *   - missing ctxModel / statsModel → unchanged
  */
 
-import { __internals_for_tests as I } from "../../../index.ts";
+import { __internals_for_tests as I } from "#extension";
 
 const { consolidateDirectProviderStatsModel, selectAdapterForModel } = I;
 

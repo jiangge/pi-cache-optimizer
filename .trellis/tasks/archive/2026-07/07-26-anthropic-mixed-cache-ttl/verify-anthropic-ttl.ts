@@ -1,8 +1,9 @@
 #!/usr/bin/env bun
 /** Regression coverage for Anthropic mixed cache_control TTL ordering. */
 
-const moduleUrl = new URL(`../../../index.ts?anthropic-ttl=${Date.now()}`, import.meta.url).href;
-const { default: extension, __internals_for_tests: I } = await import(moduleUrl);
+const loadedExtension = await import("#extension");
+const extensionModule = "__internals_for_tests" in loadedExtension ? loadedExtension : loadedExtension.default;
+const { default: extension, __internals_for_tests: I } = extensionModule;
 
 let passed = 0;
 let failed = 0;

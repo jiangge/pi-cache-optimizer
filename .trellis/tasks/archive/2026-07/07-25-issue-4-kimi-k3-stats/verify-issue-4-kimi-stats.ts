@@ -8,8 +8,9 @@ import { join } from "node:path";
 const tempAgentDir = await mkdtemp(join(tmpdir(), "pi-cache-issue-4-"));
 process.env.PI_CODING_AGENT_DIR = tempAgentDir;
 
-const moduleUrl = new URL(`../../../index.ts?issue4=${Date.now()}`, import.meta.url).href;
-const { default: extension, __internals_for_tests: I } = await import(moduleUrl);
+const loadedExtension = await import("#extension");
+const extensionModule = "__internals_for_tests" in loadedExtension ? loadedExtension : loadedExtension.default;
+const { default: extension, __internals_for_tests: I } = extensionModule;
 
 const {
   modelFromAssistantMessage,

@@ -5,7 +5,7 @@
 //
 // Exits 0 on success, 1 on any failed assertion.
 
-import { __internals_for_tests } from "../../../index.ts";
+import { __internals_for_tests } from "#extension";
 
 const {
   PI_ROUTING_REGISTRY_SYMBOL,

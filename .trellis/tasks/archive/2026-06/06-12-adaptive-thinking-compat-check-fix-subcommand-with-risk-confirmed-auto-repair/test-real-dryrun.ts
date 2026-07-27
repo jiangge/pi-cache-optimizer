@@ -2,7 +2,7 @@
 /** Dry-run against the user's REAL models.json (read-only, no writes). */
 import { readFileSync } from "fs";
 import { homedir } from "os";
-import { __internals_for_tests } from "../../../index.ts";
+import { __internals_for_tests } from "#extension";
 
 const { locateModelInJsonc, composeFixInsertion, selfCheckFix, decideFixPlacement, stripJsoncComments } = __internals_for_tests as any;
 

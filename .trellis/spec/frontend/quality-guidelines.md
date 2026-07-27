@@ -21,9 +21,10 @@ This repository is a single-package Pi extension. Quality checks emphasize:
 Before committing runtime behavior changes, run the relevant subset and record task-specific results:
 
 ```bash
-bunx tsc --noEmit --pretty false
-git diff --check
-npm pack --dry-run
+npm run typecheck
+npm test
+npm run check:diff
+npm run check:pack
 ```
 
 When a task has a verification script, run it too, for example:
@@ -44,7 +45,7 @@ python3 ./.trellis/scripts/task.py validate .trellis/tasks/<task>
 
 - Update `.trellis/spec/frontend/cache-adapter-footer-stats.md` when changing cache stats, prompt optimization, compat diagnostics, persistence, or routing-provider behavior.
 - Keep `README.md` and `README.zh-CN.md` in sync for user-visible features or commands.
-- Add/update a task-level verification script for new parsing, migration, routing, prompt, or compat behavior.
+- Add/update permanent regression tests under `tests/` for runtime contracts. A task-level verifier may supplement them for one-off investigation or release evidence, but archived task files must not be the only coverage.
 - Keep footer behavior truthful; never fake cache counters for transports that do not expose usage fields.
 - Prefer conservative fallback behavior over crashes in Pi hooks.
 - Commit Trellis archive moves after implementation commits so task history stays durable.
@@ -76,7 +77,7 @@ Add or update tests/verification scripts when changing:
 - routing-provider registry/cache-hints protocol
 - command output semantics
 
-Task verification should assert external behavior and protocol behavior, not private implementation details, unless the helper is deliberately exported under `__internals_for_tests`.
+Tests should assert external behavior and protocol behavior, not private implementation details, unless the helper is deliberately exported under `__internals_for_tests`. Archived verifiers that import the runtime MUST use the package `#extension` import alias (including location-independent resolution for cache-busted dynamic imports), never directory-depth-relative paths to `index.ts`.
 
 ---
 

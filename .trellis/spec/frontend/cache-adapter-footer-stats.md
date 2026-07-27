@@ -121,9 +121,12 @@ being massaged. Do NOT special-case-bump these counters.
   may generate a session `prompt_cache_key`. The extension MUST preserve an
   existing key and MAY add its same session-id fallback when the key is absent.
 * `prompt_cache_retention` follows the normal safety gate: official OpenAI keeps
-  it; a third-party/built-in llama channel keeps it only with an explicit
-  `supportsLongCacheRetention: true` entry in `models.json`; otherwise it is
-  stripped before sending.
+  it; a third-party/built-in llama channel keeps it only when the effective
+  explicit `supportsLongCacheRetention` value in `models.json` is `true`.
+  Resolution MUST follow Pi precedence: `modelOverrides[modelId].compat`, then
+  matching `models[].compat`, then provider `compat`. A higher-precedence
+  explicit `false` overrides a lower-precedence `true`; absent/malformed/unreadable
+  configuration fails closed and the field is stripped before sending.
 * Generic proxy routing/session-affinity advice is skipped only for the untouched
   built-in compat fingerprint. A custom/overridden provider using the same
   `llama.cpp` id or explicit cache/routing overrides MUST remain eligible for
@@ -680,14 +683,16 @@ task-level verification script that asserts:
 
 ## System prompt reordering invariants
 
-`extension.ts` exposes `optimizeSystemPrompt(original, opts)` which is invoked
+`index.ts` exposes `optimizeSystemPrompt(original, opts)` which is invoked
 from the `before_agent_start` hook to lift stable content above dynamic
-content. The reorder uses `rest.replace(part, "")` per accepted candidate
-from `buildStableCandidates(opts)`. Because `String.prototype.replace`
-matches the FIRST occurrence of `part` anywhere in `rest`, short or
-character-class candidates can rip arbitrary unrelated text out of the
-dynamic remainder — corrupting the prompt and destabilizing provider
-prefix caches across requests.
+content. Candidate extraction MUST use a verified source offset. Before any
+candidate is removed, occurrence counts for all normalized/deduplicated candidates
+MUST be computed against the same immutable initial remainder. A candidate is
+eligible only when that initial count is exactly one; if a second occurrence
+exists (including an overlapping occurrence), the candidate is ambiguous and
+MUST be skipped. This also covers nested candidates such as a full context-file
+block plus its bare content: removing the full block must not make the dynamic
+copy of its bare content appear newly unique.
 
 ### Hard contracts
 
@@ -707,7 +712,33 @@ prefix caches across requests.
 * `buildStableCandidates` MAY return strings that the optimizer then
   rejects (it is a pure shaper). The defensive filter MUST live inside
   `optimizeSystemPrompt`, not inside `buildStableCandidates`, so that the
-  rejection rationale stays close to the `replace()` call site.
+  rejection rationale stays close to the source-offset extraction.
+* Ambiguous candidates MUST leave the entire prompt byte-for-byte unchanged for
+  that candidate. Do not select the first or last occurrence heuristically.
+
+### Wrong vs Correct: candidate occurrence timing
+
+#### Wrong
+
+```ts
+// `rest` shrinks after each accepted candidate, so a nested candidate can
+// become falsely unique and delete its dynamic copy.
+if (rest.indexOf(part, rest.indexOf(part) + 1) < 0) {
+  rest = rest.replace(part, "");
+}
+```
+
+#### Correct
+
+```ts
+// Classify every candidate against one immutable snapshot before any removal.
+const initialRemainder = original;
+const counts = countOverlappingOccurrences(candidates, initialRemainder);
+for (const part of candidates) {
+  if (counts.get(part) !== 1) continue;
+  rest = removeAtVerifiedOffset(rest, part);
+}
+```
 
 ### Common mistake: upstream string-vs-array regression in tool registrations
 
@@ -887,7 +918,7 @@ const statsKey = `${responseModel.provider}/${responseModel.id}`;
 
 ## Forbidden patterns
 
-* Writing `models.json` outside `/cache-optimizer fix`'s explicit preview + confirmation flow. The fix flow may create a timestamped backup and atomically replace `models.json`. For providers/models that already have entries in `models.json`, it only inserts/repairs safe `compat` keys or a missing `compat` object. For API-logged-in providers (e.g. opencode go) that have no `models.json` entry, it MAY offer to create a minimal entry (provider + model + compat only) with UI confirmation, backup, and atomic write; it MUST NOT create API keys, credentials, or router slugs under any scenario.
+* Writing `models.json` outside `/cache-optimizer fix`'s explicit preview + confirmation flow. The fix flow may create a timestamped backup and atomically replace `models.json`. For providers/models that already have entries, it only inserts/repairs safe `compat` keys or a missing `compat` object at the effective provider/model/modelOverrides layer. For API-logged-in providers (e.g. opencode go) that have no custom model entry, it MAY offer to create a minimal compat-only `modelOverrides` entry with UI confirmation, backup, and atomic write; it MUST NOT create custom model definitions, API keys, credentials, base URLs, or router slugs under any scenario.
 * Reading or logging the value of `DEEPSEEK_API_KEY` (or any other API key env var).
 * Storing prompts, request payloads, response bodies, or HTTP headers in any
   on-disk file produced by this extension.
@@ -1247,15 +1278,23 @@ Safety contract:
   a timestamped backup path `models.json.backup-cache-optimizer-<ts>`, and the need
   to `/reload` or restart Pi.
 * Uses a comment-preserving JSONC surgical editor. It does not stringify/rewrite the
-  full file; it locates existing provider/model/compat nodes while respecting string
-  literals, escapes, line comments, block comments, and trailing commas.
+  full file; it locates existing provider/model/modelOverrides/compat nodes while
+  respecting string literals, escapes, line comments, block comments, and trailing
+  commas.
 * Writes by backup → temp file → atomic rename. Post-write self-check reparses JSONC,
   validates effective merged compat, and verifies the original parsed structure is
   preserved except for repaired compat keys. On post-write self-check failure, the
   backup is restored.
-* The fix may insert/repair `compat` keys or a missing `compat` object under an
-  existing provider/model. It MUST NOT create provider entries, model entries, API
-  keys, credentials, or router slugs.
+* Effective compat validation MUST use Pi precedence:
+  `modelOverrides[modelId].compat` > matching `models[].compat` > provider
+  `compat`. A write to a lower layer that remains shadowed by a conflicting
+  higher layer MUST fail self-check.
+* If the target already has a `modelOverrides[modelId]` entry, the fix MUST repair
+  that highest-precedence entry directly. For a built-in/API-login model without
+  a custom `models[]` entry, the fix MAY create a provider and/or compat-only
+  `modelOverrides[modelId]` entry after preview and confirmation. It MUST NOT
+  invent a custom `models[]` definition, API key, credential, base URL, or router
+  slug.
 
 ### `/cache-optimizer reset`
 
@@ -1368,14 +1407,16 @@ compat). It does NOT read or expose:
 | `/cache-optimizer enable` | Runtime optimizer becomes enabled, `PI_CACHE_RETENTION=long` is requested, local footer stats/recent samples reset, footer republishes, and notification lists active feature states |
 | `/cache-optimizer disable` | Runtime optimizer becomes disabled for this Pi process, the process-original `PI_CACHE_RETENTION` is restored/unset even after extension reload, local footer stats/recent samples reset, adapter-matched footer shows `Cache Optimizer disabled · <stats>`, and notification lists disabled feature states |
 | Runtime disabled before hooks fire | `before_agent_start` returns `{}`, `before_provider_request` does not add `prompt_cache_key`, `message_end` continues updating comparison stats, and session/model compat warnings are suppressed |
-| `/cache-optimizer` (no args) with UI supports select | Shows interactive selection menu (Enable / Disable / Doctor / Stats / Compat / Reset / Cancel) |
+| `/cache-optimizer` (no args) with UI supports select | Shows interactive selection menu (Enable / Disable / Doctor / Stats / Compat / Fix / Reset / Cancel); choosing Fix executes the same confirmed backup/write/self-check contract as direct `/cache-optimizer fix` |
 | `/cache-optimizer` (no args) without UI | Text help lists `enable`, `disable`, `doctor`, `stats`, `compat`, `reset` subcommands plus runtime state |
 | Footer status for generic proxy after `/cache-optimizer fix` added `sendSessionAffinityHeaders` but `supportsLongCacheRetention` remains absent | No `⚠️ compat`; doctor/compat may still show optional long-retention guidance, but the model is considered safely configured |
 | Footer status when compat is fixed or model changes | `⚠️ compat` marker clears |
-| `/cache-optimizer fix` with API-logged-in model not in models.json (interactive UI) | Analyzes models.json, shows preview of new provider/model/compat entry, confirms, writes atomically with backup, self-checks, succeeds |
+| `/cache-optimizer fix` with API-logged-in model not in models.json (interactive UI) | Analyzes models.json, shows a preview of a compat-only `modelOverrides[modelId]` entry, confirms, writes atomically with backup, validates the effective three-layer result, and succeeds |
 | `/cache-optimizer fix` with API-logged-in model not in models.json (non-interactive) | Shows manual guidance with complete JSON snippet, keeps existing auth as-is, includes fallback for both missing-provider and missing-model scenarios |
-| `/cache-optimizer fix` creates new provider entry in models.json | Does NOT create API keys, credentials, baseUrl, or router slugs; only inserts minimal compat-only provider/model structure |
-| `/cache-optimizer fix` adds model to existing provider's models array | Appends model entry with id + compat to the existing models array, preserves all sibling models and provider-level configuration |
+| Direct `/cache-optimizer fix` and no-args menu Fix | Permanent command-level tests run both paths against a temporary `PI_CODING_AGENT_DIR`, require confirmation, compare the timestamped backup byte-for-byte, parse the written JSONC, validate effective modelOverrides compat, and assert comments/credentials/unrelated fields remain unchanged |
+| `/cache-optimizer fix` creates new provider entry in models.json | Does NOT create API keys, credentials, baseUrl, router slugs, or a custom `models[]` definition; only inserts a minimal compat-only `modelOverrides` structure |
+| `/cache-optimizer fix` sees an existing target `modelOverrides` entry | Repairs its compat directly and preserves comments, unrelated keys, sibling overrides, custom models, and provider-level configuration |
+| `/cache-optimizer fix` writes provider/model compat while a conflicting target override remains | Pre-write self-check rejects the ineffective lower-layer edit and no file is written |
 | `/cache-optimizer doctor` with OpenRouter model | Output includes `🔀 Router/channel: OpenRouter detected` with routing fix suggestion and JSON example for `openRouterRouting` |
 | `/cache-optimizer doctor` with Vercel AI Gateway model | Output includes `🔀 Router/channel: Vercel AI Gateway detected` with `vercelGatewayRouting` suggestion |
 | `/cache-optimizer doctor` with LiteLLM/OneAPI/NewAPI/VoAPI model | Output includes `🔀 Router/channel: Self-hosted aggregation proxy detected` with sticky routing and prompt_cache_key guidance |

@@ -20,8 +20,12 @@ The project uses TypeScript in a single runtime entry (`index.ts`) with local am
 Run TypeScript validation with:
 
 ```bash
-bunx tsc --noEmit --pretty false
+npm run typecheck
 ```
+
+The command MUST resolve the repository-local TypeScript dependency from
+`devDependencies`; validation must not depend on a globally installed `tsc` or
+`bunx`.
 
 ---
 

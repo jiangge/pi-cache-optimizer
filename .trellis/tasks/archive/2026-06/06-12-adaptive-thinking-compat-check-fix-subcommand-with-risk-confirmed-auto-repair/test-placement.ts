@@ -15,7 +15,7 @@
 
 import {
   __internals_for_tests,
-} from "../../../index.ts";
+} from "#extension";
 
 const {
   locateModelInJsonc,

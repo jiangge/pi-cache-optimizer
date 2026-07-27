@@ -3,7 +3,7 @@
  * Verify Pi 0.80.10 / Kimi K3 compatibility behavior.
  */
 
-import { __internals_for_tests as I } from "../../../index.ts";
+import { __internals_for_tests as I } from "#extension";
 
 const {
   isKimiLikeModel,

@@ -27,7 +27,7 @@ Pi extension for improving provider-side KV / prompt cache hit rates. It keeps s
 
 ## What it does
 
-- Reorders stable system-prompt content before dynamic context.
+- Reorders uniquely identifiable stable system-prompt content before dynamic context. If the same candidate appears more than once (for example, quoted inside dynamic context), it is left unchanged to avoid removing the wrong occurrence.
 - Compresses Pi skill listings and strips session-overview churn.
 - Requests long cache retention when Pi/provider compat supports it.
 - Adds a session-id `prompt_cache_key` fallback for `openai-completions` / `openai-responses` payloads when no effective key exists, including Pi's built-in `llama.cpp` provider as Pi 0.82 core does.
@@ -82,7 +82,7 @@ On Pi 0.79.7 and newer, `pi update` updates Pi itself only. To update installed 
 
 Third-party `openai-completions` proxies (LiteLLM / OneAPI / NewAPI / OpenRouter-like channels) often route one session across multiple upstream backends. That splits provider-side prompt caches.
 
-Pi 0.81+ also has a built-in `llama.cpp` provider using an OpenAI-shaped transport. Pi 0.82 core generates a session `prompt_cache_key` for it when cache retention is enabled, so this extension preserves that key and may add the same conservative fallback when missing. The built-in provider's explicit compat fingerprint is excluded from generic proxy routing/session-affinity advice, but a custom or overridden provider that merely reuses the id `llama.cpp` is treated like any other OpenAI-compatible channel. `prompt_cache_retention` remains subject to the normal safety rule: keep it only for official OpenAI or an explicit `supportsLongCacheRetention: true` opt-in in `models.json`; otherwise strip it before sending.
+Pi 0.81+ also has a built-in `llama.cpp` provider using an OpenAI-shaped transport. Pi 0.82 core generates a session `prompt_cache_key` for it when cache retention is enabled, so this extension preserves that key and may add the same conservative fallback when missing. The built-in provider's explicit compat fingerprint is excluded from generic proxy routing/session-affinity advice, but a custom or overridden provider that merely reuses the id `llama.cpp` is treated like any other OpenAI-compatible channel. `prompt_cache_retention` remains subject to the normal safety rule: keep it only for official OpenAI or an explicit effective `supportsLongCacheRetention: true` opt-in in `models.json`; otherwise strip it before sending. Effective values follow Pi's precedence: `modelOverrides[modelId].compat` first, then the matching `models[].compat`, then provider-level `compat`. An explicit `false` at a higher layer overrides `true` below it.
 
 For real proxies, start with session affinity:
 
@@ -204,6 +204,8 @@ Pi 0.80.9+ already includes Kimi K3 in built-in Kimi Coding, Moonshot AI / China
 4. Requires explicit user confirmation (interactive prompt or `ui.select`)
 5. Writes atomically (temp + rename); self-validates after write
 6. Falls back to manual guidance if JSONC scanner cannot confidently locate the target
+
+Existing `modelOverrides[modelId]` entries have Pi's highest precedence, so `fix` repairs them directly. For built-in or API-login models without a custom `models[]` entry, `fix` creates a compat-only `modelOverrides` entry instead of inventing a custom model definition. Self-validation checks the effective three-layer compat result, so a lower-level edit shadowed by an override is rejected.
 
 **Non-interactive mode:** refuses to write; shows manual edit guidance instead.
 
