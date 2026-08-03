@@ -16,6 +16,7 @@
 - [安装](#安装)
 - [命令](#命令)
 - [持久 Opt-out](#持久-opt-out)
+- [Footer 缓存统计模式](#footer-缓存统计模式)
 - [OpenAI-compatible 代理配置](#openai-compatible-代理配置)
 - [Adaptive thinking 模型](#adaptive-thinking-模型)
 - [使用 `/cache-optimizer fix` 自动修复](#使用-cache-optimizer-fix-自动修复)
@@ -33,7 +34,7 @@
 - 对 `openai-completions` / `openai-responses` 请求，在没有有效 key 时使用 Pi session id 补 `prompt_cache_key`；Pi 0.82+ core 对内置 `llama.cpp` 也使用这一语义。
 - 对缺少缓存 / session-affinity compat 的第三方 OpenAI-compatible 代理给出一次性提醒。
 - 检测 Claude（opus-4.6+ 含 Opus 5、sonnet-4.6+ 含 Sonnet 5、fable-5+）以及 Kimi Coding K3 / `kimi-for-coding` 自定义渠道的 adaptive-thinking compat。
-- 为支持的模型家族显示可跨 Pi 进程 / 终端重启延续的 provider/model footer 缓存统计。
+- 默认显示按本地日期累计的 provider/model footer 缓存统计，也可切换为仅显示当前 session。
 - 通过版本化全局协议（`Symbol.for("pi.routing.registry.v1")` 与 `Symbol.for("pi.cache.hints.v1")`）支持可选的 router extension 集成，而不导入任何 router 包。
 
 缓存是 provider 侧的 best-effort 行为。第三方代理和 router extension 仍可能隐藏缓存 usage、拒绝不支持的参数，或把请求路由到多个上游。
@@ -67,6 +68,7 @@ Pi 0.79.7 及之后，`pi update` 默认只更新 Pi 本体。若要更新已安
 | `/cache-optimizer compat` | 对当前模型显示可复制的 compat 建议（如适用）。 |
 | `/cache-optimizer stats` | 显示当前模型今天的本地 provider/model 统计和近期趋势。 |
 | `/cache-optimizer reset` | 重置当前 provider/model 的本地 footer 统计；不会修改上游 provider 缓存。 |
+| `/cache-optimizer config footer-mode session\|total\|env` | 持久设置 footer 统计模式；使用 `env` 清除命令覆盖，重新服从环境变量 / 默认值。 |
 | `/cache-optimizer fix` | 为当前模型自动修复安全的 compat 问题（adaptive thinking、DeepSeek reasoning、OpenAI proxy session affinity）。展示预览 + 风险提示，需要用户确认。**仅在用户明确批准后才修改 `models.json`。** |
 
 `enable` / `disable` 是当前进程内开关。若要持久关闭某些能力，请使用下面的环境变量。
@@ -79,6 +81,26 @@ Pi 0.79.7 及之后，`pi update` 默认只更新 Pi 本体。若要更新已安
 | `PI_CACHE_OPTIMIZER_NO_SKILL_COMPRESSION=1` | 保留 Pi 原始 verbose skill XML。 |
 | `PI_CACHE_OPTIMIZER_NO_OPENAI_CACHE_KEY=1` | 关闭 OpenAI-compatible `prompt_cache_key` fallback。推荐使用这个显式 opt-out。 |
 | `PI_CACHE_OPTIMIZER_OPENAI_CACHE_KEY=0` | 通过旧的反向开关关闭同一个 fallback。取值 `0`、`false`、`no`、`off` 时关闭。 |
+
+## Footer 缓存统计模式
+
+Footer 默认使用 `total`，显示当前本地日期内、跨 Pi session 和进程重启延续的 provider/model 统计。可以通过命令或环境变量切换显示范围：
+
+| 值 | 作用 |
+|---|---|
+| `total`（默认） | 显示今天跨 session 持久延续的 provider/model 累计统计；本地日期切换时重置。 |
+| `session` | 仅显示当前 hashed Pi session 的统计。新 session 从 `0/0` 开始；同一 session 内 `/reload` 会恢复该 session 桶。 |
+| `env`（仅命令） | 清除持久命令覆盖，改用 `PI_CACHE_OPTIMIZER_FOOTER_MODE`；缺失或非法时回退到 `total`。 |
+
+持久命令配置优先于环境变量：
+
+```text
+/cache-optimizer config footer-mode session
+/cache-optimizer config footer-mode total
+/cache-optimizer config footer-mode env
+```
+
+显式设置保存在 Pi agent 目录下的 `pi-cache-optimizer-config.json`。没有命令覆盖时，读取 `PI_CACHE_OPTIMIZER_FOOTER_MODE=session|total`；值不区分大小写，缺失或非法值均回退到 `total`。
 
 ## OpenAI-compatible 代理配置
 
@@ -251,7 +273,7 @@ Provider 级最小 override：
 
 ## Footer 统计
 
-统计是只读本地计数，保存在 Pi agent 目录（默认 `~/.pi/agent/pi-cache-optimizer-stats.json`；自定义 agent 目录使用 `PI_CODING_AGENT_DIR`），按 provider/model 作为 footer 展示维度，因此同一个渠道/模型在 Pi 进程或终端重启后会延续今天的统计。文件也保留 hashed session buckets，用于迁移和 reload 记录。文件只包含日期和数字计数，不包含 API key、prompt、payload、headers、响应或模型输出。
+统计是只读本地计数，保存在 Pi agent 目录（默认 `~/.pi/agent/pi-cache-optimizer-stats.json`；自定义 agent 目录使用 `PI_CODING_AGENT_DIR`）。扩展同时维护当天的 provider/model totals 和 hashed session buckets。Footer 默认显示每日 totals；选择 `session` 模式后显示当前 session 桶。统计文件只包含日期和数字计数，不包含 API key、prompt、payload、headers、响应或模型输出。Footer 模式配置单独保存在 `pi-cache-optimizer-config.json`。
 
 Pi 0.79+ 已内置 footer `CH` 标记，用于显示最近一次 prompt cache hit rate。本扩展在此基础上补充持久化的 provider/model 计数，以及代理 compat 诊断。
 
@@ -380,13 +402,13 @@ const hints = (globalThis as Record<symbol, any>)[CACHE_HINTS]?.getHints?.({
 pi remove npm:pi-cache-optimizer
 ```
 
-然后运行 `/reload` 或重启 Pi。可选：删除本地统计文件（如果使用 `PI_CODING_AGENT_DIR`，请删除该目录中的同名文件）：
+然后运行 `/reload` 或重启 Pi。可选：删除本地状态文件（如果使用 `PI_CODING_AGENT_DIR`，请删除该目录中的同名文件）：
 
-| 平台 | 删除本地统计文件 |
+| 平台 | 删除本地状态文件 |
 |---|---|
-| Linux / macOS / WSL | `rm -f ~/.pi/agent/pi-cache-optimizer-stats.json ~/.pi/agent/deepseek-cache-optimizer-stats.json` |
-| Windows PowerShell | `Remove-Item -Force "$env:USERPROFILE\.pi\agent\pi-cache-optimizer-stats.json", "$env:USERPROFILE\.pi\agent\deepseek-cache-optimizer-stats.json" -ErrorAction SilentlyContinue` |
-| Windows 命令提示符 | `del /f /q "%USERPROFILE%\.pi\agent\pi-cache-optimizer-stats.json" "%USERPROFILE%\.pi\agent\deepseek-cache-optimizer-stats.json" 2>nul` |
+| Linux / macOS / WSL | `rm -f ~/.pi/agent/pi-cache-optimizer-stats.json ~/.pi/agent/pi-cache-optimizer-config.json ~/.pi/agent/deepseek-cache-optimizer-stats.json` |
+| Windows PowerShell | `Remove-Item -Force "$env:USERPROFILE\.pi\agent\pi-cache-optimizer-stats.json", "$env:USERPROFILE\.pi\agent\pi-cache-optimizer-config.json", "$env:USERPROFILE\.pi\agent\deepseek-cache-optimizer-stats.json" -ErrorAction SilentlyContinue` |
+| Windows 命令提示符 | `del /f /q "%USERPROFILE%\.pi\agent\pi-cache-optimizer-stats.json" "%USERPROFILE%\.pi\agent\pi-cache-optimizer-config.json" "%USERPROFILE%\.pi\agent\deepseek-cache-optimizer-stats.json" 2>nul` |
 
 清理时不要删除 `models.json`；它保存你的 Pi 模型 / provider 配置，不属于本包。
 

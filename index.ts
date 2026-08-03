@@ -95,6 +95,7 @@ const STATUS_KEY = "pi-cache-stats";
 const STATE_DIR = getAgentDir();
 const STATE_FILE_PATH = join(STATE_DIR, "pi-cache-optimizer-stats.json");
 const LEGACY_STATE_FILE_PATH = join(STATE_DIR, "deepseek-cache-optimizer-stats.json");
+const CONFIG_FILE_PATH = join(STATE_DIR, "pi-cache-optimizer-config.json");
 const CACHE_PROVIDER_IDS: CacheProviderId[] = ["deepseek", "openai", "claude", "gemini"];
 const OPENAI_CACHE_KEY_ENV = "PI_CACHE_OPTIMIZER_OPENAI_CACHE_KEY";
 const NO_OPENAI_CACHE_KEY_ENV = "PI_CACHE_OPTIMIZER_NO_OPENAI_CACHE_KEY";
@@ -102,6 +103,12 @@ const OPENAI_PROMPT_CACHE_KEY_MAX_LENGTH = 64;
 const NO_SKILL_COMPRESSION_ENV = "PI_CACHE_OPTIMIZER_NO_SKILL_COMPRESSION";
 const NO_PROMPT_REWRITE_ENV = "PI_CACHE_OPTIMIZER_NO_PROMPT_REWRITE";
 const FOOTER_MODE_ENV = "PI_CACHE_OPTIMIZER_FOOTER_MODE";
+type FooterStatsMode = "session" | "total";
+type FooterStatsModeSource = "config" | "env" | "default";
+type PersistedCacheOptimizerConfigV1 = {
+  version: 1;
+  footerMode?: FooterStatsMode;
+};
 const PI_ROUTING_REGISTRY_SYMBOL = Symbol.for("pi.routing.registry.v1");
 const PI_CACHE_HINTS_SYMBOL = Symbol.for("pi.cache.hints.v1");
 const PI_CACHE_HINTS_OWNER_SYMBOL = Symbol.for("pi.cache.optimizer.hints-owner.v1");
@@ -1133,11 +1140,70 @@ function isEnabledEnv(value: string | undefined): boolean {
   return normalized === "1" || normalized === "true" || normalized === "yes" || normalized === "on";
 }
 
-function footerStatsMode(env: MutableEnv = process.env): "session" | "total" {
-  const raw = (env[FOOTER_MODE_ENV] ?? "").trim().toLowerCase();
-  return raw === "total" ? "total" : "session";
+function parseFooterStatsMode(value: unknown): FooterStatsMode | undefined {
+  if (typeof value !== "string") return undefined;
+  const normalized = value.trim().toLowerCase();
+  return normalized === "session" || normalized === "total" ? normalized : undefined;
 }
 
+function parsePersistedCacheOptimizerConfig(value: unknown): PersistedCacheOptimizerConfigV1 | undefined {
+  const record = asRecord(value);
+  if (!record || record.version !== 1) return undefined;
+  const footerMode = parseFooterStatsMode(record.footerMode);
+  if (record.footerMode !== undefined && !footerMode) return undefined;
+  return { version: 1, ...(footerMode ? { footerMode } : {}) };
+}
+
+function readPersistedFooterMode(configPath: string = CONFIG_FILE_PATH): FooterStatsMode | undefined {
+  try {
+    const parsed = parsePersistedCacheOptimizerConfig(JSON.parse(readFileSync(configPath, "utf8")));
+    if (!parsed) throw new Error("invalid footer config schema");
+    return parsed.footerMode;
+  } catch (error) {
+    if (getErrorCode(error) !== "ENOENT") {
+      console.warn(`${LOG_PREFIX}: failed to read footer config; using environment/default mode`, error);
+    }
+    return undefined;
+  }
+}
+
+async function writePersistedFooterMode(
+  mode: FooterStatsMode | undefined,
+  configPath: string = CONFIG_FILE_PATH,
+): Promise<void> {
+  if (mode === undefined) {
+    try {
+      await unlink(configPath);
+    } catch (error) {
+      if (getErrorCode(error) !== "ENOENT") throw error;
+    }
+    return;
+  }
+
+  await mkdir(dirname(configPath), { recursive: true });
+  const payload: PersistedCacheOptimizerConfigV1 = { version: 1, footerMode: mode };
+  const tempPath = `${configPath}.${process.pid}.${Date.now()}.tmp`;
+  await writeFile(tempPath, JSON.stringify(payload, null, 2) + "\n", "utf8");
+  await rename(tempPath, configPath);
+}
+
+function resolveFooterStatsMode(
+  configuredMode: FooterStatsMode | undefined,
+  env: MutableEnv = process.env,
+): { mode: FooterStatsMode; source: FooterStatsModeSource } {
+  if (configuredMode) return { mode: configuredMode, source: "config" };
+  const envMode = parseFooterStatsMode(env[FOOTER_MODE_ENV]);
+  return envMode ? { mode: envMode, source: "env" } : { mode: "total", source: "default" };
+}
+
+function footerStatsMode(
+  env: MutableEnv = process.env,
+  configuredMode: FooterStatsMode | undefined = persistedFooterStatsMode,
+): FooterStatsMode {
+  return resolveFooterStatsMode(configuredMode, env).mode;
+}
+
+let persistedFooterStatsMode = readPersistedFooterMode();
 
 function isDisabledEnv(value: string | undefined): boolean {
   if (!value) return false;
@@ -3834,11 +3900,24 @@ function routedModelRefToPiModel(ref: PersistedRoutedModelRef): PiModel {
   } as PiModel;
 }
 
+function selectFooterStatsForModel(
+  mode: FooterStatsMode,
+  sessionHash: string | undefined,
+  statsByModel: Record<string, CacheStats>,
+  totalsByModel: Record<string, CacheStats>,
+  model: { provider: string; id: string },
+): CacheStats | undefined {
+  if (mode === "total") return totalsByModel[modelKey(model)];
+  if (!sessionHash) return undefined;
+  return statsByModel[makeSessionModelKey(sessionHash, model.provider, model.id)];
+}
+
 function buildExactRouterStatusEntry(
   sessionHash: string | undefined,
   statsByModel: Record<string, CacheStats>,
   lastRoutedModel: PersistedRoutedModelRef | undefined,
   totalsByModel: Record<string, CacheStats> = {},
+  mode: FooterStatsMode = "total",
 ): { model: PiModel; adapter: CacheProviderAdapter; stats: CacheStats } | undefined {
   if (!sessionHash || !lastRoutedModel) return undefined;
 
@@ -3846,8 +3925,43 @@ function buildExactRouterStatusEntry(
   const adapter = selectAdapterForModel(model);
   if (!adapter) return undefined;
 
-  const key = makeSessionModelKey(sessionHash, lastRoutedModel.provider, lastRoutedModel.id);
-  return { model, adapter, stats: totalsByModel[modelKey(model)] ?? statsByModel[key] ?? emptyCacheStats() };
+  return {
+    model,
+    adapter,
+    stats: selectFooterStatsForModel(mode, sessionHash, statsByModel, totalsByModel, model) ?? emptyCacheStats(),
+  };
+}
+
+function findBestRouterModelStats(
+  mode: FooterStatsMode,
+  sessionHash: string | undefined,
+  statsByModel: Record<string, CacheStats>,
+  totalsByModel: Record<string, CacheStats>,
+): { model: PiModel; adapter: CacheProviderAdapter; stats: CacheStats } | undefined {
+  const entries = mode === "total"
+    ? Object.entries(totalsByModel)
+    : sessionHash
+      ? Object.entries(statsByModel)
+        .filter(([key]) => key.startsWith(`${sessionHash}:`))
+        .map(([key, stats]) => [key.slice(sessionHash.length + 1), stats] as const)
+      : [];
+  let best: { model: PiModel; adapter: CacheProviderAdapter; stats: CacheStats; total: number } | undefined;
+
+  for (const [modelKeyPart, stats] of entries) {
+    const slashIdx = modelKeyPart.indexOf("/");
+    if (slashIdx < 1 || slashIdx >= modelKeyPart.length - 1) continue;
+    const model = routedModelRefToPiModel({
+      provider: modelKeyPart.slice(0, slashIdx),
+      id: modelKeyPart.slice(slashIdx + 1),
+    });
+    const adapter = selectAdapterForModel(model);
+    if (!adapter) continue;
+    if (!best || stats.totalRequests > best.total) {
+      best = { model, adapter, stats, total: stats.totalRequests };
+    }
+  }
+
+  return best ? { model: best.model, adapter: best.adapter, stats: best.stats } : undefined;
 }
 
 function parsePersistedCacheStats(value: unknown): CacheStatsState | undefined {
@@ -6565,6 +6679,16 @@ export const __internals_for_tests = {
   parsePersistedRoutedModelRef,
   routedModelRefToPiModel,
   buildExactRouterStatusEntry,
+  findBestRouterModelStats,
+  selectFooterStatsForModel,
+  parseFooterStatsMode,
+  parsePersistedCacheOptimizerConfig,
+  readPersistedFooterMode,
+  writePersistedFooterMode,
+  resolveFooterStatsMode,
+  footerStatsMode,
+  CONFIG_FILE_PATH,
+  FOOTER_MODE_ENV,
   // Routing-provider protocol helpers
   PI_ROUTING_REGISTRY_SYMBOL,
   PI_CACHE_HINTS_SYMBOL,
@@ -7003,50 +7127,6 @@ export default function (pi: ExtensionAPI) {
     await rollOverStatsIfNeeded(ctx);
   }
 
-  /**
-   * Fallback for older persisted files that do not yet carry exact
-   * last-routed-model metadata. When the current model is a router channel
-   * (e.g. router/auto), restorable stats are stored under the real upstream
-   * model's provider/id key, not under router/auto. Find the best valid entry
-   * (highest totalRequests among adapter-detectable model keys) so we can show
-   * meaningful footer content on session_start after reload.
-   */
-  function findBestRouterModelStats(): { adapter: CacheProviderAdapter; stats: CacheStats } | undefined {
-    let best: { adapter: CacheProviderAdapter; stats: CacheStats; total: number } | undefined;
-
-    for (const [modelKeyPart, stats] of Object.entries(cacheStatsTotalsByModel)) {
-      const slashIdx = modelKeyPart.indexOf("/");
-      if (slashIdx < 0 || slashIdx >= modelKeyPart.length - 1) continue;
-      const modelId = modelKeyPart.slice(slashIdx + 1);
-      const providerName = modelKeyPart.slice(0, slashIdx);
-
-      // Construct a minimal model for adapter detection.
-      // Every is*LikeModel function only accesses model.id and model.name
-      // via getModelIdNameTokenValues, so { id, name } is sufficient.
-      const mockModel = {
-        id: modelId,
-        name: modelId,
-        provider: providerName,
-        api: "",
-        baseUrl: "",
-        reasoning: false,
-        input: ["text"],
-        cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-        contextWindow: 0,
-        maxTokens: 0,
-      } as PiModel;
-
-      const adapter = selectAdapterForModel(mockModel);
-      if (!adapter) continue;
-
-      if (!best || stats.totalRequests > best.total) {
-        best = { adapter, stats, total: stats.totalRequests };
-      }
-    }
-
-    return best ? { adapter: best.adapter, stats: best.stats } : undefined;
-  }
-
   async function publishStatus(ctx: ExtensionContext, model: PiModel | undefined = ctx.model): Promise<void> {
     syncSessionHash(ctx);
     await rollOverStatsIfNeeded(ctx);
@@ -7056,6 +7136,8 @@ export default function (pi: ExtensionAPI) {
     const adapter = selectAdapterForModel(displayModel);
     const activeIsVirtualRoute = !!routedModel || isVirtualRoutingModel(model, ctx);
     let statusText: string | undefined;
+    const mode = footerStatsMode();
+    const sessionHash = currentSessionHashSet ? currentSessionHash : undefined;
 
     if (!adapter && !routedModel && activeIsVirtualRoute) {
       // On model_select (existing footer), keep the existing cache footer
@@ -7065,11 +7147,17 @@ export default function (pi: ExtensionAPI) {
       // heuristics only when no exact metadata exists.
       if (lastStatusText !== undefined) return;
       const realEntry = buildExactRouterStatusEntry(
-        currentSessionHashSet ? currentSessionHash : undefined,
+        sessionHash,
         cacheStatsByModel,
         lastActualRoutedModel,
         cacheStatsTotalsByModel,
-      ) ?? findBestRouterModelStats();
+        mode,
+      ) ?? findBestRouterModelStats(
+        mode,
+        sessionHash,
+        cacheStatsByModel,
+        cacheStatsTotalsByModel,
+      );
       if (realEntry) {
         const statsText = formatCacheStats(realEntry.adapter, realEntry.stats);
         statusText = runtimeOptimizerEnabled
@@ -7079,17 +7167,11 @@ export default function (pi: ExtensionAPI) {
     }
 
     if (adapter) {
-      // Footer cache-stat mode: "session" (default) shows only the current
-      // session's counters (a fresh session starts at 0/0); "total" shows the
-      // restart-persistent cumulative counters (original behavior).
-      // Controlled via PI_CACHE_OPTIMIZER_FOOTER_MODE.
-      const mode = footerStatsMode();
-      const stats =
-        mode === "total"
-          ? displayModel ? cacheStatsTotalsByModel[modelKey(displayModel)] : undefined
-          : displayModel && currentSessionHashSet
-            ? cacheStatsByModel[makeSessionModelKey(currentSessionHash, displayModel.provider, displayModel.id)]
-            : undefined;
+      // Footer mode defaults to daily provider/model totals. Users may select
+      // current-session counters through persistent command config or the env var.
+      const stats = displayModel
+        ? selectFooterStatsForModel(mode, sessionHash, cacheStatsByModel, cacheStatsTotalsByModel, displayModel)
+        : undefined;
       const statsText = formatCacheStats(adapter, stats ?? emptyCacheStats());
       statusText = runtimeOptimizerEnabled ? statsText : `Cache Optimizer disabled · ${statsText}`;
     }
@@ -7534,17 +7616,19 @@ export default function (pi: ExtensionAPI) {
   //             with low-hit diagnosis
   //   stats   — show active model stats bucket, recent trend, usage
   //   compat  — show compat suggestion with file path
+  //   config footer-mode session|total|env — persist/clear footer mode override
   //   fix     — auto-fix compat issues (writes models.json, requires UI)
   //   reset   — reset current provider/model footer stats bucket (local only)
   //   (no args) — interactive menu (with UI) or help summary
   // ────────────────────────────────────────────────────────────────
   pi.registerCommand("cache-optimizer", {
-    description: "Diagnose Pi cache configuration",
+    description: "Configure and diagnose Pi cache behavior",
     handler: async (args: string, cmdCtx) => {
       syncSessionHash(cmdCtx);
       const selectedModel = cmdCtx.model;
       const model = resolveRouteModel(selectedModel, cmdCtx as unknown as ExtensionContext) ?? selectedModel;
-      const subcommand = args.trim().toLowerCase().split(/\s+/)[0] || "help";
+      const commandParts = args.trim().toLowerCase().split(/\s+/).filter(Boolean);
+      const subcommand = commandParts[0] || "help";
 
       if (subcommand === "enable") {
         setRuntimeOptimizerEnabled(true);
@@ -7584,6 +7668,38 @@ export default function (pi: ExtensionAPI) {
         const samples = sk ? getRecentSamples(sk) : [];
         const output = buildStatsOutput(model, adapter, statsState, samples);
         cmdCtx.ui.notify(output, "info");
+      } else if (subcommand === "config") {
+        const configKey = commandParts[1];
+        const requestedMode = commandParts[2];
+        if (configKey !== "footer-mode" || !requestedMode || !["session", "total", "env"].includes(requestedMode)) {
+          const resolved = resolveFooterStatsMode(persistedFooterStatsMode);
+          cmdCtx.ui.notify(
+            `Usage: /cache-optimizer config footer-mode session|total|env\n` +
+            `Current footer mode: ${resolved.mode} (${resolved.source})`,
+            "info",
+          );
+          return;
+        }
+
+        const nextMode = requestedMode === "env" ? undefined : requestedMode as FooterStatsMode;
+        try {
+          await writePersistedFooterMode(nextMode);
+          persistedFooterStatsMode = nextMode;
+          lastStatusText = undefined;
+          await publishStatus(cmdCtx as unknown as ExtensionContext, model);
+          const resolved = resolveFooterStatsMode(persistedFooterStatsMode);
+          cmdCtx.ui.notify(
+            requestedMode === "env"
+              ? `✅ Footer mode override cleared. Effective mode: ${resolved.mode} (${resolved.source}).`
+              : `✅ Footer mode set to ${resolved.mode}. Persistent config overrides ${FOOTER_MODE_ENV}.`,
+            "info",
+          );
+        } catch (error) {
+          cmdCtx.ui.notify(
+            `❌ Could not update footer mode config: ${error instanceof Error ? error.message : String(error)}`,
+            "error",
+          );
+        }
       } else if (subcommand === "compat") {
         if (!model) {
           cmdCtx.ui.notify("No active model selected. Select a model first with /model or pi --model.", "warning");
@@ -8182,10 +8298,13 @@ export default function (pi: ExtensionAPI) {
         diagnosis.push("  doctor  — Show current model/provider/api/baseUrl/compat and low-hit diagnosis");
         diagnosis.push("  stats   — Show active model stats bucket and recent trend");
         diagnosis.push("  compat  — Show compat suggestion with edit location");
+        diagnosis.push("  config footer-mode session|total|env — Persist or clear the footer stats mode");
         diagnosis.push("  fix     — Auto-fix compat issues (writes models.json, requires UI)");
         diagnosis.push("  reset   — Reset local provider/model stats for current model (does not affect upstream)");
         diagnosis.push("");
         diagnosis.push(formatOptimizerRuntimeMode());
+        const resolvedFooterMode = resolveFooterStatsMode(persistedFooterStatsMode);
+        diagnosis.push(`Footer stats mode: ${resolvedFooterMode.mode} (${resolvedFooterMode.source})`);
         diagnosis.push("");
         if (model) {
           const displayKey = modelKey(model);

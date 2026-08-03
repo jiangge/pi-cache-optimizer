@@ -16,6 +16,7 @@ Pi extension for improving provider-side KV / prompt cache hit rates. It keeps s
 - [Install](#install)
 - [Commands](#commands)
 - [Persistent opt-out](#persistent-opt-out)
+- [Footer cache stats mode](#footer-cache-stats-mode)
 - [OpenAI-compatible proxy setup](#openai-compatible-proxy-setup)
 - [Adaptive thinking models](#adaptive-thinking-models)
 - [Auto-repair with `/cache-optimizer fix`](#auto-repair-with-cache-optimizer-fix)
@@ -33,7 +34,7 @@ Pi extension for improving provider-side KV / prompt cache hit rates. It keeps s
 - Adds a session-id `prompt_cache_key` fallback for `openai-completions` / `openai-responses` payloads when no effective key exists, including Pi's built-in `llama.cpp` provider as Pi 0.82+ core does.
 - Warns once for third-party OpenAI-compatible proxies missing cache/session-affinity compat flags.
 - Detects adaptive-thinking compat for Claude (opus-4.6+ including Opus 5, sonnet-4.6+ including Sonnet 5, fable-5+) and Kimi Coding K3 / `kimi-for-coding` custom channels.
-- Shows restart-persistent provider/model footer stats for supported model families.
+- Shows daily cumulative provider/model footer stats by default, with an opt-in current-session display mode.
 - Supports optional router-extension integration through versioned global protocols (`Symbol.for("pi.routing.registry.v1")` and `Symbol.for("pi.cache.hints.v1")`) without importing router packages.
 
 Caching is provider-side and best-effort. Third-party proxies and router extensions can still hide cache usage, reject unsupported parameters, or route requests across multiple upstreams.
@@ -67,6 +68,7 @@ This extension is validated against Pi 0.83.0 and remains designed for Pi 0.82+.
 | `/cache-optimizer compat` | Shows copyable compat advice for the active model, if applicable. |
 | `/cache-optimizer stats` | Shows today's local provider/model counters and recent trend for the active model. |
 | `/cache-optimizer reset` | Resets local footer stats for the active provider/model; upstream provider cache is not modified. |
+| `/cache-optimizer config footer-mode session\|total\|env` | Persist the footer stats mode, or use `env` to clear the command override and return to the environment/default mode. |
 | `/cache-optimizer fix` | Auto-repairs safe compat issues for the active model (adaptive thinking, DeepSeek reasoning, OpenAI proxy session affinity). Shows preview + risk warning, requires confirmation. **Only modifies `models.json` after explicit user approval.** |
 
 `enable` / `disable` are current-process switches. For a persistent opt-out, use environment variables below.
@@ -82,12 +84,23 @@ This extension is validated against Pi 0.83.0 and remains designed for Pi 0.82+.
 
 ## Footer cache stats mode
 
-`PI_CACHE_OPTIMIZER_FOOTER_MODE` selects which counters the footer shows:
+The footer defaults to `total`, which shows the provider/model's local counters for the current day across Pi sessions and process restarts. Use either the command or environment variable to select the scope:
 
 | Value | Effect |
 |---|---|
-| `session` (default) | Show only the **current session's** counters; a fresh session starts at `0/0` and accumulates only its own requests. The same session reloaded after an extension reload keeps its counters. |
-| `total` | Show **restart-persistent cumulative** counters across all sessions (the original behavior). |
+| `total` (default) | Show today's restart-persistent provider/model totals across sessions. Local day rollover resets the counters. |
+| `session` | Show only the current hashed Pi session's counters. A fresh session starts at `0/0`; `/reload` in the same session restores that session bucket. |
+| `env` (command only) | Clear the persisted command override and use `PI_CACHE_OPTIMIZER_FOOTER_MODE`, falling back to `total`. |
+
+Persistent command configuration takes precedence over the environment variable:
+
+```text
+/cache-optimizer config footer-mode session
+/cache-optimizer config footer-mode total
+/cache-optimizer config footer-mode env
+```
+
+The explicit setting is stored in `pi-cache-optimizer-config.json` under Pi's agent directory. If no command override exists, `PI_CACHE_OPTIMIZER_FOOTER_MODE=session|total` is used; values are case-insensitive, and missing or invalid values fall back to `total`.
 
 ## OpenAI-compatible proxy setup
 
@@ -260,7 +273,7 @@ If only one model should change, use `modelOverrides`:
 
 ## Footer stats
 
-Stats are read-only local counters stored in Pi's agent directory (default: `~/.pi/agent/pi-cache-optimizer-stats.json`; custom agent dirs use `PI_CODING_AGENT_DIR`) and keyed by provider/model, so the same channel/model keeps today's footer counters after a Pi process or terminal restart. The file also keeps hashed session buckets for migration/reload bookkeeping. It contains only dates and numeric counters — no API keys, prompts, payloads, headers, responses, or model output.
+Stats are read-only local counters stored in Pi's agent directory (default: `~/.pi/agent/pi-cache-optimizer-stats.json`; custom agent dirs use `PI_CODING_AGENT_DIR`). Both today's provider/model totals and hashed session buckets are maintained. The footer shows daily totals by default, or the current session bucket when `session` mode is selected. The stats file contains only dates and numeric counters — no API keys, prompts, payloads, headers, responses, or model output. Footer mode configuration is stored separately in `pi-cache-optimizer-config.json`.
 
 Pi 0.79+ also includes a built-in footer `CH` marker for the latest prompt cache hit rate. This extension complements that marker with persisted provider/model counters plus proxy compat diagnostics.
 
@@ -389,13 +402,13 @@ When the query matches the current session/route, `hints` may contain `systemPro
 pi remove npm:pi-cache-optimizer
 ```
 
-Then run `/reload` or restart Pi. Optional local stats cleanup (if you use `PI_CODING_AGENT_DIR`, delete the same files from that directory instead):
+Then run `/reload` or restart Pi. Optional local state cleanup (if you use `PI_CODING_AGENT_DIR`, delete the same files from that directory instead):
 
-| Platform | Delete local stats files |
+| Platform | Delete local state files |
 |---|---|
-| Linux / macOS / WSL | `rm -f ~/.pi/agent/pi-cache-optimizer-stats.json ~/.pi/agent/deepseek-cache-optimizer-stats.json` |
-| Windows PowerShell | `Remove-Item -Force "$env:USERPROFILE\.pi\agent\pi-cache-optimizer-stats.json", "$env:USERPROFILE\.pi\agent\deepseek-cache-optimizer-stats.json" -ErrorAction SilentlyContinue` |
-| Windows Command Prompt | `del /f /q "%USERPROFILE%\.pi\agent\pi-cache-optimizer-stats.json" "%USERPROFILE%\.pi\agent\deepseek-cache-optimizer-stats.json" 2>nul` |
+| Linux / macOS / WSL | `rm -f ~/.pi/agent/pi-cache-optimizer-stats.json ~/.pi/agent/pi-cache-optimizer-config.json ~/.pi/agent/deepseek-cache-optimizer-stats.json` |
+| Windows PowerShell | `Remove-Item -Force "$env:USERPROFILE\.pi\agent\pi-cache-optimizer-stats.json", "$env:USERPROFILE\.pi\agent\pi-cache-optimizer-config.json", "$env:USERPROFILE\.pi\agent\deepseek-cache-optimizer-stats.json" -ErrorAction SilentlyContinue` |
+| Windows Command Prompt | `del /f /q "%USERPROFILE%\.pi\agent\pi-cache-optimizer-stats.json" "%USERPROFILE%\.pi\agent\pi-cache-optimizer-config.json" "%USERPROFILE%\.pi\agent\deepseek-cache-optimizer-stats.json" 2>nul` |
 
 Do not delete `models.json` during cleanup; it contains your Pi model/provider configuration and is not owned by this package.
 

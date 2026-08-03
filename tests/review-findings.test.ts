@@ -70,6 +70,244 @@ describe("stable prompt reordering", () => {
   });
 });
 
+describe("footer stats modes", () => {
+  const sessionHash = "0123456789abcdef";
+  const model = {
+    provider: "proxy",
+    id: "gpt-5.5",
+    name: "GPT-5.5",
+  };
+  const sessionStats = {
+    day: "2026-08-03",
+    totalRequests: 2,
+    hitRequests: 1,
+    cachedInputTokens: 400,
+    cacheWriteInputTokens: 100,
+    totalInputTokens: 1000,
+  };
+  const totalStats = {
+    day: "2026-08-03",
+    totalRequests: 9,
+    hitRequests: 7,
+    cachedInputTokens: 4000,
+    cacheWriteInputTokens: 500,
+    totalInputTokens: 8000,
+  };
+  const statsByModel = {
+    [internals.makeSessionModelKey(sessionHash, model.provider, model.id)]: sessionStats,
+  };
+  const totalsByModel = { [`${model.provider}/${model.id}`]: totalStats };
+
+  test("defaults to total and accepts only session or total environment values", () => {
+    assert.deepEqual(internals.resolveFooterStatsMode(undefined, {}), {
+      mode: "total",
+      source: "default",
+    });
+    assert.deepEqual(
+      internals.resolveFooterStatsMode(undefined, { PI_CACHE_OPTIMIZER_FOOTER_MODE: " SeSsIoN " }),
+      { mode: "session", source: "env" },
+    );
+    assert.deepEqual(
+      internals.resolveFooterStatsMode(undefined, { PI_CACHE_OPTIMIZER_FOOTER_MODE: "TOTAL" }),
+      { mode: "total", source: "env" },
+    );
+    assert.deepEqual(
+      internals.resolveFooterStatsMode(undefined, { PI_CACHE_OPTIMIZER_FOOTER_MODE: "daily" }),
+      { mode: "total", source: "default" },
+    );
+    assert.equal(
+      internals.parsePersistedCacheOptimizerConfig({ version: 1, footerMode: "daily" }),
+      undefined,
+    );
+  });
+
+  test("persistent configuration overrides the environment mode", () => {
+    assert.deepEqual(
+      internals.resolveFooterStatsMode("total", { PI_CACHE_OPTIMIZER_FOOTER_MODE: "session" }),
+      { mode: "total", source: "config" },
+    );
+    assert.deepEqual(
+      internals.resolveFooterStatsMode("session", { PI_CACHE_OPTIMIZER_FOOTER_MODE: "total" }),
+      { mode: "session", source: "config" },
+    );
+  });
+
+  test("selects direct model stats from the requested scope", () => {
+    assert.equal(
+      internals.selectFooterStatsForModel("session", sessionHash, statsByModel, totalsByModel, model),
+      sessionStats,
+    );
+    assert.equal(
+      internals.selectFooterStatsForModel("total", sessionHash, statsByModel, totalsByModel, model),
+      totalStats,
+    );
+    assert.equal(
+      internals.selectFooterStatsForModel("session", "fresh-session", statsByModel, totalsByModel, model),
+      undefined,
+    );
+  });
+
+  test("uses the requested scope for exact router restore", () => {
+    const routed = { provider: model.provider, id: model.id, name: model.name };
+    const sessionEntry = internals.buildExactRouterStatusEntry(
+      sessionHash,
+      statsByModel,
+      routed,
+      totalsByModel,
+      "session",
+    );
+    const totalEntry = internals.buildExactRouterStatusEntry(
+      sessionHash,
+      statsByModel,
+      routed,
+      totalsByModel,
+      "total",
+    );
+
+    const freshSessionEntry = internals.buildExactRouterStatusEntry(
+      "fresh-session",
+      statsByModel,
+      routed,
+      totalsByModel,
+      "session",
+    );
+
+    assert.equal(sessionEntry?.stats, sessionStats);
+    assert.equal(totalEntry?.stats, totalStats);
+    assert.equal(freshSessionEntry?.stats.totalRequests, 0);
+  });
+
+  test("restores only the matching session bucket", () => {
+    const persisted = {
+      statsByModel: {
+        ...statsByModel,
+        [internals.makeSessionModelKey("other-session", model.provider, model.id)]: totalStats,
+      },
+      totalsByModel,
+      legacyFamily: {},
+    };
+
+    assert.deepEqual(internals.filterRestorableStatsForSession(persisted, sessionHash), statsByModel);
+    assert.deepEqual(internals.filterRestorableStatsForSession(persisted, "fresh-session"), {});
+  });
+
+  test("keeps router fallback inside the requested scope", () => {
+    const otherTotal = {
+      ...totalStats,
+      totalRequests: 99,
+      hitRequests: 90,
+    };
+    const otherSession = {
+      ...sessionStats,
+      totalRequests: 1,
+      hitRequests: 1,
+    };
+    const routedSessionStats = {
+      ...statsByModel,
+      [internals.makeSessionModelKey(sessionHash, "anthropic", "claude-opus-5")]: otherSession,
+    };
+    const routedTotals = {
+      ...totalsByModel,
+      "anthropic/claude-opus-5": otherTotal,
+    };
+
+    const sessionEntry = internals.findBestRouterModelStats(
+      "session",
+      sessionHash,
+      routedSessionStats,
+      routedTotals,
+    );
+    const totalEntry = internals.findBestRouterModelStats(
+      "total",
+      sessionHash,
+      routedSessionStats,
+      routedTotals,
+    );
+
+    assert.equal(sessionEntry?.model.id, model.id);
+    assert.equal(sessionEntry?.stats, sessionStats);
+    assert.equal(totalEntry?.model.id, "claude-opus-5");
+    assert.equal(totalEntry?.stats, otherTotal);
+  });
+
+  test("persists and clears the command override atomically", async () => {
+    const tempDir = await mkdtemp(join(tmpdir(), "pi-cache-footer-mode-test-"));
+    const configPath = join(tempDir, "pi-cache-optimizer-config.json");
+
+    try {
+      await internals.writePersistedFooterMode("session", configPath);
+      assert.equal(internals.readPersistedFooterMode(configPath), "session");
+      assert.deepEqual(
+        internals.parsePersistedCacheOptimizerConfig(JSON.parse(await readFile(configPath, "utf8"))),
+        { version: 1, footerMode: "session" },
+      );
+      assert.deepEqual(await readdir(tempDir), ["pi-cache-optimizer-config.json"]);
+
+      await internals.writePersistedFooterMode(undefined, configPath);
+      assert.equal(internals.readPersistedFooterMode(configPath), undefined);
+      assert.deepEqual(await readdir(tempDir), []);
+    } finally {
+      await rm(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  test("config command overrides and restores the environment mode", async () => {
+    const tempAgentDir = await mkdtemp(join(tmpdir(), "pi-cache-footer-command-test-"));
+    const previousAgentDir = process.env.PI_CODING_AGENT_DIR;
+    const previousFooterMode = process.env.PI_CACHE_OPTIMIZER_FOOTER_MODE;
+
+    try {
+      process.env.PI_CODING_AGENT_DIR = tempAgentDir;
+      process.env.PI_CACHE_OPTIMIZER_FOOTER_MODE = "session";
+      const jiti = createJiti(join(process.cwd(), "tests", "review-findings.test.ts"), {
+        interopDefault: false,
+        moduleCache: false,
+      });
+      const freshModule = await jiti.import<typeof import("../index.ts")>(
+        join(process.cwd(), "index.ts"),
+      );
+      const commands = new Map<string, { handler: (args: string, context: any) => unknown }>();
+      freshModule.default({
+        on() {},
+        registerCommand(name: string, command: { handler: (args: string, context: any) => unknown }) {
+          commands.set(name, command);
+        },
+      } as any);
+
+      const command = commands.get("cache-optimizer");
+      assert.ok(command);
+      const notifications: Array<{ message: string; level: string }> = [];
+      const commandContext = {
+        model: undefined,
+        hasUI: false,
+        sessionManager: { getSessionId: () => "footer-command-session" },
+        modelRegistry: { find: () => undefined, getAvailable: () => [], getAll: () => [] },
+        ui: {
+          notify: (message: string, level: string) => notifications.push({ message, level }),
+          setStatus() {},
+        },
+      };
+      const configPath = join(tempAgentDir, "pi-cache-optimizer-config.json");
+
+      await command.handler("config footer-mode total", commandContext);
+      assert.equal(freshModule.__internals_for_tests.readPersistedFooterMode(configPath), "total");
+      assert.equal(freshModule.__internals_for_tests.footerStatsMode(), "total");
+      assert.match(notifications.at(-1)?.message ?? "", /set to total/);
+
+      await command.handler("config footer-mode env", commandContext);
+      assert.equal(freshModule.__internals_for_tests.readPersistedFooterMode(configPath), undefined);
+      assert.equal(freshModule.__internals_for_tests.footerStatsMode(), "session");
+      assert.match(notifications.at(-1)?.message ?? "", /Effective mode: session \(env\)/);
+    } finally {
+      if (previousAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
+      else process.env.PI_CODING_AGENT_DIR = previousAgentDir;
+      if (previousFooterMode === undefined) delete process.env.PI_CACHE_OPTIMIZER_FOOTER_MODE;
+      else process.env.PI_CACHE_OPTIMIZER_FOOTER_MODE = previousFooterMode;
+      await rm(tempAgentDir, { recursive: true, force: true });
+    }
+  });
+});
+
 describe("Pi 0.83 adaptive-thinking compatibility", () => {
   function claudeModel(id: string, compat: Record<string, unknown> = {}) {
     return {
