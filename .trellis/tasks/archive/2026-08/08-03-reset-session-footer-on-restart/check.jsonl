@@ -1,0 +1,2 @@
+{"file":".trellis/spec/frontend/cache-adapter-footer-stats.md","reason":"Verify total/session/process semantics and no process bucket persistence."}
+{"file":".trellis/spec/frontend/quality-guidelines.md","reason":"Verify tests, typecheck, package, docs, and diff quality."}
