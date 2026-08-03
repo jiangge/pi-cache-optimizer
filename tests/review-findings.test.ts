@@ -70,6 +70,51 @@ describe("stable prompt reordering", () => {
   });
 });
 
+describe("Pi 0.83 adaptive-thinking compatibility", () => {
+  function claudeModel(id: string, compat: Record<string, unknown> = {}) {
+    return {
+      provider: "anthropic",
+      id,
+      name: `Claude ${id}`,
+      api: "anthropic-messages",
+      baseUrl: "https://api.anthropic.com",
+      compat,
+    };
+  }
+
+  test("reports missing adaptive compat for native Claude Opus 5", () => {
+    const model = claudeModel("claude-opus-5");
+
+    assert.equal(internals.isAdaptiveThinkingCompatApplicable(model), true);
+    assert.deepEqual(
+      internals.describeMissingCacheCompatForModel(model),
+      ["forceAdaptiveThinking"],
+    );
+    assert.match(
+      internals.buildAdaptiveThinkingCompatWarningText(
+        "anthropic/claude-opus-5",
+        ["forceAdaptiveThinking"],
+      ),
+      /forceAdaptiveThinking/,
+    );
+  });
+
+  test("does not report adaptive compat when Claude Opus 5 is configured", () => {
+    const model = claudeModel("claude-opus-5", { forceAdaptiveThinking: true });
+
+    assert.equal(internals.isAdaptiveThinkingCompatApplicable(model), true);
+    assert.deepEqual(internals.describeMissingAdaptiveThinkingCompat(model), []);
+    assert.deepEqual(internals.describeMissingCacheCompatForModel(model), []);
+  });
+
+  test("keeps older non-adaptive Claude models as a negative case", () => {
+    const model = claudeModel("claude-opus-4-5");
+
+    assert.equal(internals.isAdaptiveThinkingCompatApplicable(model), false);
+    assert.deepEqual(internals.describeMissingCacheCompatForModel(model), []);
+  });
+});
+
 describe("explicit compat precedence", () => {
   const provider = "proxy";
   const modelId = "builtin-model";

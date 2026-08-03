@@ -1107,8 +1107,8 @@ DeepSeek-like models using Pi Mono guidance may also surface `⚠️ compat` whe
 `requiresReasoningContentOnAssistantMessages` or `thinkingFormat: "deepseek"`
 are missing, even when the provider is otherwise not a generic proxy.
 Native `anthropic-messages` adaptive-generation models may also surface
-`⚠️ compat`: Claude opus-4.6+, sonnet-4.6+ including Sonnet 5, and fable-5+
-require `forceAdaptiveThinking: true`; Kimi Coding K3 / `kimi-for-coding`
+`⚠️ compat`: Claude opus-4.6+ including Opus 5, sonnet-4.6+ including Sonnet 5,
+and fable-5+ require `forceAdaptiveThinking: true`; Kimi Coding K3 / `kimi-for-coding`
 require `forceAdaptiveThinking: true` and `allowEmptySignature: true` for
 empty-signature thinking replay.
 
@@ -1257,8 +1257,8 @@ Auto-repairs safe compat issues detected for the **current active model only**.
 It covers the same safe defaults shown by doctor/compat:
 
 * Adaptive thinking: `forceAdaptiveThinking: true` for native
-  `anthropic-messages` Claude opus-4.6+/sonnet-4.6+ (including Sonnet 5)/
-  fable-5+ and Kimi Coding K3 / `kimi-for-coding`; the Kimi Coding models also
+  `anthropic-messages` Claude opus-4.6+ (including Opus 5)/sonnet-4.6+
+  (including Sonnet 5)/fable-5+ and Kimi Coding K3 / `kimi-for-coding`; the Kimi Coding models also
   get `allowEmptySignature: true`.
 * DeepSeek Pi Mono compat: `thinkingFormat: "deepseek"`,
   `requiresReasoningContentOnAssistantMessages: true`, plus cache/session-affinity
