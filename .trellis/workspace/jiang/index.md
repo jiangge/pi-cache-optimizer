@@ -8,7 +8,7 @@
 
 <!-- @@@auto:current-status -->
 - **Active File**: `journal-1.md`
-- **Total Sessions**: 6
+- **Total Sessions**: 7
 - **Last Active**: 2026-08-03
 <!-- @@@/auto:current-status -->
 
@@ -19,7 +19,7 @@
 <!-- @@@auto:active-documents -->
 | File | Lines | Status |
 |------|-------|--------|
-| `journal-1.md` | ~518 | Active |
+| `journal-1.md` | ~551 | Active |
 <!-- @@@/auto:active-documents -->
 
 ---
@@ -29,6 +29,7 @@
 <!-- @@@auto:session-history -->
 | # | Date | Title | Commits | Branch |
 |---|------|-------|---------|--------|
+| 7 | 2026-08-03 | Remove footer mode env command | `9fbe540` | `master` |
 | 6 | 2026-08-03 | Merge PR 5 and add configurable footer scopes | `b418154` | `master` |
 | 5 | 2026-08-03 | 同步 Pi 0.83 开发基线并验证兼容性 | `093d74d` | `master` |
 | 4 | 2026-07-27 | 修复 prompt 完整性与 modelOverrides 优先级 | `3ed6214` | `master` |

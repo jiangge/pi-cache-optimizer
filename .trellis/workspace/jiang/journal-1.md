@@ -516,3 +516,36 @@ Merged GitHub PR #5 with contributor attribution, restored total as the default 
 ### Next Steps
 
 - None - task complete
+
+
+## Session 7: Remove footer mode env command
+
+**Date**: 2026-08-03
+**Task**: Remove footer mode env command
+**Branch**: `master`
+
+### Summary
+
+Removed the footer-mode env command option while retaining PI_CACHE_OPTIMIZER_FOOTER_MODE fallback, kept persistent session/total settings, documented manual config-file removal, updated permanent tests and bilingual docs/spec, and posted the maintainer decision on merged PR #5.
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `9fbe540` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
