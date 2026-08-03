@@ -549,3 +549,36 @@ Removed the footer-mode env command option while retaining PI_CACHE_OPTIMIZER_FO
 ### Next Steps
 
 - None - task complete
+
+
+## Session 8: Publish pi-cache-optimizer v2.7.0
+
+**Date**: 2026-08-03
+**Task**: Publish pi-cache-optimizer v2.7.0
+**Branch**: `master`
+
+### Summary
+
+Bumped package and lockfile to 2.7.0, documented the configurable footer scopes in both READMEs, passed 23 tests and package checks, pushed master, published pi-cache-optimizer@2.7.0 with latest tag, verified registry integrity, and kept the npm token out of tracked files.
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `8722116` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
