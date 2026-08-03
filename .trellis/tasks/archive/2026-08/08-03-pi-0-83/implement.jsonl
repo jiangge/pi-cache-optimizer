@@ -1,0 +1,5 @@
+{"file":".trellis/spec/frontend/index.md","reason":"Load the frontend package entry checklist and quality gate before modifying tests, dependency metadata, or extension documentation."}
+{"file":".trellis/spec/frontend/type-safety.md","reason":"Keep Pi ambient declarations and regression tests type-safe while validating the 0.83 peer baseline."}
+{"file":".trellis/spec/frontend/hook-guidelines.md","reason":"Preserve existing Pi hook contracts and adaptive-compat diagnostic behavior while adding the Opus 5 regression case."}
+{"file":".trellis/spec/frontend/cache-adapter-footer-stats.md","reason":"Preserve provider detection, compat diagnostics, and cache-stat behavior while syncing the Pi development baseline."}
+{"file":".trellis/tasks/08-03-pi-0-83/research/pi-0.83-compat.md","reason":"Apply the verified Pi 0.83 API, changelog, dependency, and model-compat evidence recorded for this task."}

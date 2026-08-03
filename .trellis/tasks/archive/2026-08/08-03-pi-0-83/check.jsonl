@@ -1,0 +1,5 @@
+{"file":".trellis/spec/frontend/index.md","reason":"Use the frontend quality checklist and completion gate for the final compatibility synchronization review."}
+{"file":".trellis/spec/frontend/type-safety.md","reason":"Review lockfile, ambient Pi declarations, and tests for type-safe Pi 0.83 compatibility."}
+{"file":".trellis/spec/frontend/hook-guidelines.md","reason":"Review adaptive-thinking detection and lifecycle hook regression behavior without changing established contracts."}
+{"file":".trellis/spec/frontend/cache-adapter-footer-stats.md","reason":"Review provider/cache diagnostic regressions and ensure the Pi upgrade does not alter existing footer semantics."}
+{"file":".trellis/tasks/08-03-pi-0-83/research/pi-0.83-compat.md","reason":"Check the implementation against verified Pi 0.83 changelog, declarations, dependency, and model evidence."}
