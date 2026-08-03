@@ -615,3 +615,36 @@ Diagnosed that the direct config subcommand worked but the /cache-optimizer inte
 ### Next Steps
 
 - None - task complete
+
+
+## Session 10: Add total session process footer modes
+
+**Date**: 2026-08-03
+**Task**: Add total session process footer modes
+**Branch**: `master`
+
+### Summary
+
+Preserved PR contributor session semantics, added process-local footer mode that resets on Pi restart or extension reload, updated direct/menu commands, bilingual README and footer spec, added process regression coverage, passed 24 tests and package checks, and pushed the implementation.
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `e32bdc4` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
