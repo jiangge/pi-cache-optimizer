@@ -1,0 +1,2 @@
+{"file":".trellis/spec/frontend/quality-guidelines.md","reason":"Release checks, package dry-run, docs parity, and commit requirements."}
+{"file":".trellis/spec/frontend/cache-adapter-footer-stats.md","reason":"Confirm released footer-mode behavior matches the binding contract."}

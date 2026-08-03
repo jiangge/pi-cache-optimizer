@@ -1,0 +1,2 @@
+{"file":".trellis/spec/frontend/quality-guidelines.md","reason":"Verify TypeScript, tests, diff, package contents, docs parity, and clean release state."}
+{"file":".trellis/spec/frontend/cache-adapter-footer-stats.md","reason":"Verify release documentation and runtime behavior remain contract-compliant."}
