@@ -7072,10 +7072,13 @@ export default function (pi: ExtensionAPI) {
     }
 
     if (adapter) {
-      // Display provider/model cumulative stats. A model that has never
-      // been used locally shows 0/0. The message_end hook updates both the
-      // current session bucket and this restart-persistent totals bucket.
-      const stats = displayModel ? cacheStatsTotalsByModel[modelKey(displayModel)] : undefined;
+      // Display current-session stats. A fresh session starts at 0/0 and
+      // only accumulates this session's traffic; message_end updates the
+      // per-session bucket. Cross-session totals stay in the totals bucket
+      // (still persisted) but are no longer shown in the footer here.
+      const stats = displayModel && currentSessionHashSet
+        ? cacheStatsByModel[makeSessionModelKey(currentSessionHash, displayModel.provider, displayModel.id)]
+        : undefined;
       const statsText = formatCacheStats(adapter, stats ?? emptyCacheStats());
       statusText = runtimeOptimizerEnabled ? statsText : `Cache Optimizer disabled · ${statsText}`;
     }
