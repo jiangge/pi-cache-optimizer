@@ -1,0 +1,2 @@
+{"file":".trellis/spec/frontend/cache-adapter-footer-stats.md","reason":"Verify final command syntax, precedence, and manual-clear semantics."}
+{"file":".trellis/spec/frontend/quality-guidelines.md","reason":"Verify permanent tests, docs parity, TypeScript, diff, and package dry-run."}
