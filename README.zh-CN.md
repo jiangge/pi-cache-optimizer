@@ -71,7 +71,7 @@ Pi 0.79.7 及之后，`pi update` 默认只更新 Pi 本体。若要更新已安
 | `/cache-optimizer config footer-mode session\|total` | 持久设置 footer 统计模式；持久命令配置优先于环境变量。 |
 | `/cache-optimizer fix` | 为当前模型自动修复安全的 compat 问题（adaptive thinking、DeepSeek reasoning、OpenAI proxy session affinity）。展示预览 + 风险提示，需要用户确认。**仅在用户明确批准后才修改 `models.json`。** |
 
-`enable` / `disable` 是当前进程内开关。若要持久关闭某些能力，请使用下面的环境变量。
+交互式 `/cache-optimizer` 菜单包含 `Footer mode`，可以选择 `total` 或 `session`。`enable` / `disable` 是当前进程内开关。若要持久关闭某些能力，请使用下面的环境变量。
 
 ## 持久 Opt-out
 
@@ -84,7 +84,7 @@ Pi 0.79.7 及之后，`pi update` 默认只更新 Pi 本体。若要更新已安
 
 ## Footer 缓存统计模式
 
-**v2.7.0+** 同时支持每日累计与当前 session 两种 footer 统计范围。Footer 默认使用 `total`，显示当前本地日期内、跨 Pi session 和进程重启延续的 provider/model 统计。可以通过命令或环境变量切换显示范围：
+**v2.7.0+** 同时支持每日累计与当前 session 两种 footer 统计范围。**v2.7.1** 在交互式 `/cache-optimizer` 菜单中加入了 Footer mode 选项。Footer 默认使用 `total`，显示当前本地日期内、跨 Pi session 和进程重启延续的 provider/model 统计。可以通过命令或环境变量切换显示范围：
 
 | 值 | 作用 |
 |---|---|

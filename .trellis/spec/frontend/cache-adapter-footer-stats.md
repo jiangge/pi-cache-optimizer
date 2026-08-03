@@ -1350,8 +1350,9 @@ session entries for that model; other provider/model totals are unaffected.
 
 When the Pi UI supports it (`ctx.ui.select` available), shows an interactive
 selection menu with options: Enable, Disable, Doctor, Stats, Compat, Fix, Reset,
-Cancel. Footer mode configuration is available through the explicit
-`config footer-mode session|total` command.
+Footer mode is also available as a `Footer mode` item in this menu, with `total`
+and `session` choices. The explicit `config footer-mode session|total` command
+remains available for direct use. Cancel closes the menu.
 Selecting a menu subcommand executes the corresponding logic. Cancel closes the menu.
 
 In non-interactive terminals (no `ui.select`), falls back to a short text help

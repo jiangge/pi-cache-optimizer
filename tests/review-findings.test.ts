@@ -297,6 +297,65 @@ describe("footer stats modes", () => {
       await rm(tempAgentDir, { recursive: true, force: true });
     }
   });
+
+  test("interactive menu exposes and applies footer mode", async () => {
+    const tempAgentDir = await mkdtemp(join(tmpdir(), "pi-cache-footer-menu-test-"));
+    const previousAgentDir = process.env.PI_CODING_AGENT_DIR;
+    const previousFooterMode = process.env.PI_CACHE_OPTIMIZER_FOOTER_MODE;
+
+    try {
+      process.env.PI_CODING_AGENT_DIR = tempAgentDir;
+      delete process.env.PI_CACHE_OPTIMIZER_FOOTER_MODE;
+      const jiti = createJiti(join(process.cwd(), "tests", "review-findings.test.ts"), {
+        interopDefault: false,
+        moduleCache: false,
+      });
+      const freshModule = await jiti.import<typeof import("../index.ts")>(
+        join(process.cwd(), "index.ts"),
+      );
+      const commands = new Map<string, { handler: (args: string, context: any) => unknown }>();
+      freshModule.default({
+        on() {},
+        registerCommand(name: string, command: { handler: (args: string, context: any) => unknown }) {
+          commands.set(name, command);
+        },
+      } as any);
+
+      const command = commands.get("cache-optimizer");
+      assert.ok(command);
+      const selectCalls: string[] = [];
+      const notifications: string[] = [];
+      const commandContext = {
+        model: undefined,
+        hasUI: true,
+        sessionManager: { getSessionId: () => "footer-menu-session" },
+        modelRegistry: { find: () => undefined, getAvailable: () => [], getAll: () => [] },
+        ui: {
+          notify: (message: string) => notifications.push(message),
+          setStatus() {},
+          select: async (title: string, options: string[]) => {
+            selectCalls.push(title);
+            if (title === "Cache Optimizer") return options.find((option) => option.startsWith("Footer mode"));
+            return options.find((option) => option.startsWith("session"));
+          },
+        },
+      };
+      const configPath = join(tempAgentDir, "pi-cache-optimizer-config.json");
+
+      await command.handler("", commandContext);
+
+      assert.deepEqual(selectCalls, ["Cache Optimizer", "Footer cache stats mode"]);
+      assert.equal(freshModule.__internals_for_tests.readPersistedFooterMode(configPath), "session");
+      assert.equal(freshModule.__internals_for_tests.footerStatsMode(), "session");
+      assert.match(notifications.at(-1) ?? "", /set to session/);
+    } finally {
+      if (previousAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
+      else process.env.PI_CODING_AGENT_DIR = previousAgentDir;
+      if (previousFooterMode === undefined) delete process.env.PI_CACHE_OPTIMIZER_FOOTER_MODE;
+      else process.env.PI_CACHE_OPTIMIZER_FOOTER_MODE = previousFooterMode;
+      await rm(tempAgentDir, { recursive: true, force: true });
+    }
+  });
 });
 
 describe("Pi 0.83 adaptive-thinking compatibility", () => {

@@ -8074,6 +8074,7 @@ export default function (pi: ExtensionAPI) {
             "Stats — Show cache stats and trend",
             "Compat — Show compat suggestion",
             "Fix — Auto-fix compat issues (writes models.json)",
+            "Footer mode — Choose total or current-session footer stats",
             "Reset — Reset local provider/model stats",
             "Cancel",
           ];
@@ -8256,6 +8257,31 @@ export default function (pi: ExtensionAPI) {
               );
             }
           } else if (choice === menuOptions[6]) {
+            const modeOptions = ["total — Daily cumulative totals (default)", "session — Current Pi session only", "Cancel"];
+            const modeChoice = await cmdCtx.ui.select("Footer cache stats mode", modeOptions);
+            const nextMode = modeChoice === modeOptions[0]
+              ? "total"
+              : modeChoice === modeOptions[1]
+                ? "session"
+                : undefined;
+            if (nextMode) {
+              try {
+                await writePersistedFooterMode(nextMode);
+                persistedFooterStatsMode = nextMode;
+                lastStatusText = undefined;
+                await publishStatus(cmdCtx as unknown as ExtensionContext, model);
+                cmdCtx.ui.notify(
+                  `✅ Footer mode set to ${nextMode}. Persistent config overrides ${FOOTER_MODE_ENV}.`,
+                  "info",
+                );
+              } catch (error) {
+                cmdCtx.ui.notify(
+                  `❌ Could not update footer mode config: ${error instanceof Error ? error.message : String(error)}`,
+                  "error",
+                );
+              }
+            }
+          } else if (choice === menuOptions[7]) {
             if (!model) {
               cmdCtx.ui.notify("No active model selected. Select a model first with /model or pi --model.", "warning");
             } else {

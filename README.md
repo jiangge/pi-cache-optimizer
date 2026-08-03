@@ -71,7 +71,7 @@ This extension is validated against Pi 0.83.0 and remains designed for Pi 0.82+.
 | `/cache-optimizer config footer-mode session\|total` | Persist the footer stats mode. Persistent command configuration overrides the environment variable. |
 | `/cache-optimizer fix` | Auto-repairs safe compat issues for the active model (adaptive thinking, DeepSeek reasoning, OpenAI proxy session affinity). Shows preview + risk warning, requires confirmation. **Only modifies `models.json` after explicit user approval.** |
 
-`enable` / `disable` are current-process switches. For a persistent opt-out, use environment variables below.
+The interactive `/cache-optimizer` menu includes `Footer mode`, where you can choose `total` or `session`. `enable` / `disable` are current-process switches. For a persistent opt-out, use environment variables below.
 
 ## Persistent opt-out
 
@@ -84,7 +84,7 @@ This extension is validated against Pi 0.83.0 and remains designed for Pi 0.82+.
 
 ## Footer cache stats mode
 
-**v2.7.0+** supports both daily cumulative and current-session footer scopes. The footer defaults to `total`, which shows the provider/model's local counters for the current day across Pi sessions and process restarts. Use either the command or environment variable to select the scope:
+**v2.7.0+** supports both daily cumulative and current-session footer scopes. **v2.7.1** adds the Footer mode option to the interactive `/cache-optimizer` menu. The footer defaults to `total`, which shows the provider/model's local counters for the current day across Pi sessions and process restarts. Use either the command or environment variable to select the scope:
 
 | Value | Effect |
 |---|---|
