@@ -84,7 +84,7 @@ Pi 0.79.7 及之后，`pi update` 默认只更新 Pi 本体。若要更新已安
 
 ## Footer 缓存统计模式
 
-Footer 默认使用 `total`，显示当前本地日期内、跨 Pi session 和进程重启延续的 provider/model 统计。可以通过命令或环境变量切换显示范围：
+**v2.7.0+** 同时支持每日累计与当前 session 两种 footer 统计范围。Footer 默认使用 `total`，显示当前本地日期内、跨 Pi session 和进程重启延续的 provider/model 统计。可以通过命令或环境变量切换显示范围：
 
 | 值 | 作用 |
 |---|---|

@@ -84,7 +84,7 @@ This extension is validated against Pi 0.83.0 and remains designed for Pi 0.82+.
 
 ## Footer cache stats mode
 
-The footer defaults to `total`, which shows the provider/model's local counters for the current day across Pi sessions and process restarts. Use either the command or environment variable to select the scope:
+**v2.7.0+** supports both daily cumulative and current-session footer scopes. The footer defaults to `total`, which shows the provider/model's local counters for the current day across Pi sessions and process restarts. Use either the command or environment variable to select the scope:
 
 | Value | Effect |
 |---|---|
