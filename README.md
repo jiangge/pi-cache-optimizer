@@ -80,6 +80,15 @@ This extension is validated against Pi 0.83.0 and remains designed for Pi 0.82+.
 | `PI_CACHE_OPTIMIZER_NO_OPENAI_CACHE_KEY=1` | Disable the OpenAI-compatible `prompt_cache_key` fallback. Preferred explicit opt-out. |
 | `PI_CACHE_OPTIMIZER_OPENAI_CACHE_KEY=0` | Disable the same fallback via the legacy inverse switch. Values `0`, `false`, `no`, or `off` disable it. |
 
+## Footer cache stats mode
+
+`PI_CACHE_OPTIMIZER_FOOTER_MODE` selects which counters the footer shows:
+
+| Value | Effect |
+|---|---|
+| `session` (default) | Show only the **current session's** counters; a fresh session starts at `0/0` and accumulates only its own requests. The same session reloaded after an extension reload keeps its counters. |
+| `total` | Show **restart-persistent cumulative** counters across all sessions (the original behavior). |
+
 ## OpenAI-compatible proxy setup
 
 Third-party `openai-completions` proxies (LiteLLM / OneAPI / NewAPI / OpenRouter-like channels) often route one session across multiple upstream backends. That splits provider-side prompt caches.
