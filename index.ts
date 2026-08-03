@@ -101,6 +101,7 @@ const NO_OPENAI_CACHE_KEY_ENV = "PI_CACHE_OPTIMIZER_NO_OPENAI_CACHE_KEY";
 const OPENAI_PROMPT_CACHE_KEY_MAX_LENGTH = 64;
 const NO_SKILL_COMPRESSION_ENV = "PI_CACHE_OPTIMIZER_NO_SKILL_COMPRESSION";
 const NO_PROMPT_REWRITE_ENV = "PI_CACHE_OPTIMIZER_NO_PROMPT_REWRITE";
+const FOOTER_MODE_ENV = "PI_CACHE_OPTIMIZER_FOOTER_MODE";
 const PI_ROUTING_REGISTRY_SYMBOL = Symbol.for("pi.routing.registry.v1");
 const PI_CACHE_HINTS_SYMBOL = Symbol.for("pi.cache.hints.v1");
 const PI_CACHE_HINTS_OWNER_SYMBOL = Symbol.for("pi.cache.optimizer.hints-owner.v1");
@@ -1131,6 +1132,12 @@ function isEnabledEnv(value: string | undefined): boolean {
   const normalized = value.trim().toLowerCase();
   return normalized === "1" || normalized === "true" || normalized === "yes" || normalized === "on";
 }
+
+function footerStatsMode(env: MutableEnv = process.env): "session" | "total" {
+  const raw = (env[FOOTER_MODE_ENV] ?? "").trim().toLowerCase();
+  return raw === "total" ? "total" : "session";
+}
+
 
 function isDisabledEnv(value: string | undefined): boolean {
   if (!value) return false;
@@ -7072,13 +7079,17 @@ export default function (pi: ExtensionAPI) {
     }
 
     if (adapter) {
-      // Display current-session stats. A fresh session starts at 0/0 and
-      // only accumulates this session's traffic; message_end updates the
-      // per-session bucket. Cross-session totals stay in the totals bucket
-      // (still persisted) but are no longer shown in the footer here.
-      const stats = displayModel && currentSessionHashSet
-        ? cacheStatsByModel[makeSessionModelKey(currentSessionHash, displayModel.provider, displayModel.id)]
-        : undefined;
+      // Footer cache-stat mode: "session" (default) shows only the current
+      // session's counters (a fresh session starts at 0/0); "total" shows the
+      // restart-persistent cumulative counters (original behavior).
+      // Controlled via PI_CACHE_OPTIMIZER_FOOTER_MODE.
+      const mode = footerStatsMode();
+      const stats =
+        mode === "total"
+          ? displayModel ? cacheStatsTotalsByModel[modelKey(displayModel)] : undefined
+          : displayModel && currentSessionHashSet
+            ? cacheStatsByModel[makeSessionModelKey(currentSessionHash, displayModel.provider, displayModel.id)]
+            : undefined;
       const statsText = formatCacheStats(adapter, stats ?? emptyCacheStats());
       statusText = runtimeOptimizerEnabled ? statsText : `Cache Optimizer disabled · ${statsText}`;
     }
