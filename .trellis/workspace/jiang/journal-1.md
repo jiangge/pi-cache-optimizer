@@ -483,3 +483,36 @@ Checked pi-cache-optimizer against Pi 0.82.0, synced local validation SDK, added
 ### Next Steps
 
 - None - task complete
+
+
+## Session 6: Merge PR 5 and add configurable footer scopes
+
+**Date**: 2026-08-03
+**Task**: Merge PR 5 and add configurable footer scopes
+**Branch**: `master`
+
+### Summary
+
+Merged GitHub PR #5 with contributor attribution, restored total as the default footer mode, added persistent config-over-env precedence, unified direct/router session-vs-total selection, added 23-test regression coverage, and synchronized English/Chinese docs plus the binding footer spec.
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `b418154` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
