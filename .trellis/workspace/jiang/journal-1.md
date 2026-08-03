@@ -445,3 +445,41 @@ Checked pi-cache-optimizer against Pi 0.82.0, synced local validation SDK, added
 ### Next Steps
 
 - None - task complete
+
+
+## Session 5: 同步 Pi 0.83 开发基线并验证兼容性
+
+**Date**: 2026-08-03
+**Task**: 同步 Pi 0.83 开发基线并验证兼容性
+**Branch**: `master`
+
+### Summary
+
+核对 Pi 0.82 到 0.83 的扩展 API 与 changelog，确认现有 hooks、agent-dir、prompt options 和 adaptive detection 兼容；将开发 lockfile/本地依赖同步到 Pi 0.83.0，补 Opus 5 adaptive compat 回归测试，更新双语 README 与 cache-adapter spec，并通过 npm ci、npm run check、Trellis validation、diff/pack 审计。
+
+### Main Changes
+
+- 对比 Pi 0.82/0.83 的 changelog、扩展类型、system-prompt 类型和 agent-dir API，确认现有 runtime hooks 与 Pi 0.82+ 兼容。
+- 将 tracked `package-lock.json` 和本地 peer 依赖同步到 `@earendil-works/pi-coding-agent@0.83.0`，保留 peer dependency `*` 和 package version `2.6.25`。
+- 增加 Claude Opus 5 adaptive-thinking 缺失/已配置及旧 Claude negative case 回归测试；同步双语 README、cache-adapter spec 和任务研究记录。
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `093d74d` | (see git log) |
+
+### Testing
+
+- [OK] `npm ci --ignore-scripts`
+- [OK] `npm run check` (typecheck, 15 tests, diff check, pack dry-run)
+- [OK] `python3 ./.trellis/scripts/task.py validate .trellis/tasks/08-03-pi-0-83`
+- [OK] Lockfile registry resolved/integrity audit and README parity audit
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
