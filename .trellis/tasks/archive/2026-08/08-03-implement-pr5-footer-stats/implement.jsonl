@@ -1,0 +1,3 @@
+{"file":".trellis/spec/frontend/cache-adapter-footer-stats.md","reason":"Binding runtime, persistence, routing, footer, and command behavior contract."}
+{"file":".trellis/spec/frontend/quality-guidelines.md","reason":"Required implementation, regression-test, documentation, privacy, and package verification rules."}
+{"file":".trellis/spec/guides/code-reuse-thinking-guide.md","reason":"Footer scope selection is shared across direct and routed display paths and should use one helper."}

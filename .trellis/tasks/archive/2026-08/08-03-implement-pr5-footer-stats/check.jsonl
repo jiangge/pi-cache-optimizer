@@ -1,0 +1,2 @@
+{"file":".trellis/spec/frontend/cache-adapter-footer-stats.md","reason":"Verify final footer modes, routing restoration, persistence boundaries, and command semantics against the binding contract."}
+{"file":".trellis/spec/frontend/quality-guidelines.md","reason":"Verify TypeScript, tests, docs parity, privacy constraints, diff checks, and package dry-run."}
