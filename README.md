@@ -68,7 +68,7 @@ This extension is validated against Pi 0.83.0 and remains designed for Pi 0.82+.
 | `/cache-optimizer compat` | Shows copyable compat advice for the active model, if applicable. |
 | `/cache-optimizer stats` | Shows today's local provider/model counters and recent trend for the active model. |
 | `/cache-optimizer reset` | Resets local footer stats for the active provider/model; upstream provider cache is not modified. |
-| `/cache-optimizer config footer-mode session\|total\|env` | Persist the footer stats mode, or use `env` to clear the command override and return to the environment/default mode. |
+| `/cache-optimizer config footer-mode session\|total` | Persist the footer stats mode. Persistent command configuration overrides the environment variable. |
 | `/cache-optimizer fix` | Auto-repairs safe compat issues for the active model (adaptive thinking, DeepSeek reasoning, OpenAI proxy session affinity). Shows preview + risk warning, requires confirmation. **Only modifies `models.json` after explicit user approval.** |
 
 `enable` / `disable` are current-process switches. For a persistent opt-out, use environment variables below.
@@ -90,17 +90,15 @@ The footer defaults to `total`, which shows the provider/model's local counters 
 |---|---|
 | `total` (default) | Show today's restart-persistent provider/model totals across sessions. Local day rollover resets the counters. |
 | `session` | Show only the current hashed Pi session's counters. A fresh session starts at `0/0`; `/reload` in the same session restores that session bucket. |
-| `env` (command only) | Clear the persisted command override and use `PI_CACHE_OPTIMIZER_FOOTER_MODE`, falling back to `total`. |
 
 Persistent command configuration takes precedence over the environment variable:
 
 ```text
 /cache-optimizer config footer-mode session
 /cache-optimizer config footer-mode total
-/cache-optimizer config footer-mode env
 ```
 
-The explicit setting is stored in `pi-cache-optimizer-config.json` under Pi's agent directory. If no command override exists, `PI_CACHE_OPTIMIZER_FOOTER_MODE=session|total` is used; values are case-insensitive, and missing or invalid values fall back to `total`.
+The explicit setting is stored in `pi-cache-optimizer-config.json` under Pi's agent directory. If no command override exists, `PI_CACHE_OPTIMIZER_FOOTER_MODE=session|total` is used; values are case-insensitive, and missing or invalid values fall back to `total`. To return an existing installation to environment-controlled behavior, manually delete `pi-cache-optimizer-config.json` and run `/reload`.
 
 ## OpenAI-compatible proxy setup
 

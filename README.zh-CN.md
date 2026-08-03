@@ -68,7 +68,7 @@ Pi 0.79.7 及之后，`pi update` 默认只更新 Pi 本体。若要更新已安
 | `/cache-optimizer compat` | 对当前模型显示可复制的 compat 建议（如适用）。 |
 | `/cache-optimizer stats` | 显示当前模型今天的本地 provider/model 统计和近期趋势。 |
 | `/cache-optimizer reset` | 重置当前 provider/model 的本地 footer 统计；不会修改上游 provider 缓存。 |
-| `/cache-optimizer config footer-mode session\|total\|env` | 持久设置 footer 统计模式；使用 `env` 清除命令覆盖，重新服从环境变量 / 默认值。 |
+| `/cache-optimizer config footer-mode session\|total` | 持久设置 footer 统计模式；持久命令配置优先于环境变量。 |
 | `/cache-optimizer fix` | 为当前模型自动修复安全的 compat 问题（adaptive thinking、DeepSeek reasoning、OpenAI proxy session affinity）。展示预览 + 风险提示，需要用户确认。**仅在用户明确批准后才修改 `models.json`。** |
 
 `enable` / `disable` 是当前进程内开关。若要持久关闭某些能力，请使用下面的环境变量。
@@ -90,17 +90,15 @@ Footer 默认使用 `total`，显示当前本地日期内、跨 Pi session 和�
 |---|---|
 | `total`（默认） | 显示今天跨 session 持久延续的 provider/model 累计统计；本地日期切换时重置。 |
 | `session` | 仅显示当前 hashed Pi session 的统计。新 session 从 `0/0` 开始；同一 session 内 `/reload` 会恢复该 session 桶。 |
-| `env`（仅命令） | 清除持久命令覆盖，改用 `PI_CACHE_OPTIMIZER_FOOTER_MODE`；缺失或非法时回退到 `total`。 |
 
 持久命令配置优先于环境变量：
 
 ```text
 /cache-optimizer config footer-mode session
 /cache-optimizer config footer-mode total
-/cache-optimizer config footer-mode env
 ```
 
-显式设置保存在 Pi agent 目录下的 `pi-cache-optimizer-config.json`。没有命令覆盖时，读取 `PI_CACHE_OPTIMIZER_FOOTER_MODE=session|total`；值不区分大小写，缺失或非法值均回退到 `total`。
+显式设置保存在 Pi agent 目录下的 `pi-cache-optimizer-config.json`。没有命令覆盖时，读取 `PI_CACHE_OPTIMIZER_FOOTER_MODE=session|total`；值不区分大小写，缺失或非法值均回退到 `total`。如需让已有安装重新由环境变量控制，请手动删除 `pi-cache-optimizer-config.json`，然后运行 `/reload`。
 
 ## OpenAI-compatible 代理配置
 

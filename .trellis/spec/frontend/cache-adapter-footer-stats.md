@@ -542,7 +542,7 @@ and removing `_nosession`.
 | New v2 stats file exists | Load v2 `statsByProvider` into `legacyFamily`; start with empty session stats/totals; next write persists v6. |
 | New v3 stats file has entries for `otokapi/gpt-5.5` and `cafecode/gpt-5.5` | Migrate both unscoped keys into the current session hash and derive separate provider/model totals, even though both use the OpenAI-family footer label. |
 | Footer mode config/env missing or invalid | Use `total`; invalid values never silently select session mode. |
-| Persistent footer mode config conflicts with `PI_CACHE_OPTIMIZER_FOOTER_MODE` | Persistent command config wins. Clearing it with `/cache-optimizer config footer-mode env` restores environment/default resolution. |
+| Persistent footer mode config conflicts with `PI_CACHE_OPTIMIZER_FOOTER_MODE` | Persistent command config wins. To restore environment/default resolution, manually delete `pi-cache-optimizer-config.json` and run `/reload`. |
 | Selected matching model has no entry in the effective footer scope | Display empty same-day stats (`0/0`, `0M/0M`) instead of legacy family or opposite-scope counters. |
 | `/reload` session_start reason | Re-read persisted v6 data for the same current session hash plus restart-persistent totals, clear only transient state (recent samples, integrity notifications), and re-publish footer from the effective scope. |
 | Active model is `router/auto`, persisted exact last routed model exists, and another bucket has more requests | `/reload` restores the footer for the exact persisted last routed model using the effective scope, not the largest bucket or the opposite scope. |
@@ -1174,17 +1174,18 @@ These are current-process runtime switches, not persistent config writes.
   persist the local stats reset so the comparison footer starts from 0/0.
   Run `/reload` or restart Pi to return optimizer runtime behavior to startup defaults.
 
-### `/cache-optimizer config footer-mode session|total|env`
+### `/cache-optimizer config footer-mode session|total`
 
 Persistently selects the footer display scope in
 `<Pi agent dir>/pi-cache-optimizer-config.json`.
 
 * `session` writes `{ "version": 1, "footerMode": "session" }`.
 * `total` writes `{ "version": 1, "footerMode": "total" }`.
-* `env` removes the config file/override and resolves from
-  `PI_CACHE_OPTIMIZER_FOOTER_MODE`, falling back to `total`.
 * Precedence is persistent config > environment > default `total`.
-* Writes use temp file + atomic rename. Clearing ignores missing-file errors.
+* Writes use temp file + atomic rename.
+* To restore environment/default resolution, manually delete
+  `pi-cache-optimizer-config.json` and run `/reload`; the command does not expose
+  a configuration-delete option.
 * Malformed/unreadable config never blocks hooks or deletes the file; the extension
   logs a warning and falls back to environment/default behavior.
 * Changing the mode republishes the current footer immediately and does not reset
@@ -1350,7 +1351,7 @@ session entries for that model; other provider/model totals are unaffected.
 When the Pi UI supports it (`ctx.ui.select` available), shows an interactive
 selection menu with options: Enable, Disable, Doctor, Stats, Compat, Fix, Reset,
 Cancel. Footer mode configuration is available through the explicit
-`config footer-mode` command so its three-value argument remains unambiguous.
+`config footer-mode session|total` command.
 Selecting a menu subcommand executes the corresponding logic. Cancel closes the menu.
 
 In non-interactive terminals (no `ui.select`), falls back to a short text help

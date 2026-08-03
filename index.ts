@@ -1168,18 +1168,9 @@ function readPersistedFooterMode(configPath: string = CONFIG_FILE_PATH): FooterS
 }
 
 async function writePersistedFooterMode(
-  mode: FooterStatsMode | undefined,
+  mode: FooterStatsMode,
   configPath: string = CONFIG_FILE_PATH,
 ): Promise<void> {
-  if (mode === undefined) {
-    try {
-      await unlink(configPath);
-    } catch (error) {
-      if (getErrorCode(error) !== "ENOENT") throw error;
-    }
-    return;
-  }
-
   await mkdir(dirname(configPath), { recursive: true });
   const payload: PersistedCacheOptimizerConfigV1 = { version: 1, footerMode: mode };
   const tempPath = `${configPath}.${process.pid}.${Date.now()}.tmp`;
@@ -7616,7 +7607,7 @@ export default function (pi: ExtensionAPI) {
   //             with low-hit diagnosis
   //   stats   — show active model stats bucket, recent trend, usage
   //   compat  — show compat suggestion with file path
-  //   config footer-mode session|total|env — persist/clear footer mode override
+  //   config footer-mode session|total — persist footer mode override
   //   fix     — auto-fix compat issues (writes models.json, requires UI)
   //   reset   — reset current provider/model footer stats bucket (local only)
   //   (no args) — interactive menu (with UI) or help summary
@@ -7671,17 +7662,17 @@ export default function (pi: ExtensionAPI) {
       } else if (subcommand === "config") {
         const configKey = commandParts[1];
         const requestedMode = commandParts[2];
-        if (configKey !== "footer-mode" || !requestedMode || !["session", "total", "env"].includes(requestedMode)) {
+        if (configKey !== "footer-mode" || !requestedMode || !["session", "total"].includes(requestedMode)) {
           const resolved = resolveFooterStatsMode(persistedFooterStatsMode);
           cmdCtx.ui.notify(
-            `Usage: /cache-optimizer config footer-mode session|total|env\n` +
+            `Usage: /cache-optimizer config footer-mode session|total\n` +
             `Current footer mode: ${resolved.mode} (${resolved.source})`,
             "info",
           );
           return;
         }
 
-        const nextMode = requestedMode === "env" ? undefined : requestedMode as FooterStatsMode;
+        const nextMode = requestedMode as FooterStatsMode;
         try {
           await writePersistedFooterMode(nextMode);
           persistedFooterStatsMode = nextMode;
@@ -7689,9 +7680,7 @@ export default function (pi: ExtensionAPI) {
           await publishStatus(cmdCtx as unknown as ExtensionContext, model);
           const resolved = resolveFooterStatsMode(persistedFooterStatsMode);
           cmdCtx.ui.notify(
-            requestedMode === "env"
-              ? `✅ Footer mode override cleared. Effective mode: ${resolved.mode} (${resolved.source}).`
-              : `✅ Footer mode set to ${resolved.mode}. Persistent config overrides ${FOOTER_MODE_ENV}.`,
+            `✅ Footer mode set to ${resolved.mode}. Persistent config overrides ${FOOTER_MODE_ENV}.`,
             "info",
           );
         } catch (error) {
@@ -8298,7 +8287,7 @@ export default function (pi: ExtensionAPI) {
         diagnosis.push("  doctor  — Show current model/provider/api/baseUrl/compat and low-hit diagnosis");
         diagnosis.push("  stats   — Show active model stats bucket and recent trend");
         diagnosis.push("  compat  — Show compat suggestion with edit location");
-        diagnosis.push("  config footer-mode session|total|env — Persist or clear the footer stats mode");
+        diagnosis.push("  config footer-mode session|total — Persist the footer stats mode");
         diagnosis.push("  fix     — Auto-fix compat issues (writes models.json, requires UI)");
         diagnosis.push("  reset   — Reset local provider/model stats for current model (does not affect upstream)");
         diagnosis.push("");

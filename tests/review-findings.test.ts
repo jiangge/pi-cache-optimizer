@@ -230,7 +230,7 @@ describe("footer stats modes", () => {
     assert.equal(totalEntry?.stats, otherTotal);
   });
 
-  test("persists and clears the command override atomically", async () => {
+  test("persists the command override atomically", async () => {
     const tempDir = await mkdtemp(join(tmpdir(), "pi-cache-footer-mode-test-"));
     const configPath = join(tempDir, "pi-cache-optimizer-config.json");
 
@@ -242,16 +242,12 @@ describe("footer stats modes", () => {
         { version: 1, footerMode: "session" },
       );
       assert.deepEqual(await readdir(tempDir), ["pi-cache-optimizer-config.json"]);
-
-      await internals.writePersistedFooterMode(undefined, configPath);
-      assert.equal(internals.readPersistedFooterMode(configPath), undefined);
-      assert.deepEqual(await readdir(tempDir), []);
     } finally {
       await rm(tempDir, { recursive: true, force: true });
     }
   });
 
-  test("config command overrides and restores the environment mode", async () => {
+  test("config command overrides the environment mode", async () => {
     const tempAgentDir = await mkdtemp(join(tmpdir(), "pi-cache-footer-command-test-"));
     const previousAgentDir = process.env.PI_CODING_AGENT_DIR;
     const previousFooterMode = process.env.PI_CACHE_OPTIMIZER_FOOTER_MODE;
@@ -293,11 +289,6 @@ describe("footer stats modes", () => {
       assert.equal(freshModule.__internals_for_tests.readPersistedFooterMode(configPath), "total");
       assert.equal(freshModule.__internals_for_tests.footerStatsMode(), "total");
       assert.match(notifications.at(-1)?.message ?? "", /set to total/);
-
-      await command.handler("config footer-mode env", commandContext);
-      assert.equal(freshModule.__internals_for_tests.readPersistedFooterMode(configPath), undefined);
-      assert.equal(freshModule.__internals_for_tests.footerStatsMode(), "session");
-      assert.match(notifications.at(-1)?.message ?? "", /Effective mode: session \(env\)/);
     } finally {
       if (previousAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
       else process.env.PI_CODING_AGENT_DIR = previousAgentDir;
