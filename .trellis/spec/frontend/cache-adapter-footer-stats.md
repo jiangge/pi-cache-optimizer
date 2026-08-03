@@ -322,9 +322,10 @@ same cache-bearing backend unless the proxy also honors session-affinity headers
 
 ## Persisted stats schema (v6: restart-persistent model totals + session buckets)
 
-Footer stats maintain both provider/model totals that persist across Pi
-process/terminal restarts and hashed session-scoped buckets. Display mode defaults
-to daily cumulative `total`, while users may opt into current-session display.
+Footer stats maintain provider/model totals that persist across Pi
+process/terminal restarts and hashed conversation-session buckets. Display mode
+defaults to daily cumulative `total`, while users may choose `session` or
+process-local `process` display.
 Adapter selection remains id/name-only; the active model's `provider` participates
 only after adapter selection, as part of the stats bucket key.
 
@@ -380,7 +381,8 @@ type PersistedCacheStatsV6 = {
   helper `modelKeyFromSessionKey` strips the hash prefix for user-facing output.
   In-memory `totalsByModel[provider/id]` is used for doctor/stats command counters
   and `total` footer mode; `statsByModel[sessionHash:provider/id]` is used for
-  `session` footer mode.
+  `session` footer mode; process-local `processByModel[provider/id]` is used for
+  `process` footer mode and is never persisted.
 * The persisted file MUST contain only counters and local dates. Never persist
   API keys, prompts, request payloads, response bodies, HTTP headers, model
   outputs, or provider config snapshots.
@@ -409,9 +411,10 @@ type PersistedCacheStatsV6 = {
   but share the same `totalsByModel[provider/id]` daily cumulative counter.
 * The same Pi session using the same provider/model shares one session bucket across
   turns and survives `/reload` (same session id, same hash).
-* A new Pi process/terminal has a new session hash. In default `total` mode, the
-  footer restores the same provider/model's `totalsByModel` counter. In `session`
-  mode, the new session starts at 0/0.
+* A new Pi process/terminal may resume the same conversation session. In default
+  `total` mode, the footer restores the provider/model total. In `session` mode,
+  the resumed conversation restores its session bucket; in `process` mode, the
+  new process starts at 0/0.
 * `/cache-optimizer reset` clears the visible provider/model total and in-memory
   matching session buckets for the active model, so stale old session buckets do
   not resurrect footer counters after restart.
@@ -480,10 +483,13 @@ and removing `_nosession`.
   state (recent samples, integrity notification) and republish footer.
 * `model_select` and `session_start` publish status for the selected/current model.
   The effective footer mode is resolved from persistent command configuration,
-  then `PI_CACHE_OPTIMIZER_FOOTER_MODE`, then default `total`. If the selected
-  scope has no entry yet, display an empty same-day footer (`0/0`, `0M/0M`).
-* `message_end` updates both `statsByModel[sessionHash:provider/id]` and
-  `totalsByModel[provider/id]` for the active model. It falls back to
+  then `PI_CACHE_OPTIMIZER_FOOTER_MODE`, then default `total`. Valid modes are
+  `total`, `session`, and `process`. If the selected scope has no entry yet,
+  display an empty same-day footer (`0/0`, `0M/0M`).
+* `message_end` updates the conversation-session bucket,
+  process-local `processByModel[provider/id]`, and cumulative
+  `totalsByModel[provider/id]` for the active model. The process bucket is memory-only
+  and is discarded on extension/process startup. It falls back to
   `legacyFamily[adapter.id]` only when no model identity is available.
   Assistant message metadata (`provider`, `model`/`responseModel`, `api`) is
   authoritative for final stats identity — this keeps virtual routing providers
@@ -509,9 +515,10 @@ and removing `_nosession`.
   providers are excluded — their message-local identity always wins.
 * Footer text remains provider-family labelled. In `total` mode the counters shown
   are local provider/model totals for the current day. In `session` mode the
-  counters come only from the current hashed session bucket. Direct models,
-  exact router restore, and legacy best-effort router fallback MUST use the same
-  effective mode and MUST NOT cross-fallback between session and total buckets.
+  counters come only from the current hashed conversation-session bucket. In
+  `process` mode they come only from current process memory and are never restored
+  from disk. Direct models, exact router restore, and legacy best-effort router
+  fallback MUST use the same effective mode and MUST NOT cross-fallback.
 * Local day rollover resets stale entries in session-stats, `totalsByModel`, and
   `legacyFamily`.
 * Debounced persistence is allowed for ordinary `message_end` writes; reload, reset,
@@ -541,9 +548,9 @@ and removing `_nosession`.
 | Old stats path exists, new stats path missing | Read old v1/v2/v3 data, write the new path atomically in v6 shape, best-effort `unlink` old. v2 `statsByProvider` data moves to `legacyFamily`; v3 unscoped model keys are assigned to the current session and totals are derived. |
 | New v2 stats file exists | Load v2 `statsByProvider` into `legacyFamily`; start with empty session stats/totals; next write persists v6. |
 | New v3 stats file has entries for `otokapi/gpt-5.5` and `cafecode/gpt-5.5` | Migrate both unscoped keys into the current session hash and derive separate provider/model totals, even though both use the OpenAI-family footer label. |
-| Footer mode config/env missing or invalid | Use `total`; invalid values never silently select session mode. |
+| Footer mode config/env missing or invalid | Use `total`; valid values are `total`, `session`, and `process`. |
 | Persistent footer mode config conflicts with `PI_CACHE_OPTIMIZER_FOOTER_MODE` | Persistent command config wins. To restore environment/default resolution, manually delete `pi-cache-optimizer-config.json` and run `/reload`. |
-| Selected matching model has no entry in the effective footer scope | Display empty same-day stats (`0/0`, `0M/0M`) instead of legacy family or opposite-scope counters. |
+| Selected matching model has no entry in the effective footer scope | Display empty same-day stats (`0/0`, `0M/0M`) instead of legacy family or opposite-scope counters; `process` has no persisted restore source. |
 | `/reload` session_start reason | Re-read persisted v6 data for the same current session hash plus restart-persistent totals, clear only transient state (recent samples, integrity notifications), and re-publish footer from the effective scope. |
 | Active model is `router/auto`, persisted exact last routed model exists, and another bucket has more requests | `/reload` restores the footer for the exact persisted last routed model using the effective scope, not the largest bucket or the opposite scope. |
 | Active model is `router/auto`, exact last routed model exists but its provider/model total was reset/removed | `/reload` still restores that exact model's footer label with empty same-day stats (`0/0`, `0M/0M`). |
@@ -632,8 +639,8 @@ When modifying cache stats, migration, rollover, or footer behavior, add/update 
 task-level verification script that asserts:
 
 * Footer mode parsing defaults to `total`, accepts exact case-insensitive
-  `session`/`total`, treats invalid env/config values as absent, and gives valid
-  persistent command config precedence over the environment.
+  `total`/`session`/`process`, treats invalid env/config values as absent, and
+  gives valid persistent command config precedence over the environment.
 * Direct display, exact router restore, and legacy router fallback select only
   the effective scope, including fresh-session 0/0 and same-session reload data.
 * v6 parse/round-trip preserves valid `sessions[sessionHash][provider/model]`,
@@ -1174,13 +1181,14 @@ These are current-process runtime switches, not persistent config writes.
   persist the local stats reset so the comparison footer starts from 0/0.
   Run `/reload` or restart Pi to return optimizer runtime behavior to startup defaults.
 
-### `/cache-optimizer config footer-mode session|total`
+### `/cache-optimizer config footer-mode total|session|process`
 
 Persistently selects the footer display scope in
 `<Pi agent dir>/pi-cache-optimizer-config.json`.
 
 * `session` writes `{ "version": 1, "footerMode": "session" }`.
 * `total` writes `{ "version": 1, "footerMode": "total" }`.
+* `process` writes `{ "version": 1, "footerMode": "process" }`.
 * Precedence is persistent config > environment > default `total`.
 * Writes use temp file + atomic rename.
 * To restore environment/default resolution, manually delete
@@ -1350,9 +1358,9 @@ session entries for that model; other provider/model totals are unaffected.
 
 When the Pi UI supports it (`ctx.ui.select` available), shows an interactive
 selection menu with options: Enable, Disable, Doctor, Stats, Compat, Fix, Reset,
-Footer mode is also available as a `Footer mode` item in this menu, with `total`
-and `session` choices. The explicit `config footer-mode session|total` command
-remains available for direct use. Cancel closes the menu.
+Footer mode is also available as a `Footer mode` item in this menu, with `total`,
+`session`, and `process` choices. The explicit
+`config footer-mode total|session|process` command remains available for direct use.
 Selecting a menu subcommand executes the corresponding logic. Cancel closes the menu.
 
 In non-interactive terminals (no `ui.select`), falls back to a short text help

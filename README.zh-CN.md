@@ -68,10 +68,10 @@ Pi 0.79.7 及之后，`pi update` 默认只更新 Pi 本体。若要更新已安
 | `/cache-optimizer compat` | 对当前模型显示可复制的 compat 建议（如适用）。 |
 | `/cache-optimizer stats` | 显示当前模型今天的本地 provider/model 统计和近期趋势。 |
 | `/cache-optimizer reset` | 重置当前 provider/model 的本地 footer 统计；不会修改上游 provider 缓存。 |
-| `/cache-optimizer config footer-mode session\|total` | 持久设置 footer 统计模式；持久命令配置优先于环境变量。 |
+| `/cache-optimizer config footer-mode total\|session\|process` | 持久设置 footer 统计模式；持久命令配置优先于环境变量。 |
 | `/cache-optimizer fix` | 为当前模型自动修复安全的 compat 问题（adaptive thinking、DeepSeek reasoning、OpenAI proxy session affinity）。展示预览 + 风险提示，需要用户确认。**仅在用户明确批准后才修改 `models.json`。** |
 
-交互式 `/cache-optimizer` 菜单包含 `Footer mode`，可以选择 `total` 或 `session`。`enable` / `disable` 是当前进程内开关。若要持久关闭某些能力，请使用下面的环境变量。
+交互式 `/cache-optimizer` 菜单包含 `Footer mode`，可以选择 `total`、`session` 或 `process`。`enable` / `disable` 是当前进程内开关。若要持久关闭某些能力，请使用下面的环境变量。
 
 ## 持久 Opt-out
 
@@ -84,21 +84,23 @@ Pi 0.79.7 及之后，`pi update` 默认只更新 Pi 本体。若要更新已安
 
 ## Footer 缓存统计模式
 
-**v2.7.0+** 同时支持每日累计与当前 session 两种 footer 统计范围。**v2.7.1** 在交互式 `/cache-optimizer` 菜单中加入了 Footer mode 选项。Footer 默认使用 `total`，显示当前本地日期内、跨 Pi session 和进程重启延续的 provider/model 统计。可以通过命令或环境变量切换显示范围：
+**v2.7.0+** 支持每日累计和 conversation session 两种 footer 统计范围。**v2.7.1** 在交互式 `/cache-optimizer` 菜单中加入了 Footer mode 选项。**v2.8.0+** 另外支持进程级统计。Footer 默认使用 `total`，显示当前本地日期内、跨 Pi session 和进程重启延续的 provider/model 统计。可以通过命令或环境变量切换显示范围：
 
 | 值 | 作用 |
 |---|---|
 | `total`（默认） | 显示今天跨 session 持久延续的 provider/model 累计统计；本地日期切换时重置。 |
-| `session` | 仅显示当前 hashed Pi session 的统计。新 session 从 `0/0` 开始；同一 session 内 `/reload` 会恢复该 session 桶。 |
+| `session` | 仅显示当前 hashed Pi conversation session 的统计。新 conversation session 从 `0/0` 开始；重启 Pi 后如果恢复同一 session，会恢复该 session 桶。 |
+| `process` | 仅显示当前 Pi 进程采集的统计。Pi 重启或 extension reload 后从 `0/0` 开始，且不会从磁盘恢复。 |
 
 持久命令配置优先于环境变量：
 
 ```text
-/cache-optimizer config footer-mode session
 /cache-optimizer config footer-mode total
+/cache-optimizer config footer-mode session
+/cache-optimizer config footer-mode process
 ```
 
-显式设置保存在 Pi agent 目录下的 `pi-cache-optimizer-config.json`。没有命令覆盖时，读取 `PI_CACHE_OPTIMIZER_FOOTER_MODE=session|total`；值不区分大小写，缺失或非法值均回退到 `total`。如需让已有安装重新由环境变量控制，请手动删除 `pi-cache-optimizer-config.json`，然后运行 `/reload`。
+显式设置保存在 Pi agent 目录下的 `pi-cache-optimizer-config.json`。没有命令覆盖时，读取 `PI_CACHE_OPTIMIZER_FOOTER_MODE=total|session|process`；值不区分大小写，缺失或非法值均回退到 `total`。如需让已有安装重新由环境变量控制，请手动删除 `pi-cache-optimizer-config.json`，然后运行 `/reload`。
 
 ## OpenAI-compatible 代理配置
 
@@ -271,7 +273,7 @@ Provider 级最小 override：
 
 ## Footer 统计
 
-统计是只读本地计数，保存在 Pi agent 目录（默认 `~/.pi/agent/pi-cache-optimizer-stats.json`；自定义 agent 目录使用 `PI_CODING_AGENT_DIR`）。扩展同时维护当天的 provider/model totals 和 hashed session buckets。Footer 默认显示每日 totals；选择 `session` 模式后显示当前 session 桶。统计文件只包含日期和数字计数，不包含 API key、prompt、payload、headers、响应或模型输出。Footer 模式配置单独保存在 `pi-cache-optimizer-config.json`。
+统计是只读本地计数，保存在 Pi agent 目录（默认 `~/.pi/agent/pi-cache-optimizer-stats.json`；自定义 agent 目录使用 `PI_CODING_AGENT_DIR`）。扩展同时维护当天的 provider/model totals 和 hashed session buckets。Footer 默认显示每日 totals；选择 `session` 模式后显示当前 conversation session 桶，选择 `process` 模式后显示当前进程内存桶。统计文件只包含日期和数字计数，不包含 API key、prompt、payload、headers、响应或模型输出。Footer 模式配置单独保存在 `pi-cache-optimizer-config.json`。Process 模式统计只存在内存中，不会写入该文件。
 
 Pi 0.79+ 已内置 footer `CH` 标记，用于显示最近一次 prompt cache hit rate。本扩展在此基础上补充持久化的 provider/model 计数，以及代理 compat 诊断。
 

@@ -103,7 +103,7 @@ const OPENAI_PROMPT_CACHE_KEY_MAX_LENGTH = 64;
 const NO_SKILL_COMPRESSION_ENV = "PI_CACHE_OPTIMIZER_NO_SKILL_COMPRESSION";
 const NO_PROMPT_REWRITE_ENV = "PI_CACHE_OPTIMIZER_NO_PROMPT_REWRITE";
 const FOOTER_MODE_ENV = "PI_CACHE_OPTIMIZER_FOOTER_MODE";
-type FooterStatsMode = "session" | "total";
+type FooterStatsMode = "session" | "total" | "process";
 type FooterStatsModeSource = "config" | "env" | "default";
 type PersistedCacheOptimizerConfigV1 = {
   version: 1;
@@ -1143,7 +1143,7 @@ function isEnabledEnv(value: string | undefined): boolean {
 function parseFooterStatsMode(value: unknown): FooterStatsMode | undefined {
   if (typeof value !== "string") return undefined;
   const normalized = value.trim().toLowerCase();
-  return normalized === "session" || normalized === "total" ? normalized : undefined;
+  return normalized === "session" || normalized === "total" || normalized === "process" ? normalized : undefined;
 }
 
 function parsePersistedCacheOptimizerConfig(value: unknown): PersistedCacheOptimizerConfigV1 | undefined {
@@ -3897,8 +3897,10 @@ function selectFooterStatsForModel(
   statsByModel: Record<string, CacheStats>,
   totalsByModel: Record<string, CacheStats>,
   model: { provider: string; id: string },
+  processByModel: Record<string, CacheStats> = {},
 ): CacheStats | undefined {
   if (mode === "total") return totalsByModel[modelKey(model)];
+  if (mode === "process") return processByModel[modelKey(model)];
   if (!sessionHash) return undefined;
   return statsByModel[makeSessionModelKey(sessionHash, model.provider, model.id)];
 }
@@ -3909,6 +3911,7 @@ function buildExactRouterStatusEntry(
   lastRoutedModel: PersistedRoutedModelRef | undefined,
   totalsByModel: Record<string, CacheStats> = {},
   mode: FooterStatsMode = "total",
+  processByModel: Record<string, CacheStats> = {},
 ): { model: PiModel; adapter: CacheProviderAdapter; stats: CacheStats } | undefined {
   if (!sessionHash || !lastRoutedModel) return undefined;
 
@@ -3919,7 +3922,7 @@ function buildExactRouterStatusEntry(
   return {
     model,
     adapter,
-    stats: selectFooterStatsForModel(mode, sessionHash, statsByModel, totalsByModel, model) ?? emptyCacheStats(),
+    stats: selectFooterStatsForModel(mode, sessionHash, statsByModel, totalsByModel, model, processByModel) ?? emptyCacheStats(),
   };
 }
 
@@ -3928,9 +3931,12 @@ function findBestRouterModelStats(
   sessionHash: string | undefined,
   statsByModel: Record<string, CacheStats>,
   totalsByModel: Record<string, CacheStats>,
+  processByModel: Record<string, CacheStats> = {},
 ): { model: PiModel; adapter: CacheProviderAdapter; stats: CacheStats } | undefined {
   const entries = mode === "total"
     ? Object.entries(totalsByModel)
+    : mode === "process"
+      ? Object.entries(processByModel)
     : sessionHash
       ? Object.entries(statsByModel)
         .filter(([key]) => key.startsWith(`${sessionHash}:`))
@@ -6752,6 +6758,7 @@ export default function (pi: ExtensionAPI) {
   const openAISdkHeader403Models = new Set<string>();
   const warnedOpenAISdkHeader403Models = new Set<string>();
   let cacheStatsByModel: Record<string, CacheStats> = {};
+  let cacheStatsProcessByModel: Record<string, CacheStats> = {};
   let cacheStatsTotalsByModel: Record<string, CacheStats> = {};
   let cacheStatsLegacyFamily: Partial<Record<CacheProviderId, CacheStats>> = emptyAllCacheStats();
   let lastStatusText: string | undefined;
@@ -6920,6 +6927,17 @@ export default function (pi: ExtensionAPI) {
     return created;
   }
 
+  /** Get or create the current-process provider/model stats entry. */
+  function getOrCreateProcessStatsForModel(model: PiModel): CacheStats {
+    const key = modelKey(model);
+    const existing = cacheStatsProcessByModel[key];
+    if (existing) return existing;
+
+    const created = emptyCacheStats();
+    cacheStatsProcessByModel[key] = created;
+    return created;
+  }
+
   /** Get or create the cumulative provider/model stats entry shown in the footer. */
   function getOrCreateTotalStatsForModel(model: PiModel): CacheStats {
     const key = modelKey(model);
@@ -6937,6 +6955,7 @@ export default function (pi: ExtensionAPI) {
       if (modelKeyFromSessionScoped(key) === displayKey) delete cacheStatsByModel[key];
     }
     delete cacheStatsTotalsByModel[displayKey];
+    delete cacheStatsProcessByModel[displayKey];
     pendingDeletedTotalModelKeys.add(displayKey);
     for (const key of Array.from(recentSamplesByModelKey.keys())) {
       if (modelKeyFromSessionScoped(key) === displayKey) recentSamplesByModelKey.delete(key);
@@ -6949,6 +6968,7 @@ export default function (pi: ExtensionAPI) {
     for (const key of Object.keys(cacheStatsByModel)) {
       if (key.startsWith(prefix)) delete cacheStatsByModel[key];
     }
+    cacheStatsProcessByModel = {};
     cacheStatsTotalsByModel = {};
     replacePersistedTotalsOnNextWrite = true;
     for (const key of Array.from(recentSamplesByModelKey.keys())) {
@@ -7051,6 +7071,14 @@ export default function (pi: ExtensionAPI) {
     }
 
     // Roll over cumulative provider/model totals.
+    for (const key of Object.keys(cacheStatsProcessByModel)) {
+      const stats = cacheStatsProcessByModel[key];
+      if (stats && stats.day !== day) {
+        cacheStatsProcessByModel[key] = emptyCacheStats(day);
+        changed = true;
+      }
+    }
+
     for (const key of Object.keys(cacheStatsTotalsByModel)) {
       const stats = cacheStatsTotalsByModel[key];
       if (stats && stats.day !== day) {
@@ -7091,6 +7119,7 @@ export default function (pi: ExtensionAPI) {
         persisted,
         currentSessionHashSet ? currentSessionHash : undefined,
       );
+      cacheStatsProcessByModel = {};
       cacheStatsTotalsByModel = persisted?.totalsByModel ?? {};
       cacheStatsLegacyFamily = persisted?.legacyFamily ?? emptyAllCacheStats();
       lastActualRoutedModel = currentSessionHashSet
@@ -7109,6 +7138,7 @@ export default function (pi: ExtensionAPI) {
       persisted,
       currentSessionHashSet ? currentSessionHash : undefined,
     );
+    cacheStatsProcessByModel = {};
     cacheStatsTotalsByModel = persisted?.totalsByModel ?? {};
     cacheStatsLegacyFamily = persisted?.legacyFamily ?? emptyAllCacheStats();
     lastActualRoutedModel = currentSessionHashSet
@@ -7143,11 +7173,13 @@ export default function (pi: ExtensionAPI) {
         lastActualRoutedModel,
         cacheStatsTotalsByModel,
         mode,
+        cacheStatsProcessByModel,
       ) ?? findBestRouterModelStats(
         mode,
         sessionHash,
         cacheStatsByModel,
         cacheStatsTotalsByModel,
+        cacheStatsProcessByModel,
       );
       if (realEntry) {
         const statsText = formatCacheStats(realEntry.adapter, realEntry.stats);
@@ -7161,7 +7193,7 @@ export default function (pi: ExtensionAPI) {
       // Footer mode defaults to daily provider/model totals. Users may select
       // current-session counters through persistent command config or the env var.
       const stats = displayModel
-        ? selectFooterStatsForModel(mode, sessionHash, cacheStatsByModel, cacheStatsTotalsByModel, displayModel)
+        ? selectFooterStatsForModel(mode, sessionHash, cacheStatsByModel, cacheStatsTotalsByModel, displayModel, cacheStatsProcessByModel)
         : undefined;
       const statsText = formatCacheStats(adapter, stats ?? emptyCacheStats());
       statusText = runtimeOptimizerEnabled ? statsText : `Cache Optimizer disabled · ${statsText}`;
@@ -7584,11 +7616,12 @@ export default function (pi: ExtensionAPI) {
 
     await rollOverStatsIfNeeded(ctx);
 
-    // Update stats scoped to current session + actual routed model.
-    // Falls back to legacy family when no model is available.
+    // Update session, process-local, and cumulative buckets for the actual
+    // routed model. The process bucket is intentionally never persisted.
     if (statsModel) {
       const sk = sessionModelKey(statsModel);
       addUsageToCacheStats(getOrCreateStatsByModelKey(sk), usage);
+      addUsageToCacheStats(getOrCreateProcessStatsForModel(statsModel), usage);
       addUsageToCacheStats(getOrCreateTotalStatsForModel(statsModel), usage);
     } else {
       addUsageToCacheStats(getStatsForModel(undefined, adapter), usage);
@@ -7607,7 +7640,7 @@ export default function (pi: ExtensionAPI) {
   //             with low-hit diagnosis
   //   stats   — show active model stats bucket, recent trend, usage
   //   compat  — show compat suggestion with file path
-  //   config footer-mode session|total — persist footer mode override
+  //   config footer-mode total|session|process — persist footer mode override
   //   fix     — auto-fix compat issues (writes models.json, requires UI)
   //   reset   — reset current provider/model footer stats bucket (local only)
   //   (no args) — interactive menu (with UI) or help summary
@@ -7662,10 +7695,10 @@ export default function (pi: ExtensionAPI) {
       } else if (subcommand === "config") {
         const configKey = commandParts[1];
         const requestedMode = commandParts[2];
-        if (configKey !== "footer-mode" || !requestedMode || !["session", "total"].includes(requestedMode)) {
+        if (configKey !== "footer-mode" || !requestedMode || !["session", "total", "process"].includes(requestedMode)) {
           const resolved = resolveFooterStatsMode(persistedFooterStatsMode);
           cmdCtx.ui.notify(
-            `Usage: /cache-optimizer config footer-mode session|total\n` +
+            `Usage: /cache-optimizer config footer-mode total|session|process\n` +
             `Current footer mode: ${resolved.mode} (${resolved.source})`,
             "info",
           );
@@ -8074,7 +8107,7 @@ export default function (pi: ExtensionAPI) {
             "Stats — Show cache stats and trend",
             "Compat — Show compat suggestion",
             "Fix — Auto-fix compat issues (writes models.json)",
-            "Footer mode — Choose total or current-session footer stats",
+            "Footer mode — Choose total, session, or process stats",
             "Reset — Reset local provider/model stats",
             "Cancel",
           ];
@@ -8257,13 +8290,15 @@ export default function (pi: ExtensionAPI) {
               );
             }
           } else if (choice === menuOptions[6]) {
-            const modeOptions = ["total — Daily cumulative totals (default)", "session — Current Pi session only", "Cancel"];
+            const modeOptions = ["total — Daily cumulative totals (default)", "session — Current Pi conversation session", "process — Current Pi process only", "Cancel"];
             const modeChoice = await cmdCtx.ui.select("Footer cache stats mode", modeOptions);
             const nextMode = modeChoice === modeOptions[0]
               ? "total"
               : modeChoice === modeOptions[1]
                 ? "session"
-                : undefined;
+                : modeChoice === modeOptions[2]
+                  ? "process"
+                  : undefined;
             if (nextMode) {
               try {
                 await writePersistedFooterMode(nextMode);
@@ -8313,7 +8348,7 @@ export default function (pi: ExtensionAPI) {
         diagnosis.push("  doctor  — Show current model/provider/api/baseUrl/compat and low-hit diagnosis");
         diagnosis.push("  stats   — Show active model stats bucket and recent trend");
         diagnosis.push("  compat  — Show compat suggestion with edit location");
-        diagnosis.push("  config footer-mode session|total — Persist the footer stats mode");
+        diagnosis.push("  config footer-mode total|session|process — Persist the footer stats mode");
         diagnosis.push("  fix     — Auto-fix compat issues (writes models.json, requires UI)");
         diagnosis.push("  reset   — Reset local provider/model stats for current model (does not affect upstream)");
         diagnosis.push("");

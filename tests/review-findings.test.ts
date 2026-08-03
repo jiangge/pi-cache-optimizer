@@ -98,7 +98,7 @@ describe("footer stats modes", () => {
   };
   const totalsByModel = { [`${model.provider}/${model.id}`]: totalStats };
 
-  test("defaults to total and accepts only session or total environment values", () => {
+  test("defaults to total and accepts session, total, or process environment values", () => {
     assert.deepEqual(internals.resolveFooterStatsMode(undefined, {}), {
       mode: "total",
       source: "default",
@@ -110,6 +110,10 @@ describe("footer stats modes", () => {
     assert.deepEqual(
       internals.resolveFooterStatsMode(undefined, { PI_CACHE_OPTIMIZER_FOOTER_MODE: "TOTAL" }),
       { mode: "total", source: "env" },
+    );
+    assert.deepEqual(
+      internals.resolveFooterStatsMode(undefined, { PI_CACHE_OPTIMIZER_FOOTER_MODE: "process" }),
+      { mode: "process", source: "env" },
     );
     assert.deepEqual(
       internals.resolveFooterStatsMode(undefined, { PI_CACHE_OPTIMIZER_FOOTER_MODE: "daily" }),
@@ -133,16 +137,26 @@ describe("footer stats modes", () => {
   });
 
   test("selects direct model stats from the requested scope", () => {
+    const processStats = { ...sessionStats, totalRequests: 3, hitRequests: 2 };
+    const processByModel = { [`${model.provider}/${model.id}`]: processStats };
     assert.equal(
-      internals.selectFooterStatsForModel("session", sessionHash, statsByModel, totalsByModel, model),
+      internals.selectFooterStatsForModel("session", sessionHash, statsByModel, totalsByModel, model, processByModel),
       sessionStats,
     );
     assert.equal(
-      internals.selectFooterStatsForModel("total", sessionHash, statsByModel, totalsByModel, model),
+      internals.selectFooterStatsForModel("total", sessionHash, statsByModel, totalsByModel, model, processByModel),
       totalStats,
     );
     assert.equal(
-      internals.selectFooterStatsForModel("session", "fresh-session", statsByModel, totalsByModel, model),
+      internals.selectFooterStatsForModel("process", sessionHash, statsByModel, totalsByModel, model, processByModel),
+      processStats,
+    );
+    assert.equal(
+      internals.selectFooterStatsForModel("session", "fresh-session", statsByModel, totalsByModel, model, processByModel),
+      undefined,
+    );
+    assert.equal(
+      internals.selectFooterStatsForModel("process", "fresh-session", statsByModel, totalsByModel, model),
       undefined,
     );
   });
@@ -155,6 +169,14 @@ describe("footer stats modes", () => {
       routed,
       totalsByModel,
       "session",
+    );
+    const processEntry = internals.buildExactRouterStatusEntry(
+      sessionHash,
+      statsByModel,
+      routed,
+      totalsByModel,
+      "process",
+      { [`${model.provider}/${model.id}`]: sessionStats },
     );
     const totalEntry = internals.buildExactRouterStatusEntry(
       sessionHash,
@@ -173,6 +195,7 @@ describe("footer stats modes", () => {
     );
 
     assert.equal(sessionEntry?.stats, sessionStats);
+    assert.equal(processEntry?.stats, sessionStats);
     assert.equal(totalEntry?.stats, totalStats);
     assert.equal(freshSessionEntry?.stats.totalRequests, 0);
   });
@@ -336,7 +359,7 @@ describe("footer stats modes", () => {
           select: async (title: string, options: string[]) => {
             selectCalls.push(title);
             if (title === "Cache Optimizer") return options.find((option) => option.startsWith("Footer mode"));
-            return options.find((option) => option.startsWith("session"));
+            return options.find((option) => option.startsWith("process"));
           },
         },
       };
@@ -345,9 +368,9 @@ describe("footer stats modes", () => {
       await command.handler("", commandContext);
 
       assert.deepEqual(selectCalls, ["Cache Optimizer", "Footer cache stats mode"]);
-      assert.equal(freshModule.__internals_for_tests.readPersistedFooterMode(configPath), "session");
-      assert.equal(freshModule.__internals_for_tests.footerStatsMode(), "session");
-      assert.match(notifications.at(-1) ?? "", /set to session/);
+      assert.equal(freshModule.__internals_for_tests.readPersistedFooterMode(configPath), "process");
+      assert.equal(freshModule.__internals_for_tests.footerStatsMode(), "process");
+      assert.match(notifications.at(-1) ?? "", /set to process/);
     } finally {
       if (previousAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
       else process.env.PI_CODING_AGENT_DIR = previousAgentDir;
