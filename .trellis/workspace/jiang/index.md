@@ -8,7 +8,7 @@
 
 <!-- @@@auto:current-status -->
 - **Active File**: `journal-1.md`
-- **Total Sessions**: 8
+- **Total Sessions**: 9
 - **Last Active**: 2026-08-03
 <!-- @@@/auto:current-status -->
 
@@ -19,7 +19,7 @@
 <!-- @@@auto:active-documents -->
 | File | Lines | Status |
 |------|-------|--------|
-| `journal-1.md` | ~584 | Active |
+| `journal-1.md` | ~617 | Active |
 <!-- @@@/auto:active-documents -->
 
 ---
@@ -29,6 +29,7 @@
 <!-- @@@auto:session-history -->
 | # | Date | Title | Commits | Branch |
 |---|------|-------|---------|--------|
+| 9 | 2026-08-03 | Fix footer mode interactive menu | `f766ea8` | `master` |
 | 8 | 2026-08-03 | Publish pi-cache-optimizer v2.7.0 | `8722116` | `master` |
 | 7 | 2026-08-03 | Remove footer mode env command | `9fbe540` | `master` |
 | 6 | 2026-08-03 | Merge PR 5 and add configurable footer scopes | `b418154` | `master` |

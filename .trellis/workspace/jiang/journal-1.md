@@ -582,3 +582,36 @@ Bumped package and lockfile to 2.7.0, documented the configurable footer scopes 
 ### Next Steps
 
 - None - task complete
+
+
+## Session 9: Fix footer mode interactive menu
+
+**Date**: 2026-08-03
+**Task**: Fix footer mode interactive menu
+**Branch**: `master`
+
+### Summary
+
+Diagnosed that the direct config subcommand worked but the /cache-optimizer interactive menu omitted it. Added a Footer mode menu item with total/session choices, reused persistent config and immediate footer republish behavior, added a real menu regression test, synchronized bilingual docs/spec, passed 24 tests, and published pi-cache-optimizer@2.7.1.
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `f766ea8` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
