@@ -16,12 +16,12 @@ Release the merged configurable footer-stats feature as `pi-cache-optimizer@2.7.
 
 ## Acceptance Criteria
 
-* [ ] `package.json` and `package-lock.json` consistently report `2.7.0`.
-* [ ] README.md and README.zh-CN.md describe the feature as available in v2.7.0.
-* [ ] `npm run check`, Trellis validation, diff checks, and registry preflight pass.
-* [ ] Release commit and task records are pushed to `origin/master`.
-* [ ] npm reports `pi-cache-optimizer@2.7.0` and `latest=2.7.0`.
-* [ ] No npm token is present in tracked files or retained temporary config.
+* [x] `package.json` and `package-lock.json` consistently report `2.7.0`.
+* [x] README.md and README.zh-CN.md describe the feature as available in v2.7.0.
+* [x] `npm run check`, Trellis validation, diff checks, and registry preflight pass.
+* [x] Release commit and task records are pushed to `origin/master`.
+* [x] npm reports `pi-cache-optimizer@2.7.0` and `latest=2.7.0`.
+* [x] No npm token is present in tracked files or retained temporary config.
 
 ## Out of Scope
 
