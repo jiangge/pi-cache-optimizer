@@ -47,6 +47,12 @@ declare module "@earendil-works/pi-coding-agent" {
     hasUI?: boolean;
   };
 
+  export type CommandCompletionItem = {
+    value: string;
+    label: string;
+    description?: string;
+  };
+
   export type CommandContext = ExtensionContext & { hasUI?: boolean };
 
   export type ExtensionAPI = {
@@ -57,6 +63,10 @@ declare module "@earendil-works/pi-coding-agent" {
     on(event: "before_provider_request", handler: (event: { payload: unknown }, ctx: ExtensionContext) => unknown): void;
     on(event: "after_provider_response", handler: (event: { status: number; headers?: Record<string, string> }, ctx: ExtensionContext) => unknown): void;
     on(event: "message_end", handler: (event: { message: unknown }, ctx: ExtensionContext) => unknown): void;
-    registerCommand(name: string, command: { description?: string; handler: (args: string, ctx: CommandContext) => unknown }): void;
+    registerCommand(name: string, command: {
+      description?: string;
+      getArgumentCompletions?: (argumentPrefix: string) => CommandCompletionItem[] | null | Promise<CommandCompletionItem[] | null>;
+      handler: (args: string, ctx: CommandContext) => unknown;
+    }): void;
   };
 }

@@ -70,6 +70,111 @@ describe("stable prompt reordering", () => {
   });
 });
 
+describe("footer status separation and command completion", () => {
+  test("prefixes every extension-owned footer status exactly once", () => {
+    assert.equal(
+      internals.prefixFooterStatus("OpenAI cache 0/0 · 0M/0M tok"),
+      "· OpenAI cache 0/0 · 0M/0M tok",
+    );
+    assert.equal(
+      internals.prefixFooterStatus("Cache Optimizer disabled · OpenAI cache 0/0 · 0M/0M tok ⚠️ compat"),
+      "· Cache Optimizer disabled · OpenAI cache 0/0 · 0M/0M tok ⚠️ compat",
+    );
+    assert.equal(internals.prefixFooterStatus("· OpenAI cache 0/0 · 0M/0M tok"), "· OpenAI cache 0/0 · 0M/0M tok");
+    assert.equal(internals.prefixFooterStatus(undefined), undefined);
+  });
+
+  test("publishes the ownership prefix through setStatus", async () => {
+    const tempAgentDir = await mkdtemp(join(tmpdir(), "pi-cache-footer-status-test-"));
+    const previousAgentDir = process.env.PI_CODING_AGENT_DIR;
+    const previousRetention = process.env.PI_CACHE_RETENTION;
+
+    try {
+      process.env.PI_CODING_AGENT_DIR = tempAgentDir;
+      const jiti = createJiti(join(process.cwd(), "tests", "review-findings.test.ts"), {
+        interopDefault: false,
+        moduleCache: false,
+      });
+      const freshModule = await jiti.import<typeof import("../index.ts")>(
+        join(process.cwd(), "index.ts"),
+      );
+      const handlers = new Map<string, (event: any, context: any) => unknown>();
+      freshModule.default({
+        on(name: string, handler: (event: any, context: any) => unknown) {
+          handlers.set(name, handler);
+        },
+        registerCommand() {},
+      } as any);
+
+      const statuses: Array<{ key: string; value: string | undefined }> = [];
+      const model = {
+        provider: "proxy",
+        id: "gpt-5.5",
+        name: "GPT-5.5",
+        api: "openai-completions",
+        baseUrl: "https://api.openai.com/v1",
+        compat: {},
+        reasoning: false,
+        input: ["text"],
+        cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+        contextWindow: 128_000,
+        maxTokens: 8192,
+      };
+      const context = {
+        model,
+        sessionManager: { getSessionId: () => "footer-status-session" },
+        modelRegistry: { find: () => undefined, getAvailable: () => [], getAll: () => [] },
+        ui: {
+          notify() {},
+          setStatus(key: string, value: string | undefined) {
+            statuses.push({ key, value });
+          },
+        },
+      };
+
+      const sessionStart = handlers.get("session_start");
+      assert.ok(sessionStart);
+      await sessionStart({ reason: "startup" }, context);
+
+      assert.equal(statuses.at(-1)?.key, "pi-cache-stats");
+      assert.match(statuses.at(-1)?.value ?? "", /^· OpenAI cache /);
+    } finally {
+      if (previousAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
+      else process.env.PI_CODING_AGENT_DIR = previousAgentDir;
+      if (previousRetention === undefined) delete process.env.PI_CACHE_RETENTION;
+      else process.env.PI_CACHE_RETENTION = previousRetention;
+      await rm(tempAgentDir, { recursive: true, force: true });
+    }
+  });
+
+  test("completes top-level and nested cache-optimizer arguments by prefix", () => {
+    assert.deepEqual(
+      internals.getCacheOptimizerArgumentCompletions(""),
+      ["enable", "disable", "doctor", "stats", "config", "compat", "reset", "fix"].map((value) => ({ value, label: value })),
+    );
+    assert.deepEqual(
+      internals.getCacheOptimizerArgumentCompletions(" c "),
+      [{ value: "config", label: "config" }],
+    );
+    assert.deepEqual(
+      internals.getCacheOptimizerArgumentCompletions("config "),
+      [{ value: "config footer-mode", label: "footer-mode" }],
+    );
+    assert.deepEqual(
+      internals.getCacheOptimizerArgumentCompletions("config footer-mode "),
+      ["total", "session", "process"].map((value) => ({ value: `config footer-mode ${value}`, label: value })),
+    );
+    assert.deepEqual(
+      internals.getCacheOptimizerArgumentCompletions("config footer-mode s"),
+      [{ value: "config footer-mode session", label: "session" }],
+    );
+    assert.equal(internals.getCacheOptimizerArgumentCompletions("unknown "), null);
+    assert.equal(internals.getCacheOptimizerArgumentCompletions("config unknown "), null);
+    assert.equal(internals.getCacheOptimizerArgumentCompletions("config footer-mode session extra"), null);
+    assert.equal(internals.getCacheOptimizerArgumentCompletions(undefined as unknown as string), null);
+  });
+});
+
 describe("footer stats modes", () => {
   const sessionHash = "0123456789abcdef";
   const model = {
@@ -285,16 +390,26 @@ describe("footer stats modes", () => {
       const freshModule = await jiti.import<typeof import("../index.ts")>(
         join(process.cwd(), "index.ts"),
       );
-      const commands = new Map<string, { handler: (args: string, context: any) => unknown }>();
+      const commands = new Map<string, {
+        handler: (args: string, context: any) => unknown;
+        getArgumentCompletions?: (argumentPrefix: string) => unknown;
+      }>();
       freshModule.default({
         on() {},
-        registerCommand(name: string, command: { handler: (args: string, context: any) => unknown }) {
+        registerCommand(name: string, command: {
+          handler: (args: string, context: any) => unknown;
+          getArgumentCompletions?: (argumentPrefix: string) => unknown;
+        }) {
           commands.set(name, command);
         },
       } as any);
 
       const command = commands.get("cache-optimizer");
       assert.ok(command);
+      assert.equal(typeof command.getArgumentCompletions, "function");
+      assert.deepEqual(command.getArgumentCompletions?.("config footer-mode s"), [
+        { value: "config footer-mode session", label: "session" },
+      ]);
       const notifications: Array<{ message: string; level: string }> = [];
       const commandContext = {
         model: undefined,

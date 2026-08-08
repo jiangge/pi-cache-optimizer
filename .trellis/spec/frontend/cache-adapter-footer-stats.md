@@ -96,7 +96,7 @@ adapter token.
 | RWKV | `rwkv` | `RWKV cache` |
 | Cohere Aya | `aya-expanse`, or safe-boundary pattern `aya` (avoid `maya`/`payara`) | `Aya cache` |
 
-If no adapter matches, the footer status MUST be cleared (set to `undefined`).
+If no adapter matches, the footer status MUST be cleared (set to `undefined`). Every non-empty status published by this extension MUST begin with the ownership separator `· `. This prefix is applied at the final footer-status assembly boundary, so it also covers disabled-mode, router-restored, integrity-warning, and compat-warning variants without changing `/cache-optimizer stats` output or the internal separators.
 
 ### Provider transport caveats (do not paper over)
 
@@ -1122,7 +1122,7 @@ API through a non-`api.openai.com` base URL) and its merged `compat` lacks
 `sendSessionAffinityHeaders`, the footer status line appends `⚠️ compat`:
 
 ```text
-OpenAI cache 0/0 · 0M/0M tok ⚠️ compat
+· OpenAI cache 0/0 · 0M/0M tok ⚠️ compat
 ```
 
 DeepSeek-like models using Pi Mono guidance may also surface `⚠️ compat` when
@@ -1140,7 +1140,7 @@ Rules:
   while that model remains active and compat is still missing.
 * When the model is switched or its compat is fixed, the marker clears.
 * The marker coexists with `⚠️ integrity` — both can appear:
-  `OpenAI cache 0/0 · 0M/0M tok ⚠️ integrity ⚠️ compat`
+  `· OpenAI cache 0/0 · 0M/0M tok ⚠️ integrity ⚠️ compat`
 * The marker uses adapter-aware `describeMissingCacheCompatForModel` internally.
   For generic OpenAI-compatible proxies this delegates to
   `describeMissingOpenAICompatibleProxyCompat`; for DeepSeek-like models it
@@ -1158,7 +1158,15 @@ Rules:
 ## Diagnostic command (`/cache-optimizer`)
 
 The extension registers a Pi command `/cache-optimizer` with runtime, diagnostic,
-configuration, repair, and reset subcommands.
+configuration, repair, and reset subcommands. It MUST register Pi's native
+`getArgumentCompletions(argumentPrefix)` callback rather than a custom editor or
+autocomplete provider. The callback completes the supported top-level
+subcommands (`enable`, `disable`, `doctor`, `stats`, `config`, `compat`, `reset`,
+and `fix`), the nested `config footer-mode` path, and the values `total`,
+`session`, and `process`. Suggestions are case-insensitive prefix matches after
+leading/trailing whitespace is tolerated; an unknown or non-matching prefix
+returns `null` so Pi can fall back normally. Command execution parsing remains
+unchanged.
 
 ### `/cache-optimizer enable` / `/cache-optimizer disable`
 
@@ -1173,7 +1181,7 @@ These are current-process runtime switches, not persistent config writes.
   `PI_CACHE_RETENTION` value (or unsets it if it was originally unset), suppresses prompt mutations,
   OpenAI-compatible `prompt_cache_key` fallback, and compat warnings, resets
   local footer stats/recent samples, keeps collecting footer stats in disabled
-  comparison mode, republishes the footer as `Cache Optimizer disabled · <stats>`
+  comparison mode, republishes the footer as `· Cache Optimizer disabled · <stats>`
   for adapter-matched models, and shows the same status summary. The retention
   baseline is stored as a validated process-global versioned snapshot so an
   extension module reload cannot mistake its own `long` mutation for the original value.
@@ -1451,11 +1459,13 @@ compat). It does NOT read or expose:
 | `/cache-optimizer compat` with a fully configured applicable model | Shows `✅ Compat fully configured.` |
 | `/cache-optimizer compat` with a non-applicable model | Shows `ℹ️ Compat check not applicable for this model.` |
 | `/cache-optimizer enable` | Runtime optimizer becomes enabled, `PI_CACHE_RETENTION=long` is requested, local footer stats/recent samples reset, footer republishes, and notification lists active feature states |
-| `/cache-optimizer disable` | Runtime optimizer becomes disabled for this Pi process, the process-original `PI_CACHE_RETENTION` is restored/unset even after extension reload, local footer stats/recent samples reset, adapter-matched footer shows `Cache Optimizer disabled · <stats>`, and notification lists disabled feature states |
+| `/cache-optimizer disable` | Runtime optimizer becomes disabled for this Pi process, the process-original `PI_CACHE_RETENTION` is restored/unset even after extension reload, local footer stats/recent samples reset, adapter-matched footer shows `· Cache Optimizer disabled · <stats>`, and notification lists disabled feature states |
 | Runtime disabled before hooks fire | `before_agent_start` returns `{}`, `before_provider_request` does not add `prompt_cache_key`, `message_end` continues updating comparison stats, and session/model compat warnings are suppressed |
 | `/cache-optimizer` (no args) with UI supports select | Shows interactive selection menu (Enable / Disable / Doctor / Stats / Compat / Fix / Reset / Cancel); choosing Fix executes the same confirmed backup/write/self-check contract as direct `/cache-optimizer fix` |
 | `/cache-optimizer` (no args) without UI | Text help lists `enable`, `disable`, `doctor`, `stats`, `compat`, `reset` subcommands plus runtime state |
 | Footer status for generic proxy after `/cache-optimizer fix` added `sendSessionAffinityHeaders` but `supportsLongCacheRetention` remains absent | No `⚠️ compat`; doctor/compat may still show optional long-retention guidance, but the model is considered safely configured |
+| Every non-empty extension footer status | Begins with `· `, including disabled-mode, router-restored, integrity-warning, and compat-warning variants; other extension statuses remain visibly separated |
+| `/cache-optimizer` argument completion | Native `getArgumentCompletions` offers top-level commands, `config`, `config footer-mode`, and `total`/`session`/`process`, filters by prefix, tolerates surrounding whitespace, and returns `null` for unknown prefixes |
 | Footer status when compat is fixed or model changes | `⚠️ compat` marker clears |
 | `/cache-optimizer fix` with API-logged-in model not in models.json (interactive UI) | Analyzes models.json, shows a preview of a compat-only `modelOverrides[modelId]` entry, confirms, writes atomically with backup, validates the effective three-layer result, and succeeds |
 | `/cache-optimizer fix` with API-logged-in model not in models.json (non-interactive) | Shows manual guidance with complete JSON snippet, keeps existing auth as-is, includes fallback for both missing-provider and missing-model scenarios |

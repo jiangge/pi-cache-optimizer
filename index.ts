@@ -1146,6 +1146,82 @@ function parseFooterStatsMode(value: unknown): FooterStatsMode | undefined {
   return normalized === "session" || normalized === "total" || normalized === "process" ? normalized : undefined;
 }
 
+type CommandCompletionItem = {
+  value: string;
+  label: string;
+  description?: string;
+};
+
+const CACHE_OPTIMIZER_COMMANDS = [
+  "enable",
+  "disable",
+  "doctor",
+  "stats",
+  "config",
+  "compat",
+  "reset",
+  "fix",
+] as const;
+const CACHE_OPTIMIZER_CONFIG_ARGUMENTS = ["footer-mode"] as const;
+const CACHE_OPTIMIZER_FOOTER_MODES = ["total", "session", "process"] as const;
+
+function filterCommandCompletionItems(
+  values: readonly string[],
+  prefix: string,
+  argumentPath = "",
+): CommandCompletionItem[] | null {
+  const normalizedPrefix = prefix.trim().toLowerCase();
+  const matches = values
+    .filter((value) => value.startsWith(normalizedPrefix))
+    .map((value) => ({
+      // Pi replaces the complete argumentPrefix when applying a command
+      // completion, so nested suggestions must include their full path.
+      value: argumentPath ? `${argumentPath} ${value}` : value,
+      label: value,
+    }));
+  return matches.length > 0 ? matches : null;
+}
+
+function getCacheOptimizerArgumentCompletions(argumentPrefix: string): CommandCompletionItem[] | null {
+  if (typeof argumentPrefix !== "string") return null;
+  const trimmed = argumentPrefix.trim();
+  const parts = trimmed ? trimmed.split(/\s+/) : [];
+
+  if (parts.length === 0) {
+    return filterCommandCompletionItems(CACHE_OPTIMIZER_COMMANDS, "");
+  }
+
+  if (parts.length === 1) {
+    const subcommandPrefix = parts[0].toLowerCase();
+    // `config` is the primary `c` completion; `compat` remains available
+    // through its more specific `co` prefix. Surrounding whitespace is
+    // ignored so ` c ` behaves the same as `c`.
+    if (subcommandPrefix === "c") {
+      return [{ value: "config", label: "config" }];
+    }
+    if (subcommandPrefix === "config") {
+      return filterCommandCompletionItems(CACHE_OPTIMIZER_CONFIG_ARGUMENTS, "", "config");
+    }
+    return filterCommandCompletionItems(CACHE_OPTIMIZER_COMMANDS, parts[0]);
+  }
+
+  if (parts[0].toLowerCase() !== "config") return null;
+
+  if (parts.length === 2) {
+    const nestedPrefix = parts[1].toLowerCase();
+    if (nestedPrefix === "footer-mode") {
+      return filterCommandCompletionItems(CACHE_OPTIMIZER_FOOTER_MODES, "", "config footer-mode");
+    }
+    return filterCommandCompletionItems(CACHE_OPTIMIZER_CONFIG_ARGUMENTS, parts[1], "config");
+  }
+
+  if (parts.length === 3 && parts[1].toLowerCase() === "footer-mode") {
+    return filterCommandCompletionItems(CACHE_OPTIMIZER_FOOTER_MODES, parts[2], "config footer-mode");
+  }
+
+  return null;
+}
+
 function parsePersistedCacheOptimizerConfig(value: unknown): PersistedCacheOptimizerConfigV1 | undefined {
   const record = asRecord(value);
   if (!record || record.version !== 1) return undefined;
@@ -3664,6 +3740,11 @@ function formatCacheStats(adapter: CacheProviderAdapter, stats: CacheStats): str
     : "";
 
   return `${adapter.label} ${stats.hitRequests}/${stats.totalRequests} · ${formatTokenCount(stats.cachedInputTokens)}/${formatTokenCount(stats.totalInputTokens)} tok${percent}${writeText}`;
+}
+
+function prefixFooterStatus(statusText: string | undefined): string | undefined {
+  if (!statusText || statusText.startsWith("· ")) return statusText;
+  return `· ${statusText}`;
 }
 
 /**
@@ -6653,6 +6734,8 @@ export const __internals_for_tests = {
   // Cache stats helpers (module-level, usable from verify script)
   addUsageToCacheStats,
   formatCacheStats,
+  prefixFooterStatus,
+  getCacheOptimizerArgumentCompletions,
   emptyCacheStats,
   emptyAllCacheStats,
   parseCacheStats,
@@ -7240,6 +7323,7 @@ export default function (pi: ExtensionAPI) {
       }
     }
 
+    statusText = prefixFooterStatus(statusText);
     if (statusText === lastStatusText) return;
 
     lastStatusText = statusText;
@@ -7647,6 +7731,7 @@ export default function (pi: ExtensionAPI) {
   // ────────────────────────────────────────────────────────────────
   pi.registerCommand("cache-optimizer", {
     description: "Configure and diagnose Pi cache behavior",
+    getArgumentCompletions: getCacheOptimizerArgumentCompletions,
     handler: async (args: string, cmdCtx) => {
       syncSessionHash(cmdCtx);
       const selectedModel = cmdCtx.model;

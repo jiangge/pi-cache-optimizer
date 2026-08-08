@@ -71,6 +71,8 @@ This extension is validated against Pi 0.83.0 and remains designed for Pi 0.82+.
 | `/cache-optimizer config footer-mode total\|session\|process` | Persist the footer stats mode. Persistent command configuration overrides the environment variable. |
 | `/cache-optimizer fix` | Auto-repairs safe compat issues for the active model (adaptive thinking, DeepSeek reasoning, OpenAI proxy session affinity). Shows preview + risk warning, requires confirmation. **Only modifies `models.json` after explicit user approval.** |
 
+`/cache-optimizer` uses Pi's native Tab completion. Type `/cache-optimizer <Tab>` for the supported subcommands, `/cache-optimizer c<Tab>` for `config`, `/cache-optimizer config <Tab>` for `footer-mode`, and `/cache-optimizer config footer-mode <Tab>` for `total`, `session`, or `process`. Suggestions are prefix-filtered and invalid prefixes are left to Pi's normal fallback behavior.
+
 The interactive `/cache-optimizer` menu includes `Footer mode`, where you can choose `total`, `session`, or `process`. `enable` / `disable` are current-process switches. For a persistent opt-out, use environment variables below.
 
 ## Persistent opt-out
@@ -281,10 +283,10 @@ Pi 0.79+ also includes a built-in footer `CH` marker for the latest prompt cache
 Example footer:
 
 ```text
-OpenAI cache 3/10 · 0.002M/0.005M tok (40%) ⚠️ compat
+· OpenAI cache 3/10 · 0.002M/0.005M tok (40%) ⚠️ compat
 ```
 
-Format: `<label> <hit requests>/<total requests> · <cached input tokens>/<total input tokens> tok (<token hit rate>)`. Some adapters may also append `· write <tokens> tok`, and runtime diagnostics may append `⚠️ compat` or `⚠️ integrity`.
+The leading `· ` is owned by this extension and separates its status from statuses published by other extensions in the same footer. It is present for normal, disabled, router-restored, and warning-suffixed statuses. The stats format remains `<label> <hit requests>/<total requests> · <cached input tokens>/<total input tokens> tok (<token hit rate>)`; `/cache-optimizer stats` output is unchanged. Some adapters may also append `· write <tokens> tok`, and runtime diagnostics may append `⚠️ compat` or `⚠️ integrity`.
 
 Supported footer labels include: DS, Claude, OpenAI, Gemini, Kimi, Qwen, GLM, MiniMax, Mimo, Hunyuan, Mistral, Grok, Llama, Nemotron, Cohere, Yi, Doubao, ERNIE, Baichuan, StepFun, Spark, InternLM, Gemma, Phi, Jamba, Solar, Sonar, Nova, Reka, Falcon, DBRX, MPT, StableLM, Aquila, EXAONE, HyperCLOVA, Luminous, Hermes, Granite, Arctic, Pangu, SenseNova, Zhinao, MiniCPM, XVERSE, Orion, OpenChat, Vicuna, Wizard, Zephyr, Dolphin, OpenOrca, Starling, BLOOM, RWKV, and Aya.
 

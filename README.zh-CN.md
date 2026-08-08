@@ -71,6 +71,8 @@ Pi 0.79.7 及之后，`pi update` 默认只更新 Pi 本体。若要更新已安
 | `/cache-optimizer config footer-mode total\|session\|process` | 持久设置 footer 统计模式；持久命令配置优先于环境变量。 |
 | `/cache-optimizer fix` | 为当前模型自动修复安全的 compat 问题（adaptive thinking、DeepSeek reasoning、OpenAI proxy session affinity）。展示预览 + 风险提示，需要用户确认。**仅在用户明确批准后才修改 `models.json`。** |
 
+`/cache-optimizer` 使用 Pi 原生 Tab 补全：输入 `/cache-optimizer <Tab>` 查看支持的子命令，输入 `/cache-optimizer c<Tab>` 补全 `config`，输入 `/cache-optimizer config <Tab>` 补全 `footer-mode`，输入 `/cache-optimizer config footer-mode <Tab>` 补全 `total`、`session` 或 `process`。建议会按当前前缀过滤；无效前缀返回空结果，由 Pi 正常回退处理。
+
 交互式 `/cache-optimizer` 菜单包含 `Footer mode`，可以选择 `total`、`session` 或 `process`。`enable` / `disable` 是当前进程内开关。若要持久关闭某些能力，请使用下面的环境变量。
 
 ## 持久 Opt-out
@@ -280,10 +282,10 @@ Pi 0.79+ 已内置 footer `CH` 标记，用于显示最近一次 prompt cache hi
 示例 footer：
 
 ```text
-OpenAI cache 3/10 · 0.002M/0.005M tok (40%) ⚠️ compat
+· OpenAI cache 3/10 · 0.002M/0.005M tok (40%) ⚠️ compat
 ```
 
-格式：`<label> <命中请求数>/<总请求数> · <cached input tokens>/<total input tokens> tok (<token 命中率>)`。部分 adapter 还可能追加 `· write <tokens> tok`，运行时诊断可能追加 `⚠️ compat` 或 `⚠️ integrity`。
+开头的 `· ` 由本扩展负责，用于把本扩展状态与同一 footer 中其他扩展发布的状态隔开。普通、disabled、router 恢复以及带 warning 的状态都会保留此前缀。统计格式仍是 `<label> <命中请求数>/<总请求数> · <cached input tokens>/<total input tokens> tok (<token 命中率>)`；`/cache-optimizer stats` 的输出不变。部分 adapter 还可能追加 `· write <tokens> tok`，运行时诊断可能追加 `⚠️ compat` 或 `⚠️ integrity`。
 
 支持的 footer label 包括：DS、Claude、OpenAI、Gemini、Kimi、Qwen、GLM、MiniMax、Mimo、Hunyuan、Mistral、Grok、Llama、Nemotron、Cohere、Yi、Doubao、ERNIE、Baichuan、StepFun、Spark、InternLM、Gemma、Phi、Jamba、Solar、Sonar、Nova、Reka、Falcon、DBRX、MPT、StableLM、Aquila、EXAONE、HyperCLOVA、Luminous、Hermes、Granite、Arctic、Pangu、SenseNova、Zhinao、MiniCPM、XVERSE、Orion、OpenChat、Vicuna、Wizard、Zephyr、Dolphin、OpenOrca、Starling、BLOOM、RWKV、Aya。
 
