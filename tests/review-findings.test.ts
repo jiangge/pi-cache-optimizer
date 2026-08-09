@@ -73,15 +73,32 @@ describe("stable prompt reordering", () => {
 describe("footer status separation and command completion", () => {
   test("prefixes every extension-owned footer status exactly once", () => {
     assert.equal(
-      internals.prefixFooterStatus("OpenAI cache 0/0 · 0M/0M tok"),
-      "· OpenAI cache 0/0 · 0M/0M tok",
+      internals.prefixFooterStatus("OpenAI cache 0/0·0M/0M 0.0%"),
+      "· OpenAI cache 0/0·0M/0M 0.0%",
     );
     assert.equal(
-      internals.prefixFooterStatus("Cache Optimizer disabled · OpenAI cache 0/0 · 0M/0M tok ⚠️ compat"),
-      "· Cache Optimizer disabled · OpenAI cache 0/0 · 0M/0M tok ⚠️ compat",
+      internals.prefixFooterStatus("Cache Optimizer disabled · OpenAI cache 0/0·0M/0M 0.0% ⚠️ compat"),
+      "· Cache Optimizer disabled · OpenAI cache 0/0·0M/0M 0.0% ⚠️ compat",
     );
-    assert.equal(internals.prefixFooterStatus("· OpenAI cache 0/0 · 0M/0M tok"), "· OpenAI cache 0/0 · 0M/0M tok");
+    assert.equal(internals.prefixFooterStatus("· OpenAI cache 0/0·0M/0M 0.0%"), "· OpenAI cache 0/0·0M/0M 0.0%");
     assert.equal(internals.prefixFooterStatus(undefined), undefined);
+  });
+
+  test("formats compact footer stats with one-decimal token hit rate", () => {
+    assert.equal(
+      internals.formatCacheStats(
+        { label: "OpenAI cache", showCacheWrite: false } as any,
+        {
+          day: "2026-08-08",
+          totalRequests: 234,
+          hitRequests: 224,
+          cachedInputTokens: 52_200_000,
+          cacheWriteInputTokens: 0,
+          totalInputTokens: 56_100_000,
+        },
+      ),
+      "OpenAI cache 224/234·52.2M/56.1M 93.0%",
+    );
   });
 
   test("publishes the ownership prefix through setStatus", async () => {

@@ -3733,13 +3733,13 @@ function formatTokenCount(value: number): string {
 
 function formatCacheStats(adapter: CacheProviderAdapter, stats: CacheStats): string {
   const percent = stats.totalInputTokens > 0
-    ? ` (${Math.round((stats.cachedInputTokens / stats.totalInputTokens) * 100)}%)`
-    : "";
+    ? (stats.cachedInputTokens / stats.totalInputTokens) * 100
+    : 0;
   const writeText = adapter.showCacheWrite && stats.cacheWriteInputTokens > 0
-    ? ` · write ${formatTokenCount(stats.cacheWriteInputTokens)} tok`
+    ? `·write ${formatTokenCount(stats.cacheWriteInputTokens)}`
     : "";
 
-  return `${adapter.label} ${stats.hitRequests}/${stats.totalRequests} · ${formatTokenCount(stats.cachedInputTokens)}/${formatTokenCount(stats.totalInputTokens)} tok${percent}${writeText}`;
+  return `${adapter.label} ${stats.hitRequests}/${stats.totalRequests}·${formatTokenCount(stats.cachedInputTokens)}/${formatTokenCount(stats.totalInputTokens)} ${percent.toFixed(1)}%${writeText}`;
 }
 
 function prefixFooterStatus(statusText: string | undefined): string | undefined {

@@ -1122,7 +1122,7 @@ API through a non-`api.openai.com` base URL) and its merged `compat` lacks
 `sendSessionAffinityHeaders`, the footer status line appends `⚠️ compat`:
 
 ```text
-· OpenAI cache 0/0 · 0M/0M tok ⚠️ compat
+· OpenAI cache 0/0·0M/0M 0.0% ⚠️ compat
 ```
 
 DeepSeek-like models using Pi Mono guidance may also surface `⚠️ compat` when
@@ -1140,7 +1140,7 @@ Rules:
   while that model remains active and compat is still missing.
 * When the model is switched or its compat is fixed, the marker clears.
 * The marker coexists with `⚠️ integrity` — both can appear:
-  `· OpenAI cache 0/0 · 0M/0M tok ⚠️ integrity ⚠️ compat`
+  `· OpenAI cache 0/0·0M/0M 0.0% ⚠️ integrity ⚠️ compat`
 * The marker uses adapter-aware `describeMissingCacheCompatForModel` internally.
   For generic OpenAI-compatible proxies this delegates to
   `describeMissingOpenAICompatibleProxyCompat`; for DeepSeek-like models it

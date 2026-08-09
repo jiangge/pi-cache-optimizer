@@ -283,10 +283,10 @@ Pi 0.79+ also includes a built-in footer `CH` marker for the latest prompt cache
 Example footer:
 
 ```text
-· OpenAI cache 3/10 · 0.002M/0.005M tok (40%) ⚠️ compat
+· OpenAI cache 3/10·0.002M/0.005M 40.0% ⚠️ compat
 ```
 
-The leading `· ` is owned by this extension and separates its status from statuses published by other extensions in the same footer. It is present for normal, disabled, router-restored, and warning-suffixed statuses. The stats format remains `<label> <hit requests>/<total requests> · <cached input tokens>/<total input tokens> tok (<token hit rate>)`; `/cache-optimizer stats` output is unchanged. Some adapters may also append `· write <tokens> tok`, and runtime diagnostics may append `⚠️ compat` or `⚠️ integrity`.
+The leading `· ` is owned by this extension and separates its status from statuses published by other extensions in the same footer. It is present for normal, disabled, router-restored, and warning-suffixed statuses. The compact footer format is `<label> <hit requests>/<total requests>·<cached input tokens>/<total input tokens> <token hit rate>`; token hit rate keeps one decimal place and the footer omits the redundant `tok` suffix. `/cache-optimizer stats` output is unchanged. Some adapters may also append `·write <tokens>`, and runtime diagnostics may append `⚠️ compat` or `⚠️ integrity`.
 
 Supported footer labels include: DS, Claude, OpenAI, Gemini, Kimi, Qwen, GLM, MiniMax, Mimo, Hunyuan, Mistral, Grok, Llama, Nemotron, Cohere, Yi, Doubao, ERNIE, Baichuan, StepFun, Spark, InternLM, Gemma, Phi, Jamba, Solar, Sonar, Nova, Reka, Falcon, DBRX, MPT, StableLM, Aquila, EXAONE, HyperCLOVA, Luminous, Hermes, Granite, Arctic, Pangu, SenseNova, Zhinao, MiniCPM, XVERSE, Orion, OpenChat, Vicuna, Wizard, Zephyr, Dolphin, OpenOrca, Starling, BLOOM, RWKV, and Aya.
 
