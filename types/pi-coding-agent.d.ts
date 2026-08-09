@@ -44,6 +44,7 @@ declare module "@earendil-works/pi-coding-agent" {
       confirm(title: string, message: string): Promise<boolean>;
       select(title: string, options: string[]): Promise<string | undefined>;
     };
+    mode?: "tui" | "rpc" | "json" | "print";
     hasUI?: boolean;
   };
 
@@ -53,7 +54,11 @@ declare module "@earendil-works/pi-coding-agent" {
     description?: string;
   };
 
-  export type CommandContext = ExtensionContext & { hasUI?: boolean };
+  export type CommandContext = ExtensionContext & {
+    hasUI?: boolean;
+    waitForIdle?: () => Promise<void>;
+    reload?: () => Promise<void>;
+  };
 
   export type ExtensionAPI = {
     on(event: "session_start", handler: (event: { reason?: string }, ctx: ExtensionContext) => unknown): void;

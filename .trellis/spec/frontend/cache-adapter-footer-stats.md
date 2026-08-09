@@ -118,7 +118,7 @@ being massaged. Do NOT special-case-bump these counters.
   `supportsDeveloperRole`, `supportsReasoningEffort`, `supportsUsageInStreaming`,
   and `supportsStrictMode` all `false`; `maxTokensField: "max_tokens"`). The
   configured router URL may be local or remote.
-* Pi 0.82 core treats this transport like other OpenAI completions channels and
+* Pi 0.82+ core treats this transport like other OpenAI completions channels and
   may generate a session `prompt_cache_key`. The extension MUST preserve an
   existing key and MAY add its same session-id fallback when the key is absent.
 * `prompt_cache_retention` follows the normal safety gate: official OpenAI keeps
@@ -1160,7 +1160,9 @@ Rules:
 The extension registers a Pi command `/cache-optimizer` with runtime, diagnostic,
 configuration, repair, and reset subcommands. It MUST register Pi's native
 `getArgumentCompletions(argumentPrefix)` callback rather than a custom editor or
-autocomplete provider. The callback completes the supported top-level
+autocomplete provider. The ambient shim and validation baseline are checked
+against the installed Pi 0.84.1 API; Pi 0.84's expanded event/context surface
+is compatible with the subset used here. The callback completes the supported top-level
 subcommands (`enable`, `disable`, `doctor`, `stats`, `config`, `compat`, `reset`,
 and `fix`), the nested `config footer-mode` path, and the values `total`,
 `session`, and `process`. Suggestions are case-insensitive prefix matches after

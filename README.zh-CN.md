@@ -55,7 +55,7 @@ pi remove npm:pi-deepseek-cache-optimizer && pi install npm:pi-cache-optimizer
 
 Pi 0.79.7 及之后，`pi update` 默认只更新 Pi 本体。若要更新已安装的 Pi package（包括本扩展），请运行 `pi update --extensions`（只更新 packages）或 `pi update --all`（Pi 与 packages 一起更新）。
 
-本扩展已使用 Pi 0.83.0 验证，并继续面向 Pi 0.82+ 设计。它使用这些版本共有的 extension hooks、`getAgentDir()` 和 prompt options，不依赖 Pi 0.83 专有 API（例如 `ctx.scopedModels` 或 bundled TypeBox 1.3 aliases）。
+本扩展已使用 Pi 0.84.1 验证，并继续面向 Pi 0.82+ 设计。它使用这些版本共有的 extension hooks、`getAgentDir()` 和 prompt options，不依赖 Pi 0.83+ 专有 API（例如 `ctx.scopedModels` 或 bundled TypeBox 1.3 aliases）。
 
 ## 命令
 
@@ -108,7 +108,7 @@ Pi 0.79.7 及之后，`pi update` 默认只更新 Pi 本体。若要更新已安
 
 LiteLLM / OneAPI / NewAPI / 类 OpenRouter 渠道等第三方 `openai-completions` 代理，常会把同一个 session 分散到多个上游后端，导致 provider 侧 prompt cache 被拆散。
 
-Pi 0.81+ 也内置了使用 OpenAI-shaped transport 的 `llama.cpp` provider。Pi 0.82+ core 在启用 cache retention 时会为它生成 session `prompt_cache_key`，因此本扩展会保留该 key，并在缺失时使用同样的保守 fallback。只有符合 Pi 内置 provider 明确 compat 指纹的模型会跳过通用 proxy 路由 / session-affinity 建议；仅复用 `llama.cpp` id 的自定义或覆盖 provider 仍按普通 OpenAI-compatible 渠道处理。`prompt_cache_retention` 继续遵循统一安全规则：仅官方 OpenAI 或 `models.json` 中有效配置为 `supportsLongCacheRetention: true` 时保留，否则发送前移除。有效值遵循 Pi 的优先级：先看 `modelOverrides[modelId].compat`，再看匹配的 `models[].compat`，最后看 provider 级 `compat`；高层显式 `false` 会覆盖低层的 `true`。
+Pi 0.84.1 还修复了内置 Fireworks 渠道对拒绝 `prompt_cache_retention` 的模型兼容性；本扩展继续依据 Pi 暴露的有效 model compat 做诊断，不按 provider 名称增加特殊分支。Pi 0.81+ 也内置了使用 OpenAI-shaped transport 的 `llama.cpp` provider。Pi 0.82+ core 在启用 cache retention 时会为它生成 session `prompt_cache_key`，因此本扩展会保留该 key，并在缺失时使用同样的保守 fallback。只有符合 Pi 内置 provider 明确 compat 指纹的模型会跳过通用 proxy 路由 / session-affinity 建议；仅复用 `llama.cpp` id 的自定义或覆盖 provider 仍按普通 OpenAI-compatible 渠道处理。`prompt_cache_retention` 继续遵循统一安全规则：仅官方 OpenAI 或 `models.json` 中有效配置为 `supportsLongCacheRetention: true` 时保留，否则发送前移除。有效值遵循 Pi 的优先级：先看 `modelOverrides[modelId].compat`，再看匹配的 `models[].compat`，最后看 provider 级 `compat`；高层显式 `false` 会覆盖低层的 `true`。
 
 对真正的代理，建议先启用 session affinity：
 
@@ -149,7 +149,7 @@ Anthropic 按 `tools → system → messages` 顺序处理 cache breakpoint，�
 
 ## Adaptive thinking 模型
 
-Claude 从 opus-4.6 / sonnet-4.6（含 Opus 5、Sonnet 5）/ fable-5 开始需要在 compat 中设置 `forceAdaptiveThinking: true`。Kimi Coding K3（`k3`）和 `kimi-for-coding` 也使用 adaptive thinking，并需要 `allowEmptySignature: true`，以正确重放空 signature 的 thinking block。缺少这些 compat 时，Pi 可能发送旧版 thinking payload 或错误重放 thinking。Pi 0.83.0 的原生 Opus 5 catalog 已覆盖在同一 adaptive-thinking 检测中；如果自定义 `anthropic-messages` 渠道没有继承该 compat，仍需手动设置。
+Claude 从 opus-4.6 / sonnet-4.6（含 Opus 5、Sonnet 5）/ fable-5 开始需要在 compat 中设置 `forceAdaptiveThinking: true`。Kimi Coding K3（`k3`）和 `kimi-for-coding` 也使用 adaptive thinking，并需要 `allowEmptySignature: true`，以正确重放空 signature 的 thinking block。缺少这些 compat 时，Pi 可能发送旧版 thinking payload 或错误重放 thinking。Pi 0.83+ 的原生 Opus 5 catalog 已覆盖在同一 adaptive-thinking 检测中；如果自定义 `anthropic-messages` 渠道没有继承该 compat，仍需手动设置。
 
 Pi 内置 catalog 已为官方模型设置此 flag。`models.json` 中覆盖这些模型的自定义渠道必须包含该 flag：
 

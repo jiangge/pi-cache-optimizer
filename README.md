@@ -55,7 +55,7 @@ Run `/reload` in Pi after install/update/remove so extension hooks refresh.
 
 On Pi 0.79.7 and newer, `pi update` updates Pi itself only. To update installed Pi packages such as this extension, run `pi update --extensions` (packages only) or `pi update --all` (Pi + packages).
 
-This extension is validated against Pi 0.83.0 and remains designed for Pi 0.82+. It uses the existing extension hooks, `getAgentDir()`, and prompt options shared by those versions; it does not depend on Pi 0.83-only APIs such as `ctx.scopedModels` or the bundled TypeBox 1.3 aliases.
+This extension is validated against Pi 0.84.1 and remains designed for Pi 0.82+. It uses the existing extension hooks, `getAgentDir()`, and prompt options shared by those versions; it does not depend on Pi 0.83+ APIs such as `ctx.scopedModels` or the bundled TypeBox 1.3 aliases.
 
 ## Commands
 
@@ -109,7 +109,7 @@ The explicit setting is stored in `pi-cache-optimizer-config.json` under Pi's ag
 
 Third-party `openai-completions` proxies (LiteLLM / OneAPI / NewAPI / OpenRouter-like channels) often route one session across multiple upstream backends. That splits provider-side prompt caches.
 
-Pi 0.81+ also has a built-in `llama.cpp` provider using an OpenAI-shaped transport. Pi 0.82+ core generates a session `prompt_cache_key` for it when cache retention is enabled, so this extension preserves that key and may add the same conservative fallback when missing. The built-in provider's explicit compat fingerprint is excluded from generic proxy routing/session-affinity advice, but a custom or overridden provider that merely reuses the id `llama.cpp` is treated like any other OpenAI-compatible channel. `prompt_cache_retention` remains subject to the normal safety rule: keep it only for official OpenAI or an explicit effective `supportsLongCacheRetention: true` opt-in in `models.json`; otherwise strip it before sending. Effective values follow Pi's precedence: `modelOverrides[modelId].compat` first, then the matching `models[].compat`, then provider-level `compat`. An explicit `false` at a higher layer overrides `true` below it.
+Pi 0.84.1 also fixes built-in Fireworks compatibility for models that reject `prompt_cache_retention`; keep the extension's diagnostics focused on the effective model compat exposed by Pi rather than adding a provider-name special case. Pi 0.81+ also has a built-in `llama.cpp` provider using an OpenAI-shaped transport. Pi 0.82+ core generates a session `prompt_cache_key` for it when cache retention is enabled, so this extension preserves that key and may add the same conservative fallback when missing. The built-in provider's explicit compat fingerprint is excluded from generic proxy routing/session-affinity advice, but a custom or overridden provider that merely reuses the id `llama.cpp` is treated like any other OpenAI-compatible channel. `prompt_cache_retention` remains subject to the normal safety rule: keep it only for official OpenAI or an explicit effective `supportsLongCacheRetention: true` opt-in in `models.json`; otherwise strip it before sending. Effective values follow Pi's precedence: `modelOverrides[modelId].compat` first, then the matching `models[].compat`, then provider-level `compat`. An explicit `false` at a higher layer overrides `true` below it.
 
 For real proxies, start with session affinity:
 
@@ -150,7 +150,7 @@ Some proxies rewrite or insert hidden 5-minute breakpoints after Pi's request ho
 
 ## Adaptive thinking models
 
-Claude models from opus-4.6 / sonnet-4.6 (including Opus 5 and Sonnet 5) / fable-5 onwards require `forceAdaptiveThinking: true` in compat. Kimi Coding K3 (`k3`) and `kimi-for-coding` also use adaptive thinking and need `allowEmptySignature: true` so replayed empty-signature thinking blocks remain valid. Without the required compat, Pi may send a legacy thinking payload or replay thinking incorrectly. Pi 0.83.0's native Opus 5 catalog is covered by the same adaptive-thinking detection; custom `anthropic-messages` channels still need the compat flag when Pi does not provide it.
+Claude models from opus-4.6 / sonnet-4.6 (including Opus 5 and Sonnet 5) / fable-5 onwards require `forceAdaptiveThinking: true` in compat. Kimi Coding K3 (`k3`) and `kimi-for-coding` also use adaptive thinking and need `allowEmptySignature: true` so replayed empty-signature thinking blocks remain valid. Without the required compat, Pi may send a legacy thinking payload or replay thinking incorrectly. Pi 0.83+ native Opus 5 catalogs are covered by the same adaptive-thinking detection; custom `anthropic-messages` channels still need the compat flag when Pi does not provide it.
 
 Pi's built-in catalog already sets this flag for official models. Custom channels in `models.json` that override these models must include the flag:
 
