@@ -1161,7 +1161,7 @@ The extension registers a Pi command `/cache-optimizer` with runtime, diagnostic
 configuration, repair, and reset subcommands. It MUST register Pi's native
 `getArgumentCompletions(argumentPrefix)` callback rather than a custom editor or
 autocomplete provider. The ambient shim and validation baseline are checked
-against the installed Pi 0.84.1 API; Pi 0.84's expanded event/context surface
+against the installed Pi 0.84.2 API; Pi 0.84's expanded event/context surface
 is compatible with the subset used here. The callback completes the supported top-level
 subcommands (`enable`, `disable`, `doctor`, `stats`, `config`, `compat`, `reset`,
 and `fix`), the nested `config footer-mode` path, and the values `total`,

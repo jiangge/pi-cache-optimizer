@@ -35,7 +35,7 @@
     "check": "npm run typecheck && npm test && npm run check:diff && npm run check:pack"
   },
   "devDependencies": {
-    "@earendil-works/pi-coding-agent": "^0.84.1",
+    "@earendil-works/pi-coding-agent": "^0.84.2",
     "@types/node": "^22.0.0",
     "jiti": "^2.7.0",
     "typescript": "^5.8.3"
