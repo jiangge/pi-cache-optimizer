@@ -55,7 +55,7 @@ Run `/reload` in Pi after install/update/remove so extension hooks refresh.
 
 On Pi 0.79.7 and newer, `pi update` updates Pi itself only. To update installed Pi packages such as this extension, run `pi update --extensions` (packages only) or `pi update --all` (Pi + packages).
 
-This extension is validated against Pi 0.84.2 and remains designed for Pi 0.82+. It uses the existing extension hooks, `getAgentDir()`, and prompt options shared by those versions; it does not depend on Pi 0.83+ APIs such as `ctx.scopedModels` or the bundled TypeBox 1.3 aliases.
+This extension requires Pi 0.82+ and is validated against Pi 0.84.2. It uses the official Pi package types directly for type-checking, along with extension hooks, `getAgentDir()`, and prompt options shared by those versions; it does not depend on Pi 0.83+ APIs such as `ctx.scopedModels` or the bundled TypeBox 1.3 aliases.
 
 ## Commands
 
@@ -135,7 +135,7 @@ Notes:
 
 - `sendSessionAffinityHeaders: true` is the safe default when your proxy supports sticky routing.
 - `supportsLongCacheRetention: true` is optional. Add it only when the endpoint explicitly supports OpenAI long prompt cache retention.
-- If you see `400 Unsupported parameter: prompt_cache_retention`, remove/avoid `supportsLongCacheRetention` for that channel. Keep `sendSessionAffinityHeaders` if supported.
+- If you see `400 Unsupported parameter: prompt_cache_retention`, remove/avoid `supportsLongCacheRetention` for that channel. Keep `sendSessionAffinityHeaders` if supported. The extension detects the explicit error from response headers or the finalized assistant error message and strips the parameter from subsequent requests in the current process.
 - Use `/cache-optimizer compat` or `/cache-optimizer doctor` to see model-specific advice.
 - For DeepSeek models, the Pi Mono guidance expects `compat.requiresReasoningContentOnAssistantMessages: true` and `compat.thinkingFormat: "deepseek"` alongside cache/session-affinity flags when the endpoint supports them.
 - This extension's `doctor` and `compat` commands only advise; they do not modify `models.json`.
@@ -229,8 +229,9 @@ Pi 0.80.9+ already includes Kimi K3 in built-in Kimi Coding, Moonshot AI / China
 2. Warns: ① changes affect all sessions using that channel, ② automatic backup created at `models.json.backup-cache-optimizer-<timestamp>`, ③ Pi reload required
 3. Uses comment-preserving surgical editor — existing comments, indentation, and existing key order are preserved
 4. Requires explicit user confirmation (interactive prompt or `ui.select`)
-5. Writes atomically (temp + rename); self-validates after write
-6. Falls back to manual guidance if JSONC scanner cannot confidently locate the target
+5. Writes and restores atomically (temp + rename); self-validates after write
+6. Preserves the existing `models.json` access mode exactly — it does not tighten or loosen permissions (for example, `0600` stays `0600`, `0644` stays `0644`)
+7. Uses unique, non-overwriting backup names and falls back to manual guidance if the JSONC scanner cannot confidently locate the target
 
 Existing `modelOverrides[modelId]` entries have Pi's highest precedence, so `fix` repairs them directly. For built-in or API-login models without a custom `models[]` entry, `fix` creates a compat-only `modelOverrides` entry instead of inventing a custom model definition. Self-validation checks the effective three-layer compat result, so a lower-level edit shadowed by an override is rejected.
 

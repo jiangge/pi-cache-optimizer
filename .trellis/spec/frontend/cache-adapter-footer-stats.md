@@ -269,9 +269,13 @@ when the endpoint/proxy explicitly supports OpenAI `prompt_cache_retention`.
 
 If a third-party proxy returns `400 Unsupported parameter: prompt_cache_retention`,
 the user should remove/avoid `supportsLongCacheRetention` for that channel while
-keeping `sendSessionAffinityHeaders` if supported. This extension does not write
-`prompt_cache_retention` directly; it requests `PI_CACHE_RETENTION=long`, and Pi
-may send the parameter when compat says long retention is supported.
+keeping `sendSessionAffinityHeaders` if supported. The runtime records this exact
+failure from either response headers or the finalized assistant error message;
+subsequent requests for that provider/model strip the parameter for the current
+process. Other 400 errors MUST NOT activate this fallback. This extension does
+not write `prompt_cache_retention` directly; it requests
+`PI_CACHE_RETENTION=long`, and Pi may send the parameter when compat says long
+retention is supported.
 
 This warning is advisory only and MUST NOT mutate the user's `models.json`.
 
@@ -1160,8 +1164,9 @@ Rules:
 The extension registers a Pi command `/cache-optimizer` with runtime, diagnostic,
 configuration, repair, and reset subcommands. It MUST register Pi's native
 `getArgumentCompletions(argumentPrefix)` callback rather than a custom editor or
-autocomplete provider. The ambient shim and validation baseline are checked
-against the installed Pi 0.84.2 API; Pi 0.84's expanded event/context surface
+autocomplete provider. TypeScript validation consumes the installed official Pi
+0.84.2 declarations directly; a complete local ambient redeclaration is forbidden
+because it can hide upstream API drift. Pi 0.84's expanded event/context surface
 is compatible with the subset used here. The callback completes the supported top-level
 subcommands (`enable`, `disable`, `doctor`, `stats`, `config`, `compat`, `reset`,
 and `fix`), the nested `config footer-mode` path, and the values `total`,
@@ -1334,10 +1339,15 @@ Safety contract:
   full file; it locates existing provider/model/modelOverrides/compat nodes while
   respecting string literals, escapes, line comments, block comments, and trailing
   commas.
-* Writes by backup → temp file → atomic rename. Post-write self-check reparses JSONC,
-  validates effective merged compat, and verifies the original parsed structure is
-  preserved except for repaired compat keys. On post-write self-check failure, the
-  backup is restored.
+* Writes by unique non-overwriting backup → temp file → atomic rename. Post-write
+  self-check reparses JSONC, validates effective merged compat, and verifies the
+  original parsed structure is preserved except for repaired compat keys.
+* The original `models.json` access mode MUST be preserved exactly for the backup,
+  committed replacement, and rollback. The extension MUST NOT independently
+  tighten or loosen permissions: `0600` remains `0600`, `0644` remains `0644`, and
+  other existing modes remain unchanged.
+* On post-write failure, rollback MUST also use temp file + atomic rename; direct
+  in-place copy over `models.json` is forbidden.
 * Effective compat validation MUST use Pi precedence:
   `modelOverrides[modelId].compat` > matching `models[].compat` > provider
   `compat`. A write to a lower layer that remains shadowed by a conflicting
@@ -1348,6 +1358,32 @@ Safety contract:
   `modelOverrides[modelId]` entry after preview and confirmation. It MUST NOT
   invent a custom `models[]` definition, API key, credential, base URL, or router
   slug.
+* Direct command execution and the interactive menu MUST call the same command
+  handler for Enable, Disable, Doctor, Stats, Compat, Fix, Footer mode, and Reset.
+  Security-sensitive transaction logic MUST NOT be duplicated in a menu-only path.
+
+#### Wrong vs correct: preserving `models.json` during fix
+
+```ts
+// Wrong: the temp file gets the process default mode (often 0644), and the
+// rollback writes directly over the live file.
+await copyFile(modelsPath, backupPath);
+await writeFile(tempPath, modifiedText, "utf8");
+await rename(tempPath, modelsPath);
+await copyFile(backupPath, modelsPath);
+```
+
+```ts
+// Correct: capture the existing mode, refuse to overwrite a backup, and use
+// mode-preserving atomic replacement for both commit and rollback.
+const mode = (await stat(modelsPath)).mode & 0o7777;
+await copyFile(modelsPath, backupPath, COPYFILE_EXCL);
+await chmod(backupPath, mode);
+await atomicReplaceTextFilePreservingMode(modelsPath, modifiedText, mode, "fix");
+if (postCheckFailed) {
+  await atomicRestoreFileFromBackup(backupPath, modelsPath, mode);
+}
+```
 
 ### `/cache-optimizer reset`
 
@@ -1471,7 +1507,7 @@ compat). It does NOT read or expose:
 | Footer status when compat is fixed or model changes | `⚠️ compat` marker clears |
 | `/cache-optimizer fix` with API-logged-in model not in models.json (interactive UI) | Analyzes models.json, shows a preview of a compat-only `modelOverrides[modelId]` entry, confirms, writes atomically with backup, validates the effective three-layer result, and succeeds |
 | `/cache-optimizer fix` with API-logged-in model not in models.json (non-interactive) | Shows manual guidance with complete JSON snippet, keeps existing auth as-is, includes fallback for both missing-provider and missing-model scenarios |
-| Direct `/cache-optimizer fix` and no-args menu Fix | Permanent command-level tests run both paths against a temporary `PI_CODING_AGENT_DIR`, require confirmation, compare the timestamped backup byte-for-byte, parse the written JSONC, validate effective modelOverrides compat, and assert comments/credentials/unrelated fields remain unchanged |
+| Direct `/cache-optimizer fix` and no-args menu Fix | Both paths call the same command handler. Permanent command-level tests run both against a temporary `PI_CODING_AGENT_DIR`, require confirmation, compare the unique backup byte-for-byte, preserve the original access mode, parse the written JSONC, validate effective modelOverrides compat, and assert comments/credentials/unrelated fields remain unchanged |
 | `/cache-optimizer fix` creates new provider entry in models.json | Does NOT create API keys, credentials, baseUrl, router slugs, or a custom `models[]` definition; only inserts a minimal compat-only `modelOverrides` structure |
 | `/cache-optimizer fix` sees an existing target `modelOverrides` entry | Repairs its compat directly and preserves comments, unrelated keys, sibling overrides, custom models, and provider-level configuration |
 | `/cache-optimizer fix` writes provider/model compat while a conflicting target override remains | Pre-write self-check rejects the ineffective lower-layer edit and no file is written |
@@ -1484,7 +1520,7 @@ compat). It does NOT read or expose:
 | `/cache-optimizer compat` with fully-configured OpenRouter model | Shows `✅ Compat fully configured.` followed by OpenRouter channel notes; if `supportsLongCacheRetention` is enabled, also includes the `prompt_cache_retention` 400 recovery hint |
 | Router/channel diagnostics do not affect adapter selection | An OpenRouter Llama model still selects the Llama adapter, not an "OpenRouter" adapter |
 | Diagnostic text must not expose API keys, prompts, payloads, or model output | All router/channel output uses only provider, api, baseUrl, compat metadata |
-| Third-party OpenAI-compatible proxy (`openai-completions` or `openai-responses`) returns HTTP 400 while `supportsLongCacheRetention` is enabled | Extension records a one-time model-scoped warning and `/cache-optimizer doctor` surfaces the `prompt_cache_retention` recovery hint |
+| Third-party OpenAI-compatible proxy (`openai-completions` or `openai-responses`) returns HTTP 400 while `supportsLongCacheRetention` is enabled | Extension records a one-time model-scoped warning from an explicit response-header or assistant-error-message `prompt_cache_retention` unsupported signal; subsequent current-process requests strip the parameter and `/cache-optimizer doctor` surfaces the recovery hint |
 | Third-party `openai-completions` proxy returns HTTP 403 while `sendSessionAffinityHeaders` is enabled | Extension records a one-time model-scoped warning (`sendSessionAffinityHeaders403Models`) and `/cache-optimizer doctor` surfaces the session-affinity 403 hint with `/cache-optimizer fix` offering `sendSessionAffinityHeaders: false`. Pi 0.80.7+ `openai-responses` is excluded because it uses `sessionAffinityFormat`. |
 | `/cache-optimizer doctor` with session-affinity enabled but no 403 observed | Shows advisory text that some CDNs/WAFs block custom headers (session_id, x-client-request-id, x-session-affinity) and return 403 |
 | `/cache-optimizer fix` with 403-observed OpenAI-compatible model | Offers `sendSessionAffinityHeaders: false` as the compat-key suggestion (mirror of the 400 `supportsLongCacheRetention: false` path) |

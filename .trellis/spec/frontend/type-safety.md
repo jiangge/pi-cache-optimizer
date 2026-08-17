@@ -6,7 +6,7 @@
 
 ## Overview
 
-The project uses TypeScript in a single runtime entry (`index.ts`) with local ambient declarations under `types/**/*.d.ts`.
+The project uses TypeScript in a single runtime entry (`index.ts`) and consumes the installed official Pi and Node type declarations directly. Full local redeclarations of external modules are not used because they can hide upstream API drift.
 
 `tsconfig.json` is configured for Pi/Jiti extension validation:
 
@@ -15,7 +15,7 @@ The project uses TypeScript in a single runtime entry (`index.ts`) with local am
 - `noEmit`: `true`
 - `allowImportingTsExtensions`: `true`
 - `strict`: currently `false`
-- includes only `index.ts` and `types/**/*.d.ts`
+- includes `index.ts` and permanent tests under `tests/**/*.ts`
 
 Run TypeScript validation with:
 
@@ -31,8 +31,9 @@ The command MUST resolve the repository-local TypeScript dependency from
 
 ## Type Organization
 
-- Keep project-local types close to the implementation in `index.ts` unless they are ambient declarations for Pi APIs.
-- Put Pi API shims/augmentations in `types/pi-coding-agent.d.ts`.
+- Keep project-local types close to the implementation in `index.ts`.
+- Import Pi API types from the installed `@earendil-works/pi-coding-agent` package.
+- If an upstream declaration is genuinely missing, use a narrowly scoped module augmentation that imports the original module first; never redeclare the whole Pi or Node module surface.
 - Do not export internal helper types as public package API unless the package contract requires it.
 - For verification scripts, expose pure helpers through `__internals_for_tests`.
 
@@ -70,6 +71,7 @@ Preferred patterns:
 
 ## Forbidden Patterns
 
+- Do not shadow official dependency types with a complete ambient module redeclaration just to make typecheck pass.
 - Do not use `any` as a shortcut for persisted or external data parsing when a small guard is practical.
 - Do not trust global protocol objects without version/function checks.
 - Do not assume optional Pi APIs such as `modelRegistry.find` or `ui.select` always exist.

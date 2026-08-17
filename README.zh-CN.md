@@ -55,7 +55,7 @@ pi remove npm:pi-deepseek-cache-optimizer && pi install npm:pi-cache-optimizer
 
 Pi 0.79.7 及之后，`pi update` 默认只更新 Pi 本体。若要更新已安装的 Pi package（包括本扩展），请运行 `pi update --extensions`（只更新 packages）或 `pi update --all`（Pi 与 packages 一起更新）。
 
-本扩展已使用 Pi 0.84.2 验证，并继续面向 Pi 0.82+ 设计。它使用这些版本共有的 extension hooks、`getAgentDir()` 和 prompt options，不依赖 Pi 0.83+ 专有 API（例如 `ctx.scopedModels` 或 bundled TypeBox 1.3 aliases）。
+本扩展要求 Pi 0.82+，并已使用 Pi 0.84.2 验证。TypeScript 校验直接使用官方 Pi package 类型，同时只使用这些版本共有的 extension hooks、`getAgentDir()` 和 prompt options；不依赖 Pi 0.83+ 专有 API（例如 `ctx.scopedModels` 或 bundled TypeBox 1.3 aliases）。
 
 ## 命令
 
@@ -134,7 +134,7 @@ Pi 0.84.1 还修复了内置 Fireworks 渠道对拒绝 `prompt_cache_retention` 
 
 - `sendSessionAffinityHeaders: true` 是安全默认项，前提是你的代理支持 sticky routing。
 - `supportsLongCacheRetention: true` 是可选项。只有 endpoint 明确支持 OpenAI long prompt cache retention 时才添加。
-- 如果出现 `400 Unsupported parameter: prompt_cache_retention`，请为该渠道移除 / 避免 `supportsLongCacheRetention`；如支持，可保留 `sendSessionAffinityHeaders`。
+- 如果出现 `400 Unsupported parameter: prompt_cache_retention`，请为该渠道移除 / 避免 `supportsLongCacheRetention`；如支持，可保留 `sendSessionAffinityHeaders`。扩展会从响应头或最终 assistant error message 中识别这条明确错误，并在当前进程的后续请求中移除该参数。
 - 使用 `/cache-optimizer compat` 或 `/cache-optimizer doctor` 查看当前模型的具体建议。
 - 对 DeepSeek 模型，Pi Mono 指南期望在支持时同时设置 `compat.requiresReasoningContentOnAssistantMessages: true` 和 `compat.thinkingFormat: "deepseek"`，再配合缓存 / session-affinity 相关 compat。
 - 本扩展的 `doctor` 和 `compat` 命令只给建议，不会修改 `models.json`。
@@ -228,8 +228,9 @@ Pi 0.80.9+ 已在内置 Kimi Coding、Moonshot AI / 中国区、OpenRouter 和 V
 2. 警告：① 修改影响使用该渠道的所有 session，② 自动备份到 `models.json.backup-cache-optimizer-<timestamp>`，③ 需重启 Pi 或 reload
 3. 使用保留注释的精确编辑器 —— 现有注释、缩进和已有 key 顺序都会保留
 4. 需要用户明确确认（交互式提示或 `ui.select`）
-5. 原子写入（temp + rename）；写入后自我验证
-6. 如果 JSONC 扫描器无法置信定位目标，回退到手动修改指引
+5. 写入与失败恢复都使用原子替换（temp + rename）；写入后自我验证
+6. 完全保留 `models.json` 原有访问权限，不主动收紧或放宽（例如 `0600` 保持 `0600`，`0644` 保持 `0644`）
+7. 备份名唯一且不会覆盖已有备份；如果 JSONC 扫描器无法置信定位目标，则回退到手动修改指引
 
 已有的 `modelOverrides[modelId]` 具有 Pi 的最高优先级，因此 `fix` 会直接修复该 entry。对于没有自定义 `models[]` entry 的内置模型或 API-login 模型，`fix` 会创建仅含 compat 的 `modelOverrides` entry，而不会凭空添加自定义模型定义。自检会验证三层合并后的有效 compat，因此被更高层 override 遮蔽的低层修改会被拒绝。
 

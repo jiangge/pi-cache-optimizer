@@ -8,8 +8,8 @@
 
 This repository is a single-package Pi extension. Quality checks emphasize:
 
-- TypeScript no-emit validation
-- task-level verification scripts for changed behavior
+- TypeScript no-emit validation against the installed official Pi/Node declarations
+- permanent regression tests plus task-level verification scripts for changed behavior
 - privacy/security review for user-facing diagnostics and persisted files
 - package dry-run checks before release
 - keeping README/spec docs aligned with behavior
@@ -45,7 +45,7 @@ python3 ./.trellis/scripts/task.py validate .trellis/tasks/<task>
 
 - Update `.trellis/spec/frontend/cache-adapter-footer-stats.md` when changing cache stats, prompt optimization, compat diagnostics, persistence, or routing-provider behavior.
 - Keep `README.md` and `README.zh-CN.md` in sync for user-visible features or commands.
-- Add/update permanent regression tests under `tests/` for runtime contracts. A task-level verifier may supplement them for one-off investigation or release evidence, but archived task files must not be the only coverage.
+- Add/update permanent regression tests under `tests/` for runtime contracts. `npm test` must execute every `tests/*.test.ts` file. A task-level verifier may supplement them for one-off investigation or release evidence, but archived task files must not be the only coverage.
 - Keep footer behavior truthful; never fake cache counters for transports that do not expose usage fields.
 - Prefer conservative fallback behavior over crashes in Pi hooks.
 - Commit Trellis archive moves after implementation commits so task history stays durable.
@@ -56,7 +56,8 @@ python3 ./.trellis/scripts/task.py validate .trellis/tasks/<task>
 
 - Logging or persisting API keys, prompts, payloads, headers, response bodies, raw session ids, or model outputs.
 - Writing `models.json` outside the explicit `/cache-optimizer fix` confirmation flow.
-- In-place writes to stats/config files when atomic temp + rename is required.
+- Changing the existing `models.json` access mode during fix/backup/rollback; preserve it exactly rather than enforcing a preferred mode.
+- In-place writes or rollbacks to stats/config/models files when atomic temp + rename is required.
 - Adapter selection by provider id, API type, base URL, or compat flags.
 - Importing router packages or depending on package-specific router globals instead of optional versioned symbols.
 - Adding non-actionable startup warnings for provider limitations.
@@ -127,7 +128,7 @@ Tests should assert external behavior and protocol behavior, not private impleme
 - Bad: Two providers exposing the same model id share footer counters.
 
 ### 6. Tests Required
-- Load extension through Pi/Jiti or `tsc` without type/runtime errors.
+- Load extension through Pi/Jiti or `tsc` without type/runtime errors, using the installed official Pi declarations rather than a shadowing full-module shim.
 - Simulate supported and unsupported `message_end` events for changed adapters.
 - Assert provider/model/session counters stay separate.
 - Assert state migrations preserve valid data and drop malformed data.
