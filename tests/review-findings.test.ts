@@ -1,9 +1,10 @@
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdtemp, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
 import { describe, test } from "node:test";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createJiti } from "jiti";
+import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 
 import { __internals_for_tests as internals } from "#extension";
 
@@ -21,6 +22,7 @@ describe("stable prompt reordering", () => {
     ].join("\n");
 
     const result = internals.optimizeSystemPrompt(original, {
+      cwd: process.cwd(),
       promptGuidelines: [guideline.slice(2)],
     });
 
@@ -38,7 +40,7 @@ describe("stable prompt reordering", () => {
       "",
       "Tail context",
     ].join("\n");
-    const options = { promptGuidelines: [guideline.slice(2)] };
+    const options = { cwd: process.cwd(), promptGuidelines: [guideline.slice(2)] };
 
     const first = internals.optimizeSystemPrompt(original, options);
     const second = internals.optimizeSystemPrompt(original, options);
@@ -59,6 +61,7 @@ describe("stable prompt reordering", () => {
     const original = `${dynamicBlock}\n\n${fullContext}`;
 
     const result = internals.optimizeSystemPrompt(original, {
+      cwd: process.cwd(),
       contextFiles: [{ path: "AGENTS.md", content }],
     });
 
@@ -514,7 +517,10 @@ describe("footer stats modes", () => {
 });
 
 describe("Pi 0.83 adaptive-thinking compatibility", () => {
-  function claudeModel(id: string, compat: Record<string, unknown> = {}) {
+  function claudeModel(
+    id: string,
+    compat: Record<string, unknown> = {},
+  ): NonNullable<ExtensionContext["model"]> {
     return {
       provider: "anthropic",
       id,
@@ -522,6 +528,11 @@ describe("Pi 0.83 adaptive-thinking compatibility", () => {
       api: "anthropic-messages",
       baseUrl: "https://api.anthropic.com",
       compat,
+      reasoning: true,
+      input: ["text"],
+      cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+      contextWindow: 200_000,
+      maxTokens: 32_000,
     };
   }
 
@@ -688,6 +699,108 @@ describe("explicit compat precedence", () => {
       const allowedPayload: Record<string, unknown> = { prompt_cache_retention: "24h" };
       hook({ payload: allowedPayload }, context);
       assert.equal(allowedPayload.prompt_cache_retention, "24h");
+    } finally {
+      if (previousAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
+      else process.env.PI_CODING_AGENT_DIR = previousAgentDir;
+      if (previousRetention === undefined) delete process.env.PI_CACHE_RETENTION;
+      else process.env.PI_CACHE_RETENTION = previousRetention;
+      await rm(tempAgentDir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("provider response recovery", () => {
+  test("body-only prompt_cache_retention errors disable the field on the next request", async () => {
+    const tempAgentDir = await mkdtemp(join(tmpdir(), "pi-cache-retention-recovery-test-"));
+    const previousAgentDir = process.env.PI_CODING_AGENT_DIR;
+    const previousRetention = process.env.PI_CACHE_RETENTION;
+
+    try {
+      process.env.PI_CODING_AGENT_DIR = tempAgentDir;
+      await writeFile(
+        join(tempAgentDir, "models.json"),
+        JSON.stringify({
+          providers: {
+            proxy: {
+              models: [{
+                id: "gpt-5.5",
+                compat: {
+                  supportsLongCacheRetention: true,
+                  sendSessionAffinityHeaders: true,
+                },
+              }],
+            },
+          },
+        }),
+        "utf8",
+      );
+
+      const jiti = createJiti(join(process.cwd(), "tests", "review-findings.test.ts"), {
+        interopDefault: false,
+        moduleCache: false,
+      });
+      const freshModule = await jiti.import<typeof import("../index.ts")>(
+        join(process.cwd(), "index.ts"),
+      );
+      const handlers = new Map<string, (event: any, context: any) => unknown>();
+      freshModule.default({
+        on(name: string, handler: (event: any, context: any) => unknown) {
+          handlers.set(name, handler);
+        },
+        registerCommand() {},
+      } as any);
+
+      const model = {
+        provider: "proxy",
+        id: "gpt-5.5",
+        name: "GPT-5.5",
+        api: "openai-completions",
+        baseUrl: "https://proxy.example/v1",
+        compat: {
+          supportsLongCacheRetention: true,
+          sendSessionAffinityHeaders: true,
+        },
+        reasoning: false,
+        input: ["text"],
+        cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+        contextWindow: 128_000,
+        maxTokens: 8192,
+      };
+      const notifications: string[] = [];
+      const context = {
+        model,
+        sessionManager: { getSessionId: () => "retention-recovery-session" },
+        modelRegistry: { find: () => undefined, getAvailable: () => [], getAll: () => [] },
+        ui: {
+          notify(message: string) { notifications.push(message); },
+          setStatus() {},
+        },
+      };
+      const requestHook = handlers.get("before_provider_request");
+      const messageEndHook = handlers.get("message_end");
+      assert.ok(requestHook);
+      assert.ok(messageEndHook);
+
+      const firstPayload: Record<string, unknown> = { prompt_cache_retention: "24h" };
+      requestHook({ payload: firstPayload }, context);
+      assert.equal(firstPayload.prompt_cache_retention, "24h");
+
+      await messageEndHook({
+        message: {
+          role: "assistant",
+          provider: "proxy",
+          model: "gpt-5.5",
+          api: "openai-completions",
+          stopReason: "error",
+          errorMessage: "400 Unsupported parameter: prompt_cache_retention",
+          usage: { input: 0, cacheRead: 0, cacheWrite: 0 },
+        },
+      }, context);
+
+      const secondPayload: Record<string, unknown> = { prompt_cache_retention: "24h" };
+      requestHook({ payload: secondPayload }, context);
+      assert.equal("prompt_cache_retention" in secondPayload, false);
+      assert.ok(notifications.some((message) => message.includes("prompt_cache_retention")));
     } finally {
       if (previousAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
       else process.env.PI_CODING_AGENT_DIR = previousAgentDir;
@@ -888,6 +1001,7 @@ describe("/cache-optimizer fix command", () => {
     try {
       process.env.PI_CODING_AGENT_DIR = tempAgentDir;
       await writeFile(modelsPath, original, "utf8");
+      await chmod(modelsPath, 0o600);
 
       const jiti = createJiti(join(process.cwd(), "tests", "review-findings.test.ts"), {
         interopDefault: false,
@@ -942,7 +1056,7 @@ describe("/cache-optimizer fix command", () => {
         },
       };
 
-      const assertApplied = async (): Promise<string> => {
+      const assertApplied = async (expectedMode: number): Promise<string> => {
         assert.equal(confirmations.length, 1);
         assert.match(confirmations[0].title, /Fix/);
         assert.match(confirmations[0].message, /modelOverrides/);
@@ -953,6 +1067,8 @@ describe("/cache-optimizer fix command", () => {
         );
         assert.equal(backupNames.length, 1);
         assert.equal(await readFile(join(tempAgentDir, backupNames[0]), "utf8"), original);
+        assert.equal((await stat(join(tempAgentDir, backupNames[0]))).mode & 0o7777, expectedMode);
+        assert.equal((await stat(modelsPath)).mode & 0o7777, expectedMode);
 
         const written = await readFile(modelsPath, "utf8");
         const parsed = freshModule.__internals_for_tests.parseJsonc(written) as any;
@@ -987,10 +1103,11 @@ describe("/cache-optimizer fix command", () => {
 
       await command.handler("fix", commandContext);
       assert.equal(menuPrompts.length, 0);
-      const directBackup = await assertApplied();
+      const directBackup = await assertApplied(0o600);
 
       await rm(join(tempAgentDir, directBackup));
       await writeFile(modelsPath, original, "utf8");
+      await chmod(modelsPath, 0o644);
       confirmations.length = 0;
       notifications.length = 0;
       menuChoice = "Fix — Auto-fix compat issues (writes models.json)";
@@ -998,7 +1115,9 @@ describe("/cache-optimizer fix command", () => {
       await command.handler("", commandContext);
       assert.equal(menuPrompts.length, 1);
       assert.ok(menuPrompts[0].options.includes(menuChoice));
-      await assertApplied();
+      const menuBackup = await assertApplied(0o644);
+      assert.equal((await stat(join(tempAgentDir, menuBackup))).mode & 0o7777, 0o644);
+      assert.equal((await stat(modelsPath)).mode & 0o7777, 0o644);
     } finally {
       if (previousAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
       else process.env.PI_CODING_AGENT_DIR = previousAgentDir;
@@ -1006,5 +1125,90 @@ describe("/cache-optimizer fix command", () => {
       else process.env.PI_CACHE_RETENTION = previousRetention;
       await rm(tempAgentDir, { recursive: true, force: true });
     }
+  });
+
+  test("transaction rollback restores original content and access mode", async () => {
+    const tempAgentDir = await mkdtemp(join(tmpdir(), "pi-cache-fix-rollback-test-"));
+    const previousAgentDir = process.env.PI_CODING_AGENT_DIR;
+    const modelsPath = join(tempAgentDir, "models.json");
+    const original = `{"providers": {}}\n`;
+
+    try {
+      process.env.PI_CODING_AGENT_DIR = tempAgentDir;
+      await writeFile(modelsPath, original, "utf8");
+      await chmod(modelsPath, 0o604);
+
+      const jiti = createJiti(join(process.cwd(), "tests", "review-findings.test.ts"), {
+        interopDefault: false,
+        moduleCache: false,
+      });
+      const freshModule = await jiti.import<typeof import("../index.ts")>(
+        join(process.cwd(), "index.ts"),
+      );
+      const backupPath = `${modelsPath}.backup-cache-optimizer-${freshModule.__internals_for_tests.backupTimestamp()}`;
+      const result = await freshModule.__internals_for_tests.applyModelsJsonFixTransaction(
+        `{"providers": {"proxy": {}}}\n`,
+        backupPath,
+        () => "forced post-write validation failure",
+      );
+
+      assert.deepEqual(result, {
+        ok: false,
+        postCheckError: "forced post-write validation failure",
+      });
+      assert.equal(await readFile(modelsPath, "utf8"), original);
+      assert.equal((await stat(modelsPath)).mode & 0o7777, 0o604);
+      assert.equal(await readFile(backupPath, "utf8"), original);
+      assert.equal((await stat(backupPath)).mode & 0o7777, 0o604);
+    } finally {
+      if (previousAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
+      else process.env.PI_CODING_AGENT_DIR = previousAgentDir;
+      await rm(tempAgentDir, { recursive: true, force: true });
+    }
+  });
+
+  test("refuses to overwrite an existing backup or modify models.json", async () => {
+    const tempAgentDir = await mkdtemp(join(tmpdir(), "pi-cache-fix-exclusive-backup-test-"));
+    const previousAgentDir = process.env.PI_CODING_AGENT_DIR;
+    const modelsPath = join(tempAgentDir, "models.json");
+    const backupPath = join(tempAgentDir, "models.json.backup-cache-optimizer-existing");
+    const original = `{"providers": {}}\n`;
+
+    try {
+      process.env.PI_CODING_AGENT_DIR = tempAgentDir;
+      await writeFile(modelsPath, original, "utf8");
+      await chmod(modelsPath, 0o600);
+      await writeFile(backupPath, "do-not-overwrite", "utf8");
+
+      const jiti = createJiti(join(process.cwd(), "tests", "review-findings.test.ts"), {
+        interopDefault: false,
+        moduleCache: false,
+      });
+      const freshModule = await jiti.import<typeof import("../index.ts")>(
+        join(process.cwd(), "index.ts"),
+      );
+
+      await assert.rejects(
+        freshModule.__internals_for_tests.applyModelsJsonFixTransaction(
+          `{"providers": {"proxy": {}}}\n`,
+          backupPath,
+          () => null,
+        ),
+      );
+      assert.equal(await readFile(modelsPath, "utf8"), original);
+      assert.equal((await stat(modelsPath)).mode & 0o7777, 0o600);
+      assert.equal(await readFile(backupPath, "utf8"), "do-not-overwrite");
+    } finally {
+      if (previousAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
+      else process.env.PI_CODING_AGENT_DIR = previousAgentDir;
+      await rm(tempAgentDir, { recursive: true, force: true });
+    }
+  });
+
+  test("backup names remain unique within the same millisecond", () => {
+    const now = new Date("2026-08-17T12:34:56.789Z");
+    const first = internals.backupTimestamp(now);
+    const second = internals.backupTimestamp(now);
+    assert.notEqual(first, second);
   });
 });

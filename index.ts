@@ -1,9 +1,15 @@
 import { createHash } from "node:crypto";
-import { copyFile, mkdir, readFile, rename, unlink, writeFile } from "node:fs/promises";
-import { readFileSync } from "node:fs";
+import { chmod, copyFile, mkdir, readFile, rename, stat, unlink, writeFile } from "node:fs/promises";
+import { constants as fsConstants, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
-import { getAgentDir, type BuildSystemPromptOptions, type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
+import {
+  getAgentDir,
+  type BuildSystemPromptOptions,
+  type ExtensionAPI,
+  type ExtensionCommandContext,
+  type ExtensionContext,
+} from "@earendil-works/pi-coding-agent";
 
 type MutableEnv = Record<string, string | undefined>;
 
@@ -85,6 +91,7 @@ const STARTUP_CACHE_RETENTION_ENV = getOrCaptureCacheRetentionBaseline();
 requestLongCacheRetention();
 
 type PiModel = NonNullable<ExtensionContext["model"]>;
+type ModelIdentity = Pick<PiModel, "provider" | "id">;
 type UnknownRecord = Record<string, unknown>;
 type CacheProviderId = "deepseek" | "openai" | "claude" | "gemini";
 
@@ -2088,7 +2095,7 @@ function isAyaLikeAssistantMessage(message: unknown, model: PiModel | undefined)
 
 // ── Model key ──────────────────────────────────────────────────────
 
-function modelKey(model: PiModel): string {
+function modelKey(model: ModelIdentity): string {
   return `${model.provider}/${model.id}`;
 }
 
@@ -2461,12 +2468,8 @@ function getPromptCacheRetentionUnsupportedHint(): string {
   return "If this channel returns `400 Unsupported parameter: prompt_cache_retention`, remove/avoid `supportsLongCacheRetention`; this extension does not write that field directly, but Pi may send it when long retention is requested and compat says the proxy supports it.";
 }
 
-function hasPromptCacheRetentionUnsupportedSignal(headers: Record<string, string> | undefined): boolean {
-  if (!headers) return false;
-
-  const normalized = Object.entries(headers)
-    .map(([key, value]) => `${lower(key)}: ${lower(value)}`)
-    .join("\n");
+function hasPromptCacheRetentionUnsupportedText(value: unknown): boolean {
+  const normalized = lower(value);
   if (!normalized.includes("prompt_cache_retention")) return false;
 
   return [
@@ -2480,6 +2483,21 @@ function hasPromptCacheRetentionUnsupportedSignal(headers: Record<string, string
     "unrecognized",
     "bad request",
   ].some((needle) => normalized.includes(needle));
+}
+
+function hasPromptCacheRetentionUnsupportedSignal(headers: Record<string, string> | undefined): boolean {
+  if (!headers) return false;
+  return hasPromptCacheRetentionUnsupportedText(
+    Object.entries(headers)
+      .map(([key, value]) => `${key}: ${value}`)
+      .join("\n"),
+  );
+}
+
+function hasPromptCacheRetentionUnsupportedErrorMessage(message: unknown): boolean {
+  const record = getAssistantRecord(message);
+  return record?.stopReason === "error" &&
+    hasPromptCacheRetentionUnsupportedText(record.errorMessage);
 }
 
 type CompatAdvicePlacement = {
@@ -6528,18 +6546,121 @@ function formatCompatKeysForInsertion(compatKeys: Record<string, unknown>): stri
 }
 
 /**
- * Generate the timestamp string for backup filename.
- * Format: YYYYMMDDTHHMMSSZ (UTC)
+ * Generate a unique UTC timestamp component for backup filenames.
+ * Milliseconds, process id, and an in-process sequence prevent collisions.
  */
-function backupTimestamp(): string {
-  const now = new Date();
+let backupSequence = 0;
+
+function backupTimestamp(now: Date = new Date()): string {
   const y = now.getUTCFullYear();
-  const m = String(now.getUTCMonth() + 1).padStart(2, '0');
-  const d = String(now.getUTCDate()).padStart(2, '0');
-  const h = String(now.getUTCHours()).padStart(2, '0');
-  const min = String(now.getUTCMinutes()).padStart(2, '0');
-  const s = String(now.getUTCSeconds()).padStart(2, '0');
-  return `${y}${m}${d}T${h}${min}${s}Z`;
+  const m = String(now.getUTCMonth() + 1).padStart(2, "0");
+  const d = String(now.getUTCDate()).padStart(2, "0");
+  const h = String(now.getUTCHours()).padStart(2, "0");
+  const min = String(now.getUTCMinutes()).padStart(2, "0");
+  const s = String(now.getUTCSeconds()).padStart(2, "0");
+  const ms = String(now.getUTCMilliseconds()).padStart(3, "0");
+  return `${y}${m}${d}T${h}${min}${s}${ms}Z-${process.pid}-${backupSequence++}`;
+}
+
+function uniqueTempPath(targetPath: string, purpose: string): string {
+  return `${targetPath}.${process.pid}.${Date.now()}.${backupSequence++}.${purpose}.tmp`;
+}
+
+async function atomicReplaceTextFilePreservingMode(
+  targetPath: string,
+  content: string,
+  mode: number,
+  purpose: string,
+): Promise<void> {
+  const tempPath = uniqueTempPath(targetPath, purpose);
+  try {
+    await writeFile(tempPath, content, { encoding: "utf8", mode });
+    await chmod(tempPath, mode);
+    await rename(tempPath, targetPath);
+  } catch (error) {
+    try {
+      await unlink(tempPath);
+    } catch (cleanupError) {
+      if (getErrorCode(cleanupError) !== "ENOENT") {
+        console.warn(`${LOG_PREFIX}: failed to remove temporary models.json file`, cleanupError);
+      }
+    }
+    throw error;
+  }
+}
+
+async function atomicRestoreFileFromBackup(
+  backupPath: string,
+  targetPath: string,
+  mode: number,
+): Promise<void> {
+  const tempPath = uniqueTempPath(targetPath, "restore");
+  try {
+    await copyFile(backupPath, tempPath, fsConstants.COPYFILE_EXCL);
+    await chmod(tempPath, mode);
+    await rename(tempPath, targetPath);
+  } catch (error) {
+    try {
+      await unlink(tempPath);
+    } catch (cleanupError) {
+      if (getErrorCode(cleanupError) !== "ENOENT") {
+        console.warn(`${LOG_PREFIX}: failed to remove temporary restore file`, cleanupError);
+      }
+    }
+    throw error;
+  }
+}
+
+type ModelsJsonFixTransactionResult =
+  | { ok: true }
+  | { ok: false; postCheckError: string };
+
+async function applyModelsJsonFixTransaction(
+  modifiedText: string,
+  backupPath: string,
+  validateWrittenText: (writtenText: string) => string | null,
+): Promise<ModelsJsonFixTransactionResult> {
+  const originalMode = (await stat(MODELS_JSON_PATH)).mode & 0o7777;
+  await copyFile(MODELS_JSON_PATH, backupPath, fsConstants.COPYFILE_EXCL);
+  await chmod(backupPath, originalMode);
+
+  let targetReplaced = false;
+  try {
+    await atomicReplaceTextFilePreservingMode(
+      MODELS_JSON_PATH,
+      modifiedText,
+      originalMode,
+      "fix",
+    );
+    targetReplaced = true;
+
+    const writtenText = await readFile(MODELS_JSON_PATH, "utf8");
+    const postCheckError = validateWrittenText(writtenText);
+    const writtenMode = (await stat(MODELS_JSON_PATH)).mode & 0o7777;
+    const effectiveError = postCheckError ?? (
+      writtenMode === originalMode
+        ? null
+        : `models.json access mode changed from ${originalMode.toString(8)} to ${writtenMode.toString(8)}`
+    );
+    if (effectiveError !== null) {
+      await atomicRestoreFileFromBackup(backupPath, MODELS_JSON_PATH, originalMode);
+      return { ok: false, postCheckError: effectiveError };
+    }
+
+    return { ok: true };
+  } catch (error) {
+    if (targetReplaced) {
+      try {
+        await atomicRestoreFileFromBackup(backupPath, MODELS_JSON_PATH, originalMode);
+      } catch (restoreError) {
+        throw new AggregateError(
+          [error, restoreError],
+          "models.json fix failed and the atomic backup restore also failed",
+        );
+      }
+    }
+    throw error;
+  }
 }
 
 // Internal helpers exported only so the task verification script
@@ -6593,6 +6714,7 @@ export const __internals_for_tests = {
   isSessionAffinity403Applicable,
   isOpenAISdkHeader403Applicable,
   hasPromptCacheRetentionUnsupportedSignal,
+  hasPromptCacheRetentionUnsupportedErrorMessage,
   // Non-GPT OpenAI-compatible model detection
   isKimiLikeModel,
   isKimiLikeAssistantMessage,
@@ -6816,6 +6938,9 @@ export const __internals_for_tests = {
   deepEqualIgnoringKeys,
   formatCompatKeysForInsertion,
   backupTimestamp,
+  atomicReplaceTextFilePreservingMode,
+  atomicRestoreFileFromBackup,
+  applyModelsJsonFixTransaction,
   // Fix suggestion builder
   buildFixSuggestion,
   // Adaptive thinking compat helpers
@@ -7615,6 +7740,28 @@ export default function (pi: ExtensionAPI) {
     syncSessionHash(ctx);
     const msgRecord = asRecord(event.message);
 
+    // Some providers expose an HTTP 400 error body only through the finalized
+    // assistant error message; after_provider_response may contain the status
+    // and no diagnostic response headers. Record the same model-scoped
+    // prompt_cache_retention fallback from that authoritative message identity.
+    if (runtimeOptimizerEnabled && hasPromptCacheRetentionUnsupportedErrorMessage(event.message)) {
+      const fallbackModel = resolveRouteModel(ctx.model, ctx) ?? ctx.model;
+      const errorModel = modelFromAssistantMessage(event.message, fallbackModel) ?? fallbackModel;
+      if (errorModel && isPromptCacheRetention400Applicable(errorModel)) {
+        const key = modelKey(errorModel);
+        promptCacheRetention400Models.add(key);
+        if (!warnedPromptCacheRetention400Models.has(key)) {
+          warnedPromptCacheRetention400Models.add(key);
+          ctx.ui.notify(
+            `⚠️ ${LOG_PREFIX}: ${key} rejected prompt_cache_retention. ` +
+            getPromptCacheRetentionUnsupportedHint() +
+            ` Run /cache-optimizer doctor for the exact edit location.`,
+            "warning",
+          );
+        }
+      }
+    }
+
     // Record only Anthropic's explicit mixed-TTL ordering error. This is a
     // non-retryable 400 in Pi 0.82.1, so the fallback applies to the next
     // subsequent request (and to a retry only if another layer initiates one).
@@ -7729,27 +7876,27 @@ export default function (pi: ExtensionAPI) {
   //   reset   — reset current provider/model footer stats bucket (local only)
   //   (no args) — interactive menu (with UI) or help summary
   // ────────────────────────────────────────────────────────────────
-  pi.registerCommand("cache-optimizer", {
-    description: "Configure and diagnose Pi cache behavior",
-    getArgumentCompletions: getCacheOptimizerArgumentCompletions,
-    handler: async (args: string, cmdCtx) => {
-      syncSessionHash(cmdCtx);
-      const selectedModel = cmdCtx.model;
-      const model = resolveRouteModel(selectedModel, cmdCtx as unknown as ExtensionContext) ?? selectedModel;
-      const commandParts = args.trim().toLowerCase().split(/\s+/).filter(Boolean);
-      const subcommand = commandParts[0] || "help";
+  async function handleCacheOptimizerCommand(
+    args: string,
+    cmdCtx: ExtensionCommandContext,
+  ): Promise<void> {
+    syncSessionHash(cmdCtx);
+    const selectedModel = cmdCtx.model;
+    const model = resolveRouteModel(selectedModel, cmdCtx) ?? selectedModel;
+    const commandParts = args.trim().toLowerCase().split(/\s+/).filter(Boolean);
+    const subcommand = commandParts[0] || "help";
 
       if (subcommand === "enable") {
         setRuntimeOptimizerEnabled(true);
         resetCurrentSessionStats();
-        await flushPersistCacheStats(cmdCtx as unknown as ExtensionContext);
-        await publishStatus(cmdCtx as unknown as ExtensionContext, model);
+        await flushPersistCacheStats(cmdCtx);
+        await publishStatus(cmdCtx, model);
         cmdCtx.ui.notify(`✅ Pi Cache Optimizer enabled for this Pi process. Local footer stats were reset for before/after comparison.\n${formatOptimizerRuntimeMode()}`, "info");
       } else if (subcommand === "disable") {
         setRuntimeOptimizerEnabled(false);
         resetCurrentSessionStats();
-        await flushPersistCacheStats(cmdCtx as unknown as ExtensionContext);
-        await publishStatus(cmdCtx as unknown as ExtensionContext, model);
+        await flushPersistCacheStats(cmdCtx);
+        await publishStatus(cmdCtx, model);
         cmdCtx.ui.notify(`⏸️ Pi Cache Optimizer disabled for this Pi process. Local footer stats were reset and will keep collecting while disabled for comparison.\n${formatOptimizerRuntimeMode()}`, "warning");
       } else if (subcommand === "doctor") {
         if (!model) {
@@ -7795,7 +7942,7 @@ export default function (pi: ExtensionAPI) {
           await writePersistedFooterMode(nextMode);
           persistedFooterStatsMode = nextMode;
           lastStatusText = undefined;
-          await publishStatus(cmdCtx as unknown as ExtensionContext, model);
+          await publishStatus(cmdCtx, model);
           const resolved = resolveFooterStatsMode(persistedFooterStatsMode);
           cmdCtx.ui.notify(
             `✅ Footer mode set to ${resolved.mode}. Persistent config overrides ${FOOTER_MODE_ENV}.`,
@@ -7842,10 +7989,10 @@ export default function (pi: ExtensionAPI) {
         resetStatsForModel(model);
 
         // Persist immediately.
-        await flushPersistCacheStats(cmdCtx as unknown as ExtensionContext);
+        await flushPersistCacheStats(cmdCtx);
 
         // Update footer to show 0/0.
-        await publishStatus(cmdCtx as unknown as ExtensionContext, model);
+        await publishStatus(cmdCtx, model);
 
         cmdCtx.ui.notify(
           `✅ Reset local footer cache stats for "${displayKey}". ` +
@@ -7998,20 +8145,20 @@ export default function (pi: ExtensionAPI) {
               );
               if (confirmed) {
                 try {
-                  await copyFile(MODELS_JSON_PATH, backupPath);
-                  const tempPath = `${MODELS_JSON_PATH}.${process.pid}.${Date.now()}.fix.tmp`;
-                  await writeFile(tempPath, plan.modifiedText, "utf8");
-                  await rename(tempPath, MODELS_JSON_PATH);
-
-                  const writtenText = await readFile(MODELS_JSON_PATH, "utf8");
-                  const postErr = selfCheckMissingEntryInsertion(
-                    originalText, writtenText,
-                    suggestion.providerLabel, suggestion.modelId, suggestion.compatKeys,
+                  const result = await applyModelsJsonFixTransaction(
+                    plan.modifiedText,
+                    backupPath,
+                    (writtenText) => selfCheckMissingEntryInsertion(
+                      originalText,
+                      writtenText,
+                      suggestion.providerLabel,
+                      suggestion.modelId,
+                      suggestion.compatKeys,
+                    ),
                   );
-                  if (postErr !== null) {
-                    await copyFile(backupPath, MODELS_JSON_PATH);
+                  if ("postCheckError" in result) {
                     cmdCtx.ui.notify(
-                      `❌ Post-write self-check failed: ${postErr}\n` +
+                      `❌ Post-write self-check failed: ${result.postCheckError}\n` +
                       `The backup at ${backupPath} has been restored. No changes applied.`,
                       "error",
                     );
@@ -8025,7 +8172,8 @@ export default function (pi: ExtensionAPI) {
                   );
                 } catch (e) {
                   cmdCtx.ui.notify(
-                    `❌ Write failed: ${e instanceof Error ? e.message : String(e)}`,
+                    `❌ Write failed: ${e instanceof Error ? e.message : String(e)}\n` +
+                    `Backup may be at: ${backupPath}`,
                     "error",
                   );
                 }
@@ -8147,22 +8295,21 @@ export default function (pi: ExtensionAPI) {
 
         // Write: backup → temp + rename → self-check again
         try {
-          // Backup
-          await copyFile(MODELS_JSON_PATH, backupPath);
-
-          // Atomic write
-          const tempPath = `${MODELS_JSON_PATH}.${process.pid}.${Date.now()}.fix.tmp`;
-          await writeFile(tempPath, modifiedText, "utf8");
-          await rename(tempPath, MODELS_JSON_PATH);
-
-          // Post-write self-check (read back)
-          const writtenText = await readFile(MODELS_JSON_PATH, "utf8");
-          const postCheckError = selfCheckFix(originalText, writtenText, suggestion.providerLabel, suggestion.modelId, suggestion.compatKeys, decision.placement);
-          if (postCheckError !== null) {
-            // Restore from backup
-            await copyFile(backupPath, MODELS_JSON_PATH);
+          const result = await applyModelsJsonFixTransaction(
+            modifiedText,
+            backupPath,
+            (writtenText) => selfCheckFix(
+              originalText,
+              writtenText,
+              suggestion.providerLabel,
+              suggestion.modelId,
+              suggestion.compatKeys,
+              decision.placement,
+            ),
+          );
+          if ("postCheckError" in result) {
             cmdCtx.ui.notify(
-              `❌ Post-write self-check failed: ${postCheckError}\n` +
+              `❌ Post-write self-check failed: ${result.postCheckError}\n` +
               `The backup at ${backupPath} has been restored. No changes applied.`,
               "error",
             );
@@ -8198,182 +8345,17 @@ export default function (pi: ExtensionAPI) {
           ];
           const choice = await cmdCtx.ui.select("Cache Optimizer", menuOptions);
           if (choice === menuOptions[0]) {
-            setRuntimeOptimizerEnabled(true);
-            resetCurrentSessionStats();
-            await flushPersistCacheStats(cmdCtx as unknown as ExtensionContext);
-            await publishStatus(cmdCtx as unknown as ExtensionContext, model);
-            cmdCtx.ui.notify(`✅ Pi Cache Optimizer enabled for this Pi process. Local footer stats were reset for before/after comparison.\n${formatOptimizerRuntimeMode()}`, "info");
+            await handleCacheOptimizerCommand("enable", cmdCtx);
           } else if (choice === menuOptions[1]) {
-            setRuntimeOptimizerEnabled(false);
-            resetCurrentSessionStats();
-            await flushPersistCacheStats(cmdCtx as unknown as ExtensionContext);
-            await publishStatus(cmdCtx as unknown as ExtensionContext, model);
-            cmdCtx.ui.notify(`⏸️ Pi Cache Optimizer disabled for this Pi process. Local footer stats were reset and will keep collecting while disabled for comparison.\n${formatOptimizerRuntimeMode()}`, "warning");
+            await handleCacheOptimizerCommand("disable", cmdCtx);
           } else if (choice === menuOptions[2]) {
-            if (!model) {
-              cmdCtx.ui.notify("No active model selected. Select a model first with /model or pi --model.", "warning");
-            } else {
-              const diagnosis = buildDoctorDiagnosis(model, { promptCacheRetention400: promptCacheRetention400Models.has(modelKey(model)), anthropicTtlOrderError: anthropicTtlOrderErrorModels.has(modelKey(model)), sessionAffinity403: sendSessionAffinityHeaders403Models.has(modelKey(model)), openAISdkHeader403: openAISdkHeader403Models.has(modelKey(model)) });
-              const adapter = selectAdapterForModel(model);
-              const sk = model ? sessionModelKey(model) : undefined;
-              const statsState = model ? cacheStatsTotalsByModel[modelKey(model)] : undefined;
-              const samples = sk ? getRecentSamples(sk) : [];
-              const lowHitLines = buildLowHitDiagnosis(model, adapter, statsState, samples);
-              const fullDiagnosis = lowHitLines.length > 0
-                ? diagnosis + "\n" + lowHitLines.join("\n")
-                : diagnosis;
-              cmdCtx.ui.notify(fullDiagnosis, "info");
-            }
+            await handleCacheOptimizerCommand("doctor", cmdCtx);
           } else if (choice === menuOptions[3]) {
-            if (!model) {
-              cmdCtx.ui.notify("No active model selected. Select a model first with /model or pi --model.", "warning");
-            } else {
-              const adapter = selectAdapterForModel(model);
-              const sk = model ? sessionModelKey(model) : undefined;
-              const statsState = model ? cacheStatsTotalsByModel[modelKey(model)] : undefined;
-              const samples = sk ? getRecentSamples(sk) : [];
-              const output = buildStatsOutput(model, adapter, statsState, samples);
-              cmdCtx.ui.notify(output, "info");
-            }
+            await handleCacheOptimizerCommand("stats", cmdCtx);
           } else if (choice === menuOptions[4]) {
-            if (!model) {
-              cmdCtx.ui.notify("No active model selected. Select a model first with /model or pi --model.", "warning");
-            } else {
-              const compatResult = buildCompatDiagnosis(model);
-              if (compatResult) {
-                cmdCtx.ui.notify(compatResult, "warning");
-              } else {
-                cmdCtx.ui.notify(
-                  isAdaptiveThinkingCompatApplicable(model) || isDeepSeekCompatCheckApplicable(model) || isCompatCheckApplicable(model)
-                    ? "✅ Compat fully configured."
-                    : getCompatCheckNotApplicableLines(model).join("\n"),
-                  "info",
-                );
-              }
-            }
+            await handleCacheOptimizerCommand("compat", cmdCtx);
           } else if (choice === menuOptions[5]) {
-            // Fix — auto-fix compat issues
-            if (!model) {
-              cmdCtx.ui.notify("No active model selected. Select a model first with /model or pi --model.", "warning");
-              return;
-            }
-            const suggestion = buildCommandFixSuggestion(model);
-            if (!suggestion) {
-              const key = modelKey(model);
-              cmdCtx.ui.notify(`✅ Nothing to fix for "${key}". Compat already configured.`, "info");
-              return;
-            }
-
-            // Read models.json
-            let originalText: string;
-            try {
-              originalText = await readFile(MODELS_JSON_PATH, "utf8");
-            } catch {
-              cmdCtx.ui.notify(`❌ Could not read ${MODELS_JSON_PATH}. File may not exist.`, "error");
-              return;
-            }
-
-            const location = locateModelInJsonc(originalText, suggestion.providerLabel, suggestion.modelId);
-            const menuDecision = location
-              ? chooseFixPlacement(
-                originalText,
-                location,
-                suggestion.compatKeys,
-                suggestion.providerLabel,
-                suggestion.forceModelLevel,
-              )
-              : undefined;
-            const overridePlan = location
-              ? undefined
-              : composeModelOverrideInsertion(
-                originalText,
-                suggestion.providerLabel,
-                suggestion.modelId,
-                suggestion.compatKeys,
-              );
-            if (!location && !overridePlan) {
-              cmdCtx.ui.notify(
-                `❌ Could not safely locate a modelOverrides insertion point in ${getModelsJsonDisplayPath()}.\n` +
-                `Manual edit required:\n${formatMissingEntryManualSnippet(suggestion.providerLabel, suggestion.modelId, suggestion.compatKeys)}\n` +
-                `Then run /reload.`,
-                "warning",
-              );
-              return;
-            }
-            const modifiedText = location && menuDecision
-              ? composeFixInsertion(originalText, location, suggestion.compatKeys, menuDecision.placement)
-              : overridePlan!.modifiedText;
-            const checkError = location && menuDecision
-              ? selfCheckFix(originalText, modifiedText, suggestion.providerLabel, suggestion.modelId, suggestion.compatKeys, menuDecision.placement)
-              : selfCheckMissingEntryInsertion(originalText, modifiedText, suggestion.providerLabel, suggestion.modelId, suggestion.compatKeys);
-            if (checkError !== null) {
-              cmdCtx.ui.notify(`❌ Self-check failed: ${checkError}\nNo changes made.`, "error");
-              return;
-            }
-
-            const keysPreview = JSON.stringify(suggestion.compatKeys, null, 2);
-            const ts = backupTimestamp();
-            const backupPath = `${MODELS_JSON_PATH}.backup-cache-optimizer-${ts}`;
-
-            const menuLocationDesc = overridePlan?.placementLabel ?? (menuDecision?.placement === "provider"
-              ? `providers["${suggestion.providerLabel}"] -> compat (provider level)`
-              : menuDecision?.placement === "modelOverride"
-                ? `providers["${suggestion.providerLabel}"] -> modelOverrides -> "${suggestion.modelId}" -> compat`
-                : `providers["${suggestion.providerLabel}"] -> models -> "${suggestion.modelId}" -> compat (model level)`);
-            const menuScopeRiskLine = menuDecision?.placement === "provider"
-              ? `  1. This change applies to ALL ${location?.allModelIds.length || 1} model(s) in the "${suggestion.providerLabel}" provider, across all sessions.`
-              : `  1. This change affects ALL sessions using the "${suggestion.providerLabel}" provider/channel (scoped to model "${suggestion.modelId}").`;
-
-            const previewLines = [
-              `📝 Preview of changes to ${getModelsJsonDisplayPath()}:`,
-              `Location: ${menuLocationDesc}`,
-              `Placement: ${menuDecision ? `${menuDecision.placement} level — ${menuDecision.reason}` : "modelOverrides — built-in/API-login-safe model override"}`,
-              `Compat JSON to write:`,
-              keysPreview,
-              ``,
-              `⚠️  Risk notice:`,
-              menuScopeRiskLine,
-              `  2. A timestamped backup will be written to: ${backupPath}`,
-              `  3. You must restart Pi / run /reload for the change to take effect.`,
-              `  4. If the file contains comments, verify the result after write.`,
-              ``,
-              `Apply these changes?`,
-            ];
-
-            const confirmed = await cmdCtx.ui.confirm("Cache Optimizer — Fix", previewLines.join("\n"));
-            if (!confirmed) {
-              cmdCtx.ui.notify("No changes were made. Canceled by user.", "info");
-              return;
-            }
-
-            try {
-              await copyFile(MODELS_JSON_PATH, backupPath);
-              const tempPath = `${MODELS_JSON_PATH}.${process.pid}.${Date.now()}.fix.tmp`;
-              await writeFile(tempPath, modifiedText, "utf8");
-              await rename(tempPath, MODELS_JSON_PATH);
-
-              const writtenText = await readFile(MODELS_JSON_PATH, "utf8");
-              const postCheck = location && menuDecision
-                ? selfCheckFix(originalText, writtenText, suggestion.providerLabel, suggestion.modelId, suggestion.compatKeys, menuDecision.placement)
-                : selfCheckMissingEntryInsertion(originalText, writtenText, suggestion.providerLabel, suggestion.modelId, suggestion.compatKeys);
-              if (postCheck !== null) {
-                await copyFile(backupPath, MODELS_JSON_PATH);
-                cmdCtx.ui.notify(`❌ Post-write check failed: ${postCheck}\nBackup restored.`, "error");
-                return;
-              }
-
-              cmdCtx.ui.notify(
-                `✅ Fix applied to ${getModelsJsonDisplayPath()}.` +
-                `\nBackup: ${backupPath}` +
-                `\nRun /reload or restart Pi for the change to take effect.`,
-                "info",
-              );
-            } catch (writeError) {
-              cmdCtx.ui.notify(
-                `❌ Write failed: ${writeError instanceof Error ? writeError.message : String(writeError)}`,
-                "error",
-              );
-            }
+            await handleCacheOptimizerCommand("fix", cmdCtx);
           } else if (choice === menuOptions[6]) {
             const modeOptions = ["total — Daily cumulative totals (default)", "session — Current Pi conversation session", "process — Current Pi process only", "Cancel"];
             const modeChoice = await cmdCtx.ui.select("Footer cache stats mode", modeOptions);
@@ -8384,42 +8366,9 @@ export default function (pi: ExtensionAPI) {
                 : modeChoice === modeOptions[2]
                   ? "process"
                   : undefined;
-            if (nextMode) {
-              try {
-                await writePersistedFooterMode(nextMode);
-                persistedFooterStatsMode = nextMode;
-                lastStatusText = undefined;
-                await publishStatus(cmdCtx as unknown as ExtensionContext, model);
-                cmdCtx.ui.notify(
-                  `✅ Footer mode set to ${nextMode}. Persistent config overrides ${FOOTER_MODE_ENV}.`,
-                  "info",
-                );
-              } catch (error) {
-                cmdCtx.ui.notify(
-                  `❌ Could not update footer mode config: ${error instanceof Error ? error.message : String(error)}`,
-                  "error",
-                );
-              }
-            }
+            if (nextMode) await handleCacheOptimizerCommand(`config footer-mode ${nextMode}`, cmdCtx);
           } else if (choice === menuOptions[7]) {
-            if (!model) {
-              cmdCtx.ui.notify("No active model selected. Select a model first with /model or pi --model.", "warning");
-            } else {
-              const adapter = selectAdapterForModel(model);
-              if (!adapter) {
-                cmdCtx.ui.notify("ℹ️ Active model does not match a cache adapter. No stats to reset.", "info");
-              } else {
-                const displayKey = modelKey(model);
-                resetStatsForModel(model);
-                await flushPersistCacheStats(cmdCtx as unknown as ExtensionContext);
-                await publishStatus(cmdCtx as unknown as ExtensionContext, model);
-                cmdCtx.ui.notify(
-                  `✅ Reset local footer cache stats for "${displayKey}". ` +
-                  "Upstream provider prompt cache was not modified.",
-                  "info",
-                );
-              }
-            }
+            await handleCacheOptimizerCommand("reset", cmdCtx);
           }
           // choice === "cancel" or undefined → no action
           return;
@@ -8459,6 +8408,11 @@ export default function (pi: ExtensionAPI) {
         }
         cmdCtx.ui.notify(diagnosis.join("\n"), "info");
       }
-    },
+  }
+
+  pi.registerCommand("cache-optimizer", {
+    description: "Configure and diagnose Pi cache behavior",
+    getArgumentCompletions: getCacheOptimizerArgumentCompletions,
+    handler: handleCacheOptimizerCommand,
   });
 }
