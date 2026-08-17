@@ -101,6 +101,14 @@ describe("OpenAI-compatible request contracts", () => {
       }),
       false,
     );
+    assert.equal(
+      internals.hasPromptCacheRetentionUnsupportedErrorMessage({
+        role: "assistant",
+        stopReason: "error",
+        errorMessage: "400 Bad request: prompt_cache_retention must be one of 24h or in-memory",
+      }),
+      false,
+    );
   });
 });
 

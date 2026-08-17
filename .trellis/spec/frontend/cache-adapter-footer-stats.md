@@ -272,10 +272,14 @@ the user should remove/avoid `supportsLongCacheRetention` for that channel while
 keeping `sendSessionAffinityHeaders` if supported. The runtime records this exact
 failure from either response headers or the finalized assistant error message;
 subsequent requests for that provider/model strip the parameter for the current
-process. Other 400 errors MUST NOT activate this fallback. This extension does
-not write `prompt_cache_retention` directly; it requests
-`PI_CACHE_RETENTION=long`, and Pi may send the parameter when compat says long
-retention is supported.
+process. Finalized assistant errors use their request-local provider/model/API
+identity even when the active model is a router shell and no live routing registry
+is available; inherited router compat MUST NOT suppress an explicit unsupported
+signal. Other 400 errors MUST NOT activate this fallback: a generic `bad request`
+that only says the parameter value or combination is invalid is not proof that the
+parameter itself is unsupported. This extension does not write
+`prompt_cache_retention` directly; it requests `PI_CACHE_RETENTION=long`, and Pi
+may send the parameter when compat says long retention is supported.
 
 This warning is advisory only and MUST NOT mutate the user's `models.json`.
 
@@ -1520,7 +1524,7 @@ compat). It does NOT read or expose:
 | `/cache-optimizer compat` with fully-configured OpenRouter model | Shows `✅ Compat fully configured.` followed by OpenRouter channel notes; if `supportsLongCacheRetention` is enabled, also includes the `prompt_cache_retention` 400 recovery hint |
 | Router/channel diagnostics do not affect adapter selection | An OpenRouter Llama model still selects the Llama adapter, not an "OpenRouter" adapter |
 | Diagnostic text must not expose API keys, prompts, payloads, or model output | All router/channel output uses only provider, api, baseUrl, compat metadata |
-| Third-party OpenAI-compatible proxy (`openai-completions` or `openai-responses`) returns HTTP 400 while `supportsLongCacheRetention` is enabled | Extension records a one-time model-scoped warning from an explicit response-header or assistant-error-message `prompt_cache_retention` unsupported signal; subsequent current-process requests strip the parameter and `/cache-optimizer doctor` surfaces the recovery hint |
+| Third-party OpenAI-compatible proxy (`openai-completions` or `openai-responses`) returns HTTP 400 while `supportsLongCacheRetention` is enabled | Extension records a one-time model-scoped warning from an explicit response-header or assistant-error-message `prompt_cache_retention` unsupported signal; subsequent current-process requests strip the parameter and `/cache-optimizer doctor` surfaces the recovery hint. Routed assistant errors use message-local provider/model/API identity even without a live registry; value-validation-only `bad request` errors do not activate the fallback. |
 | Third-party `openai-completions` proxy returns HTTP 403 while `sendSessionAffinityHeaders` is enabled | Extension records a one-time model-scoped warning (`sendSessionAffinityHeaders403Models`) and `/cache-optimizer doctor` surfaces the session-affinity 403 hint with `/cache-optimizer fix` offering `sendSessionAffinityHeaders: false`. Pi 0.80.7+ `openai-responses` is excluded because it uses `sessionAffinityFormat`. |
 | `/cache-optimizer doctor` with session-affinity enabled but no 403 observed | Shows advisory text that some CDNs/WAFs block custom headers (session_id, x-client-request-id, x-session-affinity) and return 403 |
 | `/cache-optimizer fix` with 403-observed OpenAI-compatible model | Offers `sendSessionAffinityHeaders: false` as the compat-key suggestion (mirror of the 400 `supportsLongCacheRetention: false` path) |

@@ -2481,7 +2481,6 @@ function hasPromptCacheRetentionUnsupportedText(value: unknown): boolean {
     "extra inputs",
     "not permitted",
     "unrecognized",
-    "bad request",
   ].some((needle) => normalized.includes(needle));
 }
 
@@ -4421,6 +4420,16 @@ function isPromptCacheRetention400Applicable(model: PiModel): boolean {
     !isOfficialOpenAIBaseUrl(model) &&
     !isPiBuiltInLlamaCppModel(model) &&
     getCompat(model).supportsLongCacheRetention === true;
+}
+
+function isExplicitPromptCacheRetentionUnsupportedApplicable(model: PiModel): boolean {
+  // A finalized assistant error with an explicit unsupported-parameter signal
+  // proves that prompt_cache_retention reached this provider/model. Do not
+  // require compat inherited from the active fallback model: router shells may
+  // have no upstream compat metadata when no live routing registry is present.
+  return isOpenAICompatibleApi(model.api) &&
+    !isOfficialOpenAIBaseUrl(model) &&
+    !isPiBuiltInLlamaCppModel(model);
 }
 
 /**
@@ -7746,8 +7755,11 @@ export default function (pi: ExtensionAPI) {
     // prompt_cache_retention fallback from that authoritative message identity.
     if (runtimeOptimizerEnabled && hasPromptCacheRetentionUnsupportedErrorMessage(event.message)) {
       const fallbackModel = resolveRouteModel(ctx.model, ctx) ?? ctx.model;
-      const errorModel = modelFromAssistantMessage(event.message, fallbackModel) ?? fallbackModel;
-      if (errorModel && isPromptCacheRetention400Applicable(errorModel)) {
+      const messageModel = modelFromAssistantMessage(event.message, fallbackModel) ?? fallbackModel;
+      const errorModel = messageModel
+        ? findModelInRegistry(ctx.modelRegistry, messageModel.provider, messageModel.id) ?? messageModel
+        : undefined;
+      if (errorModel && isExplicitPromptCacheRetentionUnsupportedApplicable(errorModel)) {
         const key = modelKey(errorModel);
         promptCacheRetention400Models.add(key);
         if (!warnedPromptCacheRetention400Models.has(key)) {

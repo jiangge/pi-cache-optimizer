@@ -792,15 +792,124 @@ describe("provider response recovery", () => {
           model: "gpt-5.5",
           api: "openai-completions",
           stopReason: "error",
+          errorMessage: "400 Bad request: prompt_cache_retention must be one of 24h or in-memory",
+          usage: { input: 0, cacheRead: 0, cacheWrite: 0 },
+        },
+      }, context);
+
+      const valueErrorPayload: Record<string, unknown> = { prompt_cache_retention: "24h" };
+      requestHook({ payload: valueErrorPayload }, context);
+      assert.equal(valueErrorPayload.prompt_cache_retention, "24h");
+
+      await messageEndHook({
+        message: {
+          role: "assistant",
+          provider: "proxy",
+          model: "gpt-5.5",
+          api: "openai-completions",
+          stopReason: "error",
           errorMessage: "400 Unsupported parameter: prompt_cache_retention",
           usage: { input: 0, cacheRead: 0, cacheWrite: 0 },
         },
       }, context);
 
-      const secondPayload: Record<string, unknown> = { prompt_cache_retention: "24h" };
-      requestHook({ payload: secondPayload }, context);
-      assert.equal("prompt_cache_retention" in secondPayload, false);
+      const unsupportedPayload: Record<string, unknown> = { prompt_cache_retention: "24h" };
+      requestHook({ payload: unsupportedPayload }, context);
+      assert.equal("prompt_cache_retention" in unsupportedPayload, false);
       assert.ok(notifications.some((message) => message.includes("prompt_cache_retention")));
+    } finally {
+      if (previousAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
+      else process.env.PI_CODING_AGENT_DIR = previousAgentDir;
+      if (previousRetention === undefined) delete process.env.PI_CACHE_RETENTION;
+      else process.env.PI_CACHE_RETENTION = previousRetention;
+      await rm(tempAgentDir, { recursive: true, force: true });
+    }
+  });
+
+  test("routed body-only errors use assistant provider/model identity without a live registry", async () => {
+    const tempAgentDir = await mkdtemp(join(tmpdir(), "pi-cache-routed-retention-recovery-test-"));
+    const previousAgentDir = process.env.PI_CODING_AGENT_DIR;
+    const previousRetention = process.env.PI_CACHE_RETENTION;
+
+    try {
+      process.env.PI_CODING_AGENT_DIR = tempAgentDir;
+      await writeFile(
+        join(tempAgentDir, "models.json"),
+        JSON.stringify({
+          providers: {
+            proxy: {
+              models: [{
+                id: "gpt-5.5",
+                compat: { supportsLongCacheRetention: true },
+              }],
+            },
+          },
+        }),
+        "utf8",
+      );
+
+      const jiti = createJiti(join(process.cwd(), "tests", "review-findings.test.ts"), {
+        interopDefault: false,
+        moduleCache: false,
+      });
+      const freshModule = await jiti.import<typeof import("../index.ts")>(
+        join(process.cwd(), "index.ts"),
+      );
+      const handlers = new Map<string, (event: any, context: any) => unknown>();
+      freshModule.default({
+        on(name: string, handler: (event: any, context: any) => unknown) {
+          handlers.set(name, handler);
+        },
+        registerCommand() {},
+      } as any);
+
+      const routerModel = {
+        provider: "router",
+        id: "auto",
+        name: "Auto",
+        api: "router-api",
+        baseUrl: "",
+        compat: {},
+        reasoning: false,
+        input: ["text"],
+        cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+        contextWindow: 128_000,
+        maxTokens: 8192,
+      };
+      const upstreamModel = {
+        ...routerModel,
+        provider: "proxy",
+        id: "gpt-5.5",
+        name: "GPT-5.5",
+        api: "openai-completions",
+        baseUrl: "https://proxy.example/v1",
+        compat: { supportsLongCacheRetention: true },
+      };
+      const baseContext = {
+        sessionManager: { getSessionId: () => "routed-retention-recovery-session" },
+        modelRegistry: { find: () => undefined, getAvailable: () => [], getAll: () => [] },
+        ui: { notify() {}, setStatus() {} },
+      };
+      const requestHook = handlers.get("before_provider_request");
+      const messageEndHook = handlers.get("message_end");
+      assert.ok(requestHook);
+      assert.ok(messageEndHook);
+
+      await messageEndHook({
+        message: {
+          role: "assistant",
+          provider: "proxy",
+          model: "gpt-5.5",
+          api: "openai-completions",
+          stopReason: "error",
+          errorMessage: "400 Unsupported parameter: prompt_cache_retention",
+          usage: { input: 0, cacheRead: 0, cacheWrite: 0 },
+        },
+      }, { ...baseContext, model: routerModel });
+
+      const nextPayload: Record<string, unknown> = { prompt_cache_retention: "24h" };
+      requestHook({ payload: nextPayload }, { ...baseContext, model: upstreamModel });
+      assert.equal("prompt_cache_retention" in nextPayload, false);
     } finally {
       if (previousAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
       else process.env.PI_CODING_AGENT_DIR = previousAgentDir;
