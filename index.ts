@@ -3936,6 +3936,72 @@ function mergeCacheStatsForTotal(existing: CacheStats | undefined, incoming: Cac
   addCacheStatsTotals(existing, incoming);
   return existing;
 }
+// ── Process-wide live totals (parent + subagent aggregation) ─────────
+// All extension instances (main session + pi-minions subagents) run in the
+// same Node.js process. Each session's message_end is handled by its OWN
+// instance, so per-instance maps never see other sessions' traffic. To make
+// the main footer's "total" mode reflect subagent cache usage too, every
+// instance folds its usage into a shared process-global sink keyed by
+// provider/model. The parent instance resets+seeds the sink from persisted
+// totals at session_start, so the displayed baseline stays authoritative
+// across reloads (no double counting) while live subagent events accumulate.
+const LIVE_TOTALS_GLOBAL_KEY = "__piCacheOptimizerLiveTotals__";
+
+function liveTotalsSink(): Record<string, CacheStats> {
+  const g = globalThis as Record<string, unknown>;
+  let sink = g[LIVE_TOTALS_GLOBAL_KEY] as Record<string, CacheStats> | undefined;
+  if (!sink) {
+    sink = {};
+    g[LIVE_TOTALS_GLOBAL_KEY] = sink;
+  }
+  return sink;
+}
+
+/** True when this extension instance belongs to the top-level interactive
+ *  session (vs. a pi-minions subagent session created in-process). */
+function isParentSessionInstance(ctx: { sessionManager?: { getSessionId(): string | undefined } }): boolean {
+  const sid = ctx.sessionManager?.getSessionId();
+  return !!sid && sid === process.env.PI_SESSION_ID;
+}
+
+/** Reset the shared sink and re-seed it from the persisted cumulative totals.
+ *  Called by the parent instance at session_start/restore so the displayed
+ *  baseline equals on-disk totals and live events add exactly once. */
+function seedLiveTotalsSink(totalsByModel: Record<string, CacheStats>): void {
+  const sink = liveTotalsSink();
+  for (const key of Object.keys(sink)) delete sink[key];
+  for (const [key, stats] of Object.entries(totalsByModel)) sink[key] = cloneCacheStats(stats);
+}
+
+/** Fold one message's usage into the shared sink (called by every instance). */
+function addUsageToLiveTotals(model: ModelIdentity, usage: UsageSnapshot): void {
+  const key = modelKey(model);
+  const sink = liveTotalsSink();
+  const existing = sink[key];
+  const incoming = emptyCacheStats();
+  addUsageToCacheStats(incoming, usage);
+  sink[key] = mergeCacheStatsForTotal(existing, incoming);
+}
+
+/** Roll the shared sink's day buckets over (mirrors totalsByModel). */
+function rollOverLiveTotalsSink(): void {
+  const day = currentLocalDay();
+  const sink = liveTotalsSink();
+  for (const key of Object.keys(sink)) {
+    const stats = sink[key];
+    if (stats && stats.day !== day) sink[key] = emptyCacheStats(day);
+  }
+}
+
+/** Drop a model key (or all keys) from the shared sink on reset. */
+function resetLiveTotalsSink(modelKeyPart?: string): void {
+  const sink = liveTotalsSink();
+  if (modelKeyPart === undefined) {
+    for (const key of Object.keys(sink)) delete sink[key];
+    return;
+  }
+  delete sink[modelKeyPart];
+}
 
 function deriveTotalsByModelFromSessionStats(statsByModel: Record<string, CacheStats>): Record<string, CacheStats> {
   const totals: Record<string, CacheStats> = {};
@@ -6961,6 +7027,14 @@ export const __internals_for_tests = {
   buildAdaptiveThinkingCompatSuggestion,
   buildAdaptiveThinkingCompatWarningText,
   appendAdaptiveThinkingCompatAdviceLines,
+  // Process-wide live totals (parent + subagent aggregation)
+  liveTotalsSink,
+  seedLiveTotalsSink,
+  addUsageToLiveTotals,
+  rollOverLiveTotalsSink,
+  resetLiveTotalsSink,
+  isParentSessionInstance,
+  LIVE_TOTALS_GLOBAL_KEY,
 };
 
 export default function (pi: ExtensionAPI) {
@@ -7173,6 +7247,7 @@ export default function (pi: ExtensionAPI) {
     }
     delete cacheStatsTotalsByModel[displayKey];
     delete cacheStatsProcessByModel[displayKey];
+    resetLiveTotalsSink(displayKey);
     pendingDeletedTotalModelKeys.add(displayKey);
     for (const key of Array.from(recentSamplesByModelKey.keys())) {
       if (modelKeyFromSessionScoped(key) === displayKey) recentSamplesByModelKey.delete(key);
@@ -7187,6 +7262,7 @@ export default function (pi: ExtensionAPI) {
     }
     cacheStatsProcessByModel = {};
     cacheStatsTotalsByModel = {};
+    resetLiveTotalsSink();
     replacePersistedTotalsOnNextWrite = true;
     for (const key of Array.from(recentSamplesByModelKey.keys())) {
       if (key.startsWith(prefix)) recentSamplesByModelKey.delete(key);
@@ -7312,6 +7388,8 @@ export default function (pi: ExtensionAPI) {
         changed = true;
       }
     }
+    // Roll the process-wide live sink over the same day boundary.
+    rollOverLiveTotalsSink();
 
     if (changed) {
       lastStatusText = undefined;
@@ -7338,6 +7416,9 @@ export default function (pi: ExtensionAPI) {
       );
       cacheStatsProcessByModel = {};
       cacheStatsTotalsByModel = persisted?.totalsByModel ?? {};
+      // Parent instance: (re)seed the shared sink so the footer's "total"
+      // mode reflects the persisted baseline plus all live subagent traffic.
+      if (isParentSessionInstance(ctx)) seedLiveTotalsSink(cacheStatsTotalsByModel);
       cacheStatsLegacyFamily = persisted?.legacyFamily ?? emptyAllCacheStats();
       lastActualRoutedModel = currentSessionHashSet
         ? persisted?.lastRoutedModelBySession?.[currentSessionHash]
@@ -7357,6 +7438,9 @@ export default function (pi: ExtensionAPI) {
     );
     cacheStatsProcessByModel = {};
     cacheStatsTotalsByModel = persisted?.totalsByModel ?? {};
+    // Parent instance: (re)seed the shared sink so the footer's "total"
+    // mode reflects the persisted baseline plus all live subagent traffic.
+    if (isParentSessionInstance(ctx)) seedLiveTotalsSink(cacheStatsTotalsByModel);
     cacheStatsLegacyFamily = persisted?.legacyFamily ?? emptyAllCacheStats();
     lastActualRoutedModel = currentSessionHashSet
       ? persisted?.lastRoutedModelBySession?.[currentSessionHash]
@@ -7376,6 +7460,10 @@ export default function (pi: ExtensionAPI) {
     let statusText: string | undefined;
     const mode = footerStatsMode();
     const sessionHash = currentSessionHashSet ? currentSessionHash : undefined;
+    // "total" mode source: the process-wide sink (persisted baseline + all
+    // live parent & subagent traffic) for the parent instance; fall back to
+    // per-instance totals otherwise (subagent instances render no footer).
+    const totalsForDisplay = isParentSessionInstance(ctx) ? liveTotalsSink() : cacheStatsTotalsByModel;
 
     if (!adapter && !routedModel && activeIsVirtualRoute) {
       // On model_select (existing footer), keep the existing cache footer
@@ -7388,14 +7476,14 @@ export default function (pi: ExtensionAPI) {
         sessionHash,
         cacheStatsByModel,
         lastActualRoutedModel,
-        cacheStatsTotalsByModel,
+        totalsForDisplay,
         mode,
         cacheStatsProcessByModel,
       ) ?? findBestRouterModelStats(
         mode,
         sessionHash,
         cacheStatsByModel,
-        cacheStatsTotalsByModel,
+        totalsForDisplay,
         cacheStatsProcessByModel,
       );
       if (realEntry) {
@@ -7410,7 +7498,7 @@ export default function (pi: ExtensionAPI) {
       // Footer mode defaults to daily provider/model totals. Users may select
       // current-session counters through persistent command config or the env var.
       const stats = displayModel
-        ? selectFooterStatsForModel(mode, sessionHash, cacheStatsByModel, cacheStatsTotalsByModel, displayModel, cacheStatsProcessByModel)
+        ? selectFooterStatsForModel(mode, sessionHash, cacheStatsByModel, totalsForDisplay, displayModel, cacheStatsProcessByModel)
         : undefined;
       const statsText = formatCacheStats(adapter, stats ?? emptyCacheStats());
       statusText = runtimeOptimizerEnabled ? statsText : `Cache Optimizer disabled · ${statsText}`;
@@ -7866,6 +7954,9 @@ export default function (pi: ExtensionAPI) {
       addUsageToCacheStats(getOrCreateStatsByModelKey(sk), usage);
       addUsageToCacheStats(getOrCreateProcessStatsForModel(statsModel), usage);
       addUsageToCacheStats(getOrCreateTotalStatsForModel(statsModel), usage);
+      // Fold into the process-wide sink so subagent sessions contribute to
+      // the main footer's aggregate totals too.
+      addUsageToLiveTotals(statsModel, usage);
     } else {
       addUsageToCacheStats(getStatsForModel(undefined, adapter), usage);
     }
