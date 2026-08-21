@@ -14,7 +14,7 @@ below as binding when changing `extension.ts`.
 |---|---|---|
 | npm package name | `pi-cache-optimizer` | Renamed from `pi-deepseek-cache-optimizer` in 2.0.0. |
 | Status key | `pi-cache-stats` | Passed to `ctx.ui.setStatus(STATUS_KEY, ...)`. Renamed from `deepseek-cache-stats`. |
-| Stats file path | `~/.pi/agent/pi-cache-optimizer-stats.json` by default | Resolved with Pi core's exported `getAgentDir()`, including official agent-dir env and rebranded config-name semantics. `PI_CONFIG_DIR` is not a Pi agent-dir override. Renamed from `deepseek-cache-optimizer-stats.json`. |
+| Stats shard path | `~/.pi/agent/pi-cache-optimizer-stats.d/shards/<instance-uuid>.json` by default | Resolved with Pi core's exported `getAgentDir()`. Each loaded extension instance atomically owns one shard; old shared `pi-cache-optimizer-stats.json` / `deepseek-cache-optimizer-stats.json` files are ignored and deleted. |
 | Footer config path | `~/.pi/agent/pi-cache-optimizer-config.json` by default | Stores only versioned `footerMode` command configuration. Uses the same Pi agent-dir resolution and is separate from numeric stats persistence. |
 | Models JSON path | `~/.pi/agent/models.json` by default | Reference path for compat warnings/fix; display helper shows `%USERPROFILE%\.pi\agent\models.json` on Windows unless a custom agent dir env override is active. |
 
@@ -328,20 +328,27 @@ same cache-bearing backend unless the proxy also honors session-affinity headers
 
 ---
 
-## Persisted stats schema (v6: restart-persistent model totals + session buckets)
+## Persisted stats schema (v7: instance-owned shards)
 
-Footer stats maintain provider/model totals that persist across Pi
-process/terminal restarts and hashed conversation-session buckets. Display mode
-defaults to daily cumulative `total`, while users may choose `session` or
-process-local `process` display.
-Adapter selection remains id/name-only; the active model's `provider` participates
-only after adapter selection, as part of the stats bucket key.
+Footer stats use a process-safe shard store under the resolved Pi agent directory:
+
+```text
+pi-cache-optimizer-stats.d/
+├── shards/<instance-uuid>.json
+├── epochs/global.json
+├── epochs/models/<sha256(provider/modelId)>.json
+└── maintenance/{last-cleanup,cleanup.lock/}
+```
+
+Each loaded extension factory instance creates a random UUID and is the only writer
+of that UUID-named shard. A writer MUST NOT edit another instance's shard. Every
+shard/epoch update uses a unique temp file followed by atomic rename. This removes
+the shared-v6 lost-update race between parent, child, parallel, and independently
+running Pi processes.
 
 ```ts
-type CacheProviderId = "deepseek" | "openai" | "claude" | "gemini";
-
 type CacheStats = {
-  day: string; // local YYYY-MM-DD
+  day: string;
   totalRequests: number;
   hitRequests: number;
   cachedInputTokens: number;
@@ -349,365 +356,216 @@ type CacheStats = {
   totalInputTokens: number;
 };
 
-type PersistedRoutedModelRef = {
-  provider: string;
-  id: string;
-  name?: string;
-};
-
-type PersistedCacheStatsV6 = {
-  version: 6;
-  sessions: Record<string, Record<string, CacheStats>>; // sessionHash → modelKey → stats
-  totalsByModel: Record<string, CacheStats>; // modelKey → restart-persistent daily totals
-  legacyFamily: Partial<Record<CacheProviderId, CacheStats>>;
-  lastRoutedModelBySession?: Record<string, PersistedRoutedModelRef>; // sessionHash → last real upstream model used while active model was router/auto
+type PersistedStatsShardV7 = {
+  version: 7;
+  kind: "pi-cache-optimizer-shard";
+  instanceId: string;
+  sessionHash: string;
+  process: { pid: number; ppid: number; instanceStartedAt: number };
+  lifecycle: {
+    state: "active" | "closed";
+    createdAt: number;
+    updatedAt: number;
+    closedAt?: number;
+  };
+  day: string;
+  globalEpoch: string;
+  models: Record<string, {
+    modelEpoch: string;
+    provider: string;
+    modelId: string;
+    api?: string;
+    stats: CacheStats;
+  }>;
+  lastRoutedModel?: PersistedRoutedModelRef;
 };
 ```
 
-* `CacheStats` counters MUST be non-negative integers; `hitRequests <=
-  totalRequests`; `cachedInputTokens <= totalInputTokens`;
-  `cacheWriteInputTokens <= totalInputTokens`.
-* `sessions` groups stats by an opaque session hash (SHA-256 hex prefix, 16 chars),
-  computed from `ctx.sessionManager.getSessionId()`. Raw session ids are never
-  persisted, logged, or displayed.
-* Within each session, the inner map key is `${provider}/${id}` (same format as
-  v3 `statsByModel`), separating e.g. `otokapi/gpt-5.5` from `cafecode/gpt-5.5`.
-* `totalsByModel` is the authoritative daily cumulative provider/model bucket used
-  by `/cache-optimizer stats`, migration, reset, and `total` footer mode. It is keyed
-  by the same `${provider}/${id}` model key but intentionally not by session hash so
-  the same provider/model continues showing today's counters after a terminal/process
-  restart.
-* `legacyFamily` exists only as a migration/fallback bucket for pre-v4/v5 data
-  and rare `message_end` updates where no active model is available. New normal
-  updates MUST write both to the current session's bucket and to `totalsByModel`.
-* `lastRoutedModelBySession` persists the exact last real upstream model seen
-  while the active model was a router channel (for example `router/auto`). This
-  lets `/reload` restore the footer for the exact last routed model instead of a
-  best-effort "largest stats bucket" guess.
-* In-memory session storage uses keys of the form
-  `${sessionHash}:${provider}/${id}` for O(1) current-session lookup. The display
-  helper `modelKeyFromSessionKey` strips the hash prefix for user-facing output.
-  In-memory `totalsByModel[provider/id]` is used for doctor/stats command counters
-  and `total` footer mode; `statsByModel[sessionHash:provider/id]` is used for
-  `session` footer mode; process-local `processByModel[provider/id]` is used for
-  `process` footer mode and is never persisted.
-* The persisted file MUST contain only counters and local dates. Never persist
-  API keys, prompts, request payloads, response bodies, HTTP headers, model
-  outputs, or provider config snapshots.
-* Writes MUST remain atomic: write a temp file then `rename` into the resolved
-  Pi agent-dir `pi-cache-optimizer-stats.json`; never update the JSON in place.
-* Writes from one extension instance MUST be serialized in invocation order.
-  Debounced `message_end` persistence and immediate reset/enable/disable/rollover/
-  shutdown writes must not overlap and rename out of order; otherwise an older
-  write can resurrect counters deleted by a newer reset. Each queued write owns
-  the delete/replace intent captured with its immutable state snapshot, so later
-  usage writes do not inherit a stale reset deletion. Atomic temp + rename remains
-  required for every individual write.
-* Concurrent writes from different Pi processes are best-effort only. Before
-  writing, the extension re-reads the persisted file and preserves other session
-  buckets it can see, but there is **no inter-process lock**. If two Pi processes
-  write at the same time, last-writer-wins can still lose a concurrent update.
-  Do not document or test stronger durability than best-effort sequential
-  preservation.
+### Privacy and identity
 
-### Session buckets and restart continuity
+* Raw Pi session ids MUST NOT be persisted or displayed. Persist only the existing
+  SHA-256 16-hex session hash.
+* Model aggregation keys are exactly `${provider}/${modelId}`. Different providers
+  or different model ids MUST NOT merge even when they use the same adapter label.
+* PID/PPID are diagnostics and conservative cleanup hints only. They MUST NOT decide
+  parent-child attribution or stats ownership.
+* Persisted files MUST NOT contain prompts, messages, response bodies, payloads,
+  headers, credentials, API keys, or model output.
+* A child agent contributes only when it loads this extension and shares the same
+  Pi agent directory. Remote/isolated/no-extension children remain unobservable.
 
-* Each Pi process (session) has a unique `sessionId` from `ctx.sessionManager.getSessionId()`.
-* The session id is hashed with SHA-256 (first 16 hex chars) to produce a non-reversible
-  scope key. The hash is used to key persisted entries in the `sessions` map.
-* Different Pi sessions using the same provider/model keep separate session buckets,
-  but share the same `totalsByModel[provider/id]` daily cumulative counter.
-* The same Pi session using the same provider/model shares one session bucket across
-  turns and survives `/reload` (same session id, same hash).
-* A new Pi process/terminal may resume the same conversation session. In default
-  `total` mode, the footer restores the provider/model total. In `session` mode,
-  the resumed conversation restores its session bucket; in `process` mode, the
-  new process starts at 0/0.
-* `/cache-optimizer reset` clears the visible provider/model total and in-memory
-  matching session buckets for the active model, so stale old session buckets do
-  not resurrect footer counters after restart.
+### Footer scopes
 
-### Stats migration (v6)
+Precedence is persistent command configuration, then
+`PI_CACHE_OPTIMIZER_FOOTER_MODE`, then default `session`.
 
-| Input state | Behavior |
+| Mode | Source |
 |---|---|
-| `version: 6` | Parse valid `sessions`, authoritative `totalsByModel`, `legacyFamily`, and `lastRoutedModelBySession`. If `totalsByModel` is missing/malformed, derive totals from session buckets as a safety fallback. |
-| `version: 5` | Parse valid `sessions`, `legacyFamily`, and `lastRoutedModelBySession`; derive `totalsByModel` by aggregating same-day stats across session buckets by `${provider}/${id}`. The next persist writes v6. |
-| `version: 4` | Parse valid `sessions` and `legacyFamily`; derive `totalsByModel`; start with no exact router metadata. The next persist writes v6. |
-| `version: 3` | Migrate `statsByModel` entries and derive `totalsByModel`. Legacy model keys without session context are treated as current-session data when restored. |
-| `version: 2` with `statsByProvider` | Migrate valid family buckets to `legacyFamily`; start with empty session stats and empty totals. |
-| `version: 1` single DeepSeek stats | Migrate valid stats to `legacyFamily.deepseek`; start with empty session stats and empty totals. |
-| Unknown version / invalid top-level shape | Treat as unreadable stats and fall back to empty in-memory state. |
+| `session` (default) | Current-day shards with the current session hash and exact model key. `/reload` creates a new instance shard but remains in the same session scope. |
+| `total` | All valid current-day local shards for the exact model key, including observable child Pi agents and other Pi sessions. |
+| `process` | Current extension instance's in-memory/shard counters only; restart or `/reload` begins at zero. |
 
-### Migration on first run after rename
+The footer shows only the active/effective model. A selected matching model with no
+data shows `0/0`; unsupported models clear the footer. Router restore uses the most
+recent valid `lastRoutedModel` among current-session shards and applies the same
+selected scope without cross-fallback.
+
+### Command views
+
+* `/cache-optimizer stats` lists detailed current-session statistics for every
+  cache-adapter-matched model used today. The active model appears first and may
+  appear as an empty `0/0` bucket when unseen. Other sessions are excluded.
+* `/cache-optimizer stats all` lists detailed current-day totals for every exact
+  provider/model across all valid local shards. Each block includes contributing
+  session/instance counts, requests, cached/total input tokens, and a compact line
+  such as `4/5·0.66M/0.84M 78.7%`.
+* `/cache-optimizer stats contributors` shows current/other contributing sessions
+  for the active exact model. Output MUST NOT expose raw session ids or hashes.
+* Native completion includes `stats all` and `stats contributors`. Unknown prefixes
+  return `null`.
+* Recent samples remain current-instance memory only and MUST NOT be represented as
+  an all-session trend.
+
+### Reset epochs
+
+Enable/disable advances a global epoch. `/cache-optimizer reset` advances an epoch
+for the active exact model. Aggregation accepts a shard/model entry only when both
+epochs equal the current epoch files. This makes old shards immediately invisible
+without modifying other writers and prevents reset resurrection. An active writer
+MUST re-read global/model epochs before its next usage update and clear only the
+affected current-instance counters before recording new usage.
+
+Reset remains a local-statistics operation across local sessions for the exact model;
+it does not alter upstream provider cache contents.
+
+### Upgrade behavior
+
+`pi-cache-optimizer-stats.json` and `deepseek-cache-optimizer-stats.json` are obsolete.
+Runtime startup MUST NOT parse or migrate them. It best-effort deletes both files and
+starts v7 local counters from zero. Deletion failure warns but does not block hooks.
+Legacy v1-v6 parser helpers may remain test-only historical references, but they MUST
+NOT be connected to runtime restore/persistence.
+
+### Design decision: shard aggregation without parent-child protocol
+
+#### 1. Scope / Trigger
+
+This contract applies whenever multiple Pi processes or in-process extension instances record cache usage under one agent directory, including subagents, parallel Pi terminals, reloads, and routers.
+
+#### 2. Signatures
+
+```ts
+readValidStatsShardsV7(directory?: string): Promise<PersistedStatsShardV7[]>;
+aggregateStatsShardsV7(shards: PersistedStatsShardV7[], day?: string): Promise<ShardAggregate>;
+writeStatsShardV7(path: string, shard: PersistedStatsShardV7): Promise<void>;
+```
+
+#### 3. Contracts
+
+* Each instance writes only its UUID shard through unique-temp + atomic rename.
+* `session`, `total`, and `process` use explicit session/model/day/epoch scopes.
+* Parent-child relationships are never inferred from PID, PPID, environment variables, or adapter labels.
+* Old v6 files are deleted/ignored, not imported; reset epochs are exact-model or global local-stat views.
+
+#### 4. Validation & Error Matrix
 
 | Condition | Behavior |
 |---|---|
-| New path readable (v6) | Parse `sessions[sessionHash]` for current session data; load authoritative `totalsByModel`, `legacyFamily`, and exact `lastRoutedModelBySession[sessionHash]` when present. |
-| New path readable (v5) | Parse `sessions[sessionHash]` for current session data; derive `totalsByModel`; load `legacyFamily` and exact `lastRoutedModelBySession[sessionHash]` when present; write v6 on next persist. |
-| New path readable (v4) | Parse `sessions[sessionHash]` for current session data; derive `totalsByModel`; load `legacyFamily`; start with no exact router metadata; write v6 on next persist. |
-| New path readable (v3) | Migrate `statsByModel` to current session hash; derive `totalsByModel`; write v6 on next persist. |
-| New path missing AND old path readable | Parse old path (v1/v2/v3/v4), write the v6 shape to the new path atomically, best-effort `unlink` old path. |
-| New path missing AND old path also missing | Initialize empty session stats and `legacyFamily` in memory. |
-| New path readable but corrupt JSON | Log a one-line warning, fall back to empty counters; do NOT delete. |
-| Old path corrupt | Log a one-line warning, do NOT delete the old file, do NOT write from corrupt data. |
+| Missing shard directory | Treat as empty and create it for the current instance. |
+| Malformed/unknown shard | Ignore during aggregation; retain until cleanup retention. |
+| Symlink in shard directory | Do not follow or delete the target. |
+| Missed `fs.watch` event | Keep persisted data; refresh on lifecycle or explicit command. |
+| Old active shard with live PID | Retain conservatively during cleanup. |
+| Epoch mismatch | Ignore stale data; the writer adopts current epochs before its next usage. |
 
-### Transitional `_nosession` bucket
+#### 5. Good / Base / Bad Cases
 
-The `_nosession` session key is a transitional legacy migration mechanism that exists
-purely for backward compatibility when upgrading from v3 (no session isolation) to v4
-(session-scoped stats). It is NOT a real session hash.
+* **Good**: two instances write separate shards for `proxy/gpt-5.5`; `total` adds both and `session` isolates them.
+* **Good**: `proxy/gpt-5.5` and `other/gpt-5.5` remain separate despite sharing an adapter family.
+* **Base**: a child that does not load this extension contributes nothing; the footer remains truthful.
+* **Bad**: one process rewrites another instance's shard or a process-global pool combines unrelated sessions.
 
-**Creation**: `writePersistedCacheStats` creates or preserves `_nosession` entries when
-called *without* a `currentSessionHash` (i.e., the first time the extension runs before
-the Pi session id is known, or during migration from a legacy file). Keys that lack a
-hash prefix (`hash:provider/id`) are grouped under `_nosession` so that
-`restoreCacheStats` can migrate them to the current session on the next load.
+#### 6. Tests Required
 
-**Consumption / removal**: Once `writePersistedCacheStats` is called *with* an
-authoritative `currentSessionHash` (after the session id is set), the `_nosession`
-bucket is deleted from the serialized sessions map. The entries have already been
-consumed and migrated into memory by `restoreCacheStats` on load; keeping `_nosession`
-on disk would allow resurrection of reset stats on the next reload (the "reset-undo" bug).
-A reset that deletes the only current-session model entry MUST still persist in
-explicit current-session mode, writing an empty `sessions[currentSessionHash]` map
-and removing `_nosession`.
+Assert shard isolation, exact model aggregation, session/total/process scopes, epoch invalidation, old-file deletion, malformed/symlink safety, current-day retention, cleanup lease behavior, lifecycle refresh, and detailed stats output.
 
-### Display and update semantics
+#### 7. Wrong vs Correct
 
-* `modelKey(model)` is exactly `${model.provider}/${model.id}` for user-facing display
-  and for the restart-persistent `totalsByModel` key. The session lookup key is
-  `${sessionHash}:${provider}/${id}`.
-* `session_start` (not reload): read the persisted v6 file, load
-  `sessions[currentSessionHash]` entries into the in-memory session table, load
-  `totalsByModel` for cumulative stats/possible footer display, and restore
-  `lastRoutedModelBySession[currentSessionHash]` when present. Legacy v3 keys
-  without session context are migrated by prefixing with the current session hash
-  and are also included in derived totals.
-* `session_start` (reload): preserve current-session buckets by re-reading the
-  persisted v6 file for the current `sessionHash` (same Pi session id), filtering
-  to `sessions[currentSessionHash]`, loading `totalsByModel`, and restoring the
-  exact last routed model for that session when present. Clear only transient
-  state (recent samples, integrity notification) and republish footer.
-* `model_select` and `session_start` publish status for the selected/current model.
-  The effective footer mode is resolved from persistent command configuration,
-  then `PI_CACHE_OPTIMIZER_FOOTER_MODE`, then default `total`. Valid modes are
-  `total`, `session`, and `process`. If the selected scope has no entry yet,
-  display an empty same-day footer (`0/0`, `0M/0M`).
-* `message_end` updates the conversation-session bucket,
-  process-local `processByModel[provider/id]`, and cumulative
-  `totalsByModel[provider/id]` for the active model. The process bucket is memory-only
-  and is discarded on extension/process startup. It falls back to
-  `legacyFamily[adapter.id]` only when no model identity is available.
-  Assistant message metadata (`provider`, `model`/`responseModel`, `api`) is
-  authoritative for final stats identity — this keeps virtual routing providers
-  correct (the active model may be a router shell while the message carries the
-  real upstream model). When the response provider and model id exactly equal
-  the active direct, non-virtual model identity, `modelFromAssistantMessage` MUST preserve the
-  active model's non-empty display name for adapter selection. This prevents
-  short echoed ids such as `kimi-coding/k3` from discarding a meaningful active
-  name such as `Kimi K3`. If provider or id differs, the response identity wins
-  and the fallback display name MUST NOT leak into routed/upstream selection.
-  For **direct (non-virtual-routing) providers**, however,
-  some OpenAI-compatible APIs normalize or rename the model id echoed in the
-  response (e.g. a request to `zai-org/GLM-5.2-FP8` returns a message whose
-  `model` field is `GLM5.2-FP8` or `glm-5.2`). Writing stats under the echoed
-  name fragments the bucket away from the active-model key the footer reads
-  (`totalsByModel[ctx.model]`), so the footer shows 0% even when the backend is
-  hitting cache. To prevent this, `message_end` consolidates stats back to the
-  active model identity when the response-derived model drifts from the active
-  model **only in name**: same provider, same cache adapter object, but a
-  different id. The consolidation (`consolidateDirectProviderStatsModel`) runs
-  after `modelFromAssistantMessage` and never merges across providers or across
-  adapters, so genuinely different models are never combined. Virtual routing
-  providers are excluded — their message-local identity always wins.
-* Footer text remains provider-family labelled. In `total` mode the counters shown
-  are local provider/model totals for the current day. In `session` mode the
-  counters come only from the current hashed conversation-session bucket. In
-  `process` mode they come only from current process memory and are never restored
-  from disk. Direct models, exact router restore, and legacy best-effort router
-  fallback MUST use the same effective mode and MUST NOT cross-fallback.
-* Local day rollover resets stale entries in session-stats, `totalsByModel`, and
-  `legacyFamily`.
-* Debounced persistence is allowed for ordinary `message_end` writes; reload, reset,
-  day rollover, and `session_shutdown` MUST flush/persist immediately. Shutdown
-  cancels the pending timer, awaits the serialized final write, clears transient
-  cache hints/legacy cache-key globals, uninstalls the extension-owned cache-hints
-  service, and restores the process-original `PI_CACHE_RETENTION` value before Pi
-  tears down the runtime.
+```ts
+// Wrong: no task/session ownership boundary.
+globalThis.__piCacheOptimizerLiveTotals__ = totals;
 
----
+// Correct: one writer owns one shard; readers aggregate by explicit rules.
+await writeStatsShardV7(instanceShardPath, currentInstanceShard);
+```
 
-## Validation matrix
+### Lifecycle and refresh
+
+* `message_end` uses finalized assistant provider/model/api/usage identity, updates
+  the current instance, and debounces its shard write. Error/aborted messages do not
+  increment requests.
+* `session_shutdown` cancels pending debounce, writes a final `closed` shard, closes
+  the watcher, uninstalls owned protocols, and restores the retention environment.
+  It MUST NOT delete the current-day shard.
+* In TUI mode, `fs.watch` provides low-latency shard notifications. The watcher is
+  unreferenced and closed on shutdown.
+* `tool_execution_end`, `agent_settled`, session/model lifecycle events, and explicit
+  stats/doctor/config/reset commands force aggregate refreshes. Watch delivery is an
+  optimization, not a correctness dependency.
+* There is no permanent polling interval. A missed watch event may delay an idle
+  footer update, but lifecycle or explicit-command refresh restores authoritative
+  shard totals.
+* Local-day rollover clears the current instance's stale counters. Aggregation ignores
+  every shard whose top-level or stats day is not the current local day.
+
+### Cleanup
+
+Maintenance runs best-effort under an atomic `mkdir` cleanup lease and at most once
+per six hours. A lease older than one hour is recoverable.
+
+* Keep every current-day shard, including `closed` shards and shards whose PID exited.
+* Delete eligible non-current-day shards after 48 hours. If an old shard is marked
+  active and its PID is still alive, conservatively retain it.
+* Delete extension-owned temp files after 24 hours.
+* Ignore malformed shards during aggregation; delete them only after retention.
+* Operate only on direct children with recognized extension filenames, require regular
+  files from `lstat`, and never follow symlinks.
+* Global epoch is one replaceable file. Model epoch files are one per hashed exact
+  model key, so repeated reset does not create unbounded files.
+
+### Validation matrix
 
 | Scenario | Expected behavior |
 |---|---|
-| `prompt_cache_key` fallback disabled (`PI_CACHE_OPTIMIZER_NO_OPENAI_CACHE_KEY=1` or `PI_CACHE_OPTIMIZER_OPENAI_CACHE_KEY=0`) | No extension-added `prompt_cache_key`; Pi core behavior remains authoritative. |
-| All `before_agent_start` prompt mutations disabled (`PI_CACHE_OPTIMIZER_NO_PROMPT_REWRITE=1`) | No churn strip, skill compression, or stable-prefix reorder; footer stats and `prompt_cache_key` injection unchanged. |
-| `openai-completions`/`openai-responses` payload (any model) has no effective key | Extension adds `prompt_cache_key` from `ctx.sessionManager.getSessionId()` if a non-empty session id is available. |
-| Payload has non-empty `prompt_cache_key` or `promptCacheKey` | Extension does not replace it. |
-| Payload has `prompt_cache_key: undefined`, `null`, `""`, or whitespace | Treat as missing; extension may add the session-id fallback. |
-| Model id/name looks GPT-like or Kimi/Qwen/GLM/MiniMax/Mimo/Hunyuan-like but API is a custom transport (e.g. `kiro-api`) | Do not add OpenAI `prompt_cache_key`; do not assume compat layers reach custom transports. |
-| Pi 0.81+ built-in `llama.cpp` model with its untouched explicit compat fingerprint | Preserve Pi core/existing `prompt_cache_key` and add the session fallback if missing; strip `prompt_cache_retention` unless `models.json` explicitly opts in; skip generic proxy routing/session-affinity advice only while the built-in fingerprint remains untouched. Footer remains truthful from returned usage fields. |
-| Direct response repeats provider/id but only echoes a short id (e.g. active `kimi-coding/k3` named `Kimi K3`, response model `k3`) | Preserve the active display name while selecting the response adapter; record normalized cache usage under `kimi-coding/k3`. Different response provider/id must not inherit the fallback name. |
-| Third-party `openai-completions` proxy (GPT, Kimi, Qwen, GLM, MiniMax, Mimo, Hunyuan, Qwen Token Plan, etc.) missing cache/session-affinity compat | Warn once per model with a copyable `compat` suggestion; do not edit `models.json`. |
-| DeepSeek-like `openai-completions` model missing Pi Mono reasoning compat | Warn once; `/cache-optimizer doctor` and `/cache-optimizer compat` include copyable JSON with `requiresReasoningContentOnAssistantMessages: true` and `thinkingFormat: "deepseek"` plus any missing cache/session-affinity flags; do not edit `models.json`. |
-| DeepSeek-like `openai-responses` model on Pi 0.80.7+ | Diagnose DeepSeek reasoning/retention compat only; do not suggest the removed `sendSessionIdHeader`. Pi owns response session-affinity header selection through `sessionAffinityFormat` and its auto-detected default. |
-| Old stats path exists, new stats path missing | Read old v1/v2/v3 data, write the new path atomically in v6 shape, best-effort `unlink` old. v2 `statsByProvider` data moves to `legacyFamily`; v3 unscoped model keys are assigned to the current session and totals are derived. |
-| New v2 stats file exists | Load v2 `statsByProvider` into `legacyFamily`; start with empty session stats/totals; next write persists v6. |
-| New v3 stats file has entries for `otokapi/gpt-5.5` and `cafecode/gpt-5.5` | Migrate both unscoped keys into the current session hash and derive separate provider/model totals, even though both use the OpenAI-family footer label. |
-| Footer mode config/env missing or invalid | Use `total`; valid values are `total`, `session`, and `process`. |
-| Persistent footer mode config conflicts with `PI_CACHE_OPTIMIZER_FOOTER_MODE` | Persistent command config wins. To restore environment/default resolution, manually delete `pi-cache-optimizer-config.json` and run `/reload`. |
-| Selected matching model has no entry in the effective footer scope | Display empty same-day stats (`0/0`, `0M/0M`) instead of legacy family or opposite-scope counters; `process` has no persisted restore source. |
-| `/reload` session_start reason | Re-read persisted v6 data for the same current session hash plus restart-persistent totals, clear only transient state (recent samples, integrity notifications), and re-publish footer from the effective scope. |
-| Active model is `router/auto`, persisted exact last routed model exists, and another bucket has more requests | `/reload` restores the footer for the exact persisted last routed model using the effective scope, not the largest bucket or the opposite scope. |
-| Active model is `router/auto`, exact last routed model exists but its provider/model total was reset/removed | `/reload` still restores that exact model's footer label with empty same-day stats (`0/0`, `0M/0M`). |
-| Active model is a virtual routing provider registered under `Symbol.for("pi.routing.registry.v1")` | Footer, doctor, compat, prompt-cache-key fallback, and reset resolve the live upstream provider/model when the registry returns a valid route snapshot. |
-| A virtual routing provider relays assistant message `provider` + `model`/`responseModel` + `api` metadata | `message_end` stats use the message-local upstream identity, even if the active model is a router shell or the live registry has changed. |
-| Direct `kimi-coding/k3` response echoes the active provider/id while the active display name is `Kimi K3` | Preserve the fallback display name for id/name-only selection, choose `Kimi cache`, and update both the session bucket and `totalsByModel["kimi-coding/k3"]` from real normalized usage. |
-| Response provider or model id differs from the active model, active model is a virtual router shell, or an unrelated model is only named `k3` | Do not preserve the active display name across identities/virtual shells; message-local identity wins and bare `k3` remains unmatched. |
-| Direct (non-virtual-routing) provider echoes a different/renamed model id in its response (e.g. request `zai-org/GLM-5.2-FP8` but message carries `GLM5.2-FP8`), same provider + same adapter | `message_end` consolidates stats to the active-model id (`ctx.model.id`); the footer shows the merged real hit rate instead of a fragmented 0% bucket. |
-| Direct provider echoes a model id that maps to a DIFFERENT adapter (e.g. `gpt-5.5` while active is a GLM model), or a different provider | No consolidation — stats stay under the response identity so genuinely different models are never merged. |
-| A router extension queries `Symbol.for("pi.cache.hints.v1")` while optimizer is enabled | Returns query-scoped optimized system prompt / prompt cache key / long-retention hint only when the query matches the latest session/route hint; existing request-level keys still remain authoritative. |
-| Non-GPT OpenAI-compatible model (Kimi, Qwen, GLM, MiniMax, Mimo, Hunyuan, Mistral, Grok, Llama, Nemotron, Cohere, Yi) with `openai-completions` API | Selected adapter shows the corresponding footer label; compat warning fires for non-official base URLs missing cache/session-affinity flags. |
-| Model id/name contains both GPT-family and non-GPT tokens (e.g. `kimi-gpt-4`) | GPT adapter takes precedence (earlier in `CACHE_PROVIDER_ADAPTERS`). Footer shows `OpenAI cache`, stats are still keyed by provider/model. |
-| Different Pi sessions with same provider/model | Session bucket keys differ by hash; `total` mode shares the provider/model daily total, while `session` mode displays only the current session bucket. |
-| Same Pi session, same provider/model | Same session hash → same session bucket; both the session bucket and `totalsByModel` accumulate from message updates. |
-| `/cache-optimizer reset` on active model | Delete the visible provider/model total and matching in-memory session entries; clear recent samples for that model; persist immediately; publish footer showing 0/0. |
-| `/cache-optimizer reset` with no active model | Warning: "No active model selected". |
-| `/cache-optimizer reset` on non-adapter-matched model | Friendly message: "Active model does not match a cache adapter. No stats to reset." |
-| `/cache-optimizer reset` only targets one model | Other provider/model totals remain unaffected. Old session buckets may remain for migration/audit compatibility, but the authoritative total for the reset model is removed. |
-| `/reload` or process restart after `/cache-optimizer reset` | The provider/model total remains reset; transient state stays cleared; no `_nosession`, legacy v3 bucket, or old session bucket resurrects the deleted footer stats. |
-| New v4 stats file contains `_nosession` | Restore migrates `_nosession:<provider>/<model>` entries into the current session hash. The first explicit current-session write removes `_nosession` from disk. |
-| Debounced `message_end` write is in flight when reset/enable/disable/rollover/shutdown requests another write | Same-instance writes execute serially in invocation order; newer delete/replace state remains authoritative and cannot be overwritten by an older rename. |
-| `session_shutdown` occurs before the 2-second message debounce expires | Cancel the timer, await a final serialized stats write, uninstall owned cache-hints state, clear legacy hints, and restore the process-original retention env before teardown. |
-| Concurrent Pi processes write stats | Each write preserves other session buckets visible at its pre-write read, but there is no inter-process locking guarantee; concurrent last-writer-wins races are possible and accepted. |
-| Local day changes | Reset every stale session-scoped stats entry, `totalsByModel` entry, and `legacyFamily` entry to empty current-day stats before publishing/updating, and persist immediately. |
-| New stats path corrupt | Log warning, fall back to empty in-memory counters; do not delete. Next valid write may replace it atomically. |
+| Two Pi processes update the same model concurrently | They write different UUID shards; total aggregation includes both without overwrite. |
+| Two independent Pi terminals use the same provider/model | Default session footer remains isolated; `total` and `stats all` include both. |
+| Child uses same exact provider/model | Its shard contributes to `total`/`stats all`; it does not enter the parent's session scope when session hashes differ. |
+| Child uses another provider or model | It stays in a separate model block and never changes the active model's hit rate. |
+| `/reload` in one session | New instance/process counters start at zero; session scope aggregates old/new shards exactly once. |
+| Model/global reset while another writer is active | Old epoch data disappears; the writer switches epoch before its next recorded request. |
+| Old v6 file exists | It is not imported and is best-effort deleted; v7 begins at zero. |
+| Watch event is missed | Stored counters remain correct; lifecycle/command refresh updates the footer later. |
+| Child exits after writing | Its current-day closed shard remains visible until retention cleanup on a later day. |
+| Corrupt or symlink shard | It is ignored safely; symlink targets are never followed/deleted. |
+| Router message carries upstream metadata | Final stats use message-local upstream identity, not live global route state. |
+| Transport returns no cache usage | Keep truthful zero/under-reporting; never synthesize hits. |
 
----
+### Permanent tests required
 
-### Good / Base / Bad cases for v6 restart-persistent model totals
-
-* **Good**: Same Pi session + same provider/model uses one internal session key
-  (`${sessionHash}:${provider}/${id}`) and one cumulative total key
-  (`${provider}/${id}`). Both accumulate across turns and survive `/reload`; only
-  the total continues across new process/session ids, and footer display selects
-  one scope without cross-fallback.
-* **Good**: `/cache-optimizer reset` clears the visible total for the active
-  provider/model and matching in-memory session entries; a subsequent `/reload`
-  or process restart still shows 0/0 for that provider/model.
-* **Base**: A v3/v4/v5 file without `totalsByModel` derives totals once from valid
-  session/model buckets and writes v6 on the next persist. A v6 file with an empty
-  `totalsByModel` is authoritative and MUST NOT re-derive reset stats from old
-  session buckets.
-* **Good**: When the active model is a router channel, the exact last real
-  upstream model is persisted under `lastRoutedModelBySession[currentSessionHash]`
-  for same-session reload. Its footer counters come from that model's session
-  bucket in `session` mode or `totalsByModel[provider/id]` in `total` mode.
-* **Base**: v2/v1 family-level stats migrate only into `legacyFamily`; a matched
-  but unseen provider/model total still displays `0/0` instead of inheriting old
-  family totals.
-* **Bad**: Persisting raw Pi session ids, displaying session hashes to the user,
-  aggregating normal updates into provider-family buckets, re-deriving v6 reset
-  stats from old session buckets when `totalsByModel` is empty, preserving
-  `_nosession` after a current-session write, or claiming inter-process locking
-  semantics that the atomic rename writer does not provide.
-
-### Wrong vs correct: v6 stats persistence
-
-#### Wrong
-
-```ts
-// Raw session id is persisted and reset writes without the authoritative hash,
-// so `_nosession` can survive and resurrect deleted stats after /reload.
-const rawSessionId = ctx.sessionManager.getSessionId();
-payload.sessions[rawSessionId] = { [modelKey(model)]: stats };
-delete state.statsByModel[`${sessionHash}:${modelKey(model)}`];
-await writePersistedCacheStats(state);
-```
-
-#### Correct
-
-```ts
-// Persist only opaque session hashes, and keep the visible footer counter in
-// totalsByModel. Reset removes the authoritative provider/model total so old
-// session buckets cannot resurrect the footer after restart.
-const sessionHash = hashSessionId(ctx.sessionManager.getSessionId());
-delete state.statsByModel[`${sessionHash}:${modelKey(model)}`];
-delete state.totalsByModel[modelKey(model)];
-await writePersistedCacheStats(state, sessionHash);
-```
-
----
-
-## Tests required for footer stats changes
-
-When modifying cache stats, migration, rollover, or footer behavior, add/update a
-task-level verification script that asserts:
-
-* Footer mode parsing defaults to `total`, accepts exact case-insensitive
-  `total`/`session`/`process`, treats invalid env/config values as absent, and
-  gives valid persistent command config precedence over the environment.
-* Direct display, exact router restore, and legacy router fallback select only
-  the effective scope, including fresh-session 0/0 and same-session reload data.
-* v6 parse/round-trip preserves valid `sessions[sessionHash][provider/model]`,
-  authoritative `totalsByModel`, `legacyFamily`, and `lastRoutedModelBySession`,
-  and drops malformed entries without throwing.
-* v5/v4 parse/migration preserves valid `sessions[sessionHash][provider/model]`
-  entries plus `legacyFamily`, derives `totalsByModel`, starts with no exact
-  router metadata for v4, and writes v6 on the next persist.
-* v3 parse/migration assigns valid unscoped `statsByModel` entries to the
-  current session hash on restore while preserving `legacyFamily`; malformed
-  entries are dropped without throwing.
-* v2 `statsByProvider` migrates to `legacyFamily` with empty session stats; v1
-  migrates only to `legacyFamily.deepseek`.
-* `message_end` with an active model updates both the session-scoped model key
-  and `totalsByModel[provider/id]`; selecting a different provider with the same
-  model id does not show or mutate the first provider's counters.
-* A matched-but-unseen model displays empty current-day stats rather than migrated
-  family aggregate data.
-* Different session hashes for the same provider/model produce different internal
-  session keys while sharing the same visible `totalsByModel` counter.
-* Same session hash + same provider/model produces the same internal key.
-* `/reload` preserves session-scoped stats and restart-persistent totals by
-  re-reading persistence and only clears transient state (recent samples,
-  integrity notification).
-* When the active model is a router channel, exact persisted
-  `lastRoutedModelBySession[currentSessionHash]` metadata restores the footer
-  for the exact last routed provider/model, not merely the largest stats bucket.
-* `/cache-optimizer reset` clears the active model's visible `totalsByModel`
-  entry plus matching in-memory session entries and recent samples, persists
-  immediately, and shows 0/0.
-* `_nosession` / old-session reset-resurrection regression: after legacy/no-session
-  data is migrated, resetting the active model and then `/reload` or process
-  restart MUST NOT resurrect the deleted footer stats; persisted v6 output must
-  not retain `_nosession`, and an empty/missing `totalsByModel[provider/id]` is
-  authoritative over old session buckets.
-* Sequential write preservation: a write for the current session preserves other
-  existing session buckets visible in the persisted file, while tests must not
-  assume inter-process locking or serializable concurrent writes.
-* Direct-provider response model name drift: when a direct (non-virtual-routing)
-  provider echoes a different/renamed model id in its response but the response
-  model shares the active model's provider and cache adapter object, stats are
-  consolidated onto the active-model id; a drifted id mapping to a different
-  adapter or a different provider is NOT consolidated; virtual routing
-  providers are never consolidated (message-local identity wins).
-* `/cache-optimizer reset` on a model not matching an adapter shows a friendly
-  no-op message.
-* Local-day rollover resets session-scoped stats, `totalsByModel`, and `legacyFamily` entries.
-* DeepSeek-like OpenAI-compatible models missing Pi Mono compat report
-  `requiresReasoningContentOnAssistantMessages` and `thinkingFormat` alongside
-  cache/session-affinity flags; doctor/compat output includes copyable JSON and
-  does not expose secrets, prompts, payloads, headers, or model output.
-* Existing validation still passes: unsupported models clear the footer, corrupt
-  stats fall back safely, and atomic write / `npm pack --dry-run` / `git diff
-  --check` remain green.
-* New adapters for Kimi, Qwen, GLM, MiniMax, Mimo, Hunyuan, Mistral, Grok/xAI, Llama, Nemotron, Cohere, Yi: each detection function
-  returns correct results for id/name matches and non-matches, assistant message
-  matching is role-gated, and compat warnings use the broadened
-  `describeMissingOpenAICompatibleProxyCompat`.
-* 403 session-affinity header detection: `isSessionAffinity403Applicable` returns true only for `openai-completions` with merged compat `sendSessionAffinityHeaders === true`; returns false for Pi 0.80.7+ `openai-responses` (which uses `sessionAffinityFormat` instead), the untouched built-in `llama.cpp` fingerprint, custom transports (`kiro-api`, `anthropic-messages`), and merged `false`/missing values. A same-id overridden provider with explicit compat is not blanket-exempt. Explicit `sendSessionAffinityHeaders: false` is accepted as a safe opt-out and must not keep `⚠️ compat` active or make `/cache-optimizer fix` suggest `true`; the `after_provider_response` 403 path records a one-time model-scoped warning and surfaces it in doctor/fix. `isOpenAISdkHeader403Applicable` returns true for third-party `openai-completions` proxies after session affinity is disabled/absent, records a read-only OpenAI SDK User-Agent / `X-Stainless-*` WAF diagnostic, and must not add an auto-fix path; existing 400 `prompt_cache_retention` behavior and all prior verify scripts remain green.
+* Parse/drop malformed v7 shards without throwing; never expose raw session ids.
+* Independent extension instances create distinct files and aggregate exact keys.
+* Session/total/process scopes, reload continuity, router restore, and provider/model
+  isolation are covered.
+* Default mode is session; config/env precedence remains stable.
+* `stats`, `stats all`, contributors, compact request/token formatting, and completion
+  are covered.
+* Global/model epoch resets cannot resurrect old shard data.
+* Shutdown writes closed state; current-day closed shards survive cleanup.
+* Old shard/temp retention, active-PID conservatism, lease recovery, malformed files,
+  and symlink safety are covered.
+* `fs.watch` is TUI-only and no permanent fallback poll is installed.
+* Existing adapter, routing, request-hook, compat-fix, TTL, prompt-integrity, typecheck,
+  pack, and diff checks remain green.
 
 ---
 
@@ -1208,7 +1066,7 @@ Persistently selects the footer display scope in
 * `session` writes `{ "version": 1, "footerMode": "session" }`.
 * `total` writes `{ "version": 1, "footerMode": "total" }`.
 * `process` writes `{ "version": 1, "footerMode": "process" }`.
-* Precedence is persistent config > environment > default `total`.
+* Precedence is persistent config > environment > default `session`.
 * Writes use temp file + atomic rename.
 * To restore environment/default resolution, manually delete
   `pi-cache-optimizer-config.json` and run `/reload`; the command does not expose
@@ -1443,7 +1301,8 @@ type CacheUsageSample = {
   appear to be empty or absent (Pi-normalized `input`/`cacheRead`/`cacheWrite` all
   absent/zero and adapter `normalizeUsage` returns `undefined` or all-zeros).
 * Trend summaries (10/30) are computed by `formatRecentTrendSummary()` and used
-  in both `/cache-optimizer stats` and `/cache-optimizer doctor` diagnosis.
+  only for the current extension instance's active-model diagnostics. `stats all`
+  MUST use persisted shard counters and MUST NOT claim an all-session recent trend.
 
 ### Router/channel diagnostics
 

@@ -2,7 +2,7 @@
 
 ## Goal
 
-Make Pi Cache Optimizer's footer status visually distinct when other extensions also publish footer statuses, make `/cache-optimizer` easier to use with native Pi Tab completion, and resolve the confirmed findings from a subsequent full-project review without changing established command semantics.
+Make Pi Cache Optimizer's footer status visually distinct when other extensions also publish footer statuses, make `/cache-optimizer` easier to use with native Pi Tab completion, resolve the confirmed audit findings, and replace the shared v6 stats file with a process-safe v7 shard store so independently running parent/child Pi sessions can contribute truthful cache statistics without overwriting one another.
 
 ## What I already know
 
@@ -29,6 +29,14 @@ Make Pi Cache Optimizer's footer status visually distinct when other extensions 
 * Run every permanent `tests/*.test.ts` file and migrate critical persistence, routing, hook, TTL, lifecycle, and model-identity contracts out of archived-only verifiers.
 * Require Pi 0.82+ in package peer metadata, matching the documented support range.
 * Reuse the direct command handler for interactive menu actions so security-sensitive `/fix` and other command behavior have one implementation path.
+* Replace the shared `pi-cache-optimizer-stats.json` writer with a v7 shard directory where each extension instance atomically writes only its own UUID-named shard.
+* Delete and ignore old v1-v6 stats files instead of migrating them; upgrading intentionally restarts local footer statistics from zero and does not affect upstream provider caches.
+* Aggregate shards by exact `${provider}/${modelId}` only. `session` combines shards with the current hashed session id, `total` combines all valid local shards for the current day, and `process` reads only the current extension instance.
+* Make `session` the default footer mode while preserving explicit persisted config and environment overrides.
+* Use global/model reset epochs so enable/disable and `/reset` invalidate older shards without modifying files owned by other processes or allowing reset resurrection.
+* Refresh TUI totals through `fs.watch` plus lifecycle/command refreshes; do not install a permanent polling interval.
+* Clean expired shards and temp files under a cross-process cleanup lease. Keep every current-day shard even after its writer exits; remove eligible old shards after the retention period without following symlinks.
+* Make `/cache-optimizer stats` show detailed per-model statistics for the current session only. Make `stats all` show detailed per-model totals across all valid local sessions, including request and token summaries such as `4/5·0.66M/0.83M 78.7%`.
 
 ## Acceptance Criteria
 
@@ -47,17 +55,27 @@ Make Pi Cache Optimizer's footer status visually distinct when other extensions 
 * [x] Standard `npm run typecheck` uses the installed Pi 0.84.2 declarations and passes without `types/pi-coding-agent.d.ts` or Node module redeclarations.
 * [x] Permanent tests cover migrations, `_nosession` removal, serialized writes, shutdown flush, routing/cache-hints, TTL ordering, cache key preservation, and direct-provider identity consolidation.
 * [x] `peerDependencies` requires Pi 0.82+ and interactive menu actions reuse the direct command handler.
+* [x] Parent, child, parallel, and independently running Pi instances write distinct atomic v7 shard files and never overwrite one another.
+* [x] The old v6 and pre-rename stats files are ignored and best-effort deleted; no old counters are imported.
+* [x] Default footer mode is `session`; explicit config/env `total|session|process` behavior remains authoritative.
+* [x] `session`, `total`, and `process` select the correct shard scope and never merge different provider/model keys.
+* [x] Model/global epoch changes prevent old shards from resurrecting reset statistics.
+* [x] Current-day closed/dead-process shards remain available; expired old shards/temp files are safely removed under one cleanup lease without following symlinks.
+* [x] TUI shard refresh is event/lifecycle driven and installs no permanent polling interval.
+* [x] `/cache-optimizer stats` reports all current-session models in detail; `stats all` reports all local current-day models with request/token totals and percentages.
 
 ## Definition of Done
 
 * Runtime code and official Pi API type usage are updated.
-* Permanent tests cover the externally visible footer/completion contracts and the confirmed audit hardening contracts.
+* Permanent tests cover the externally visible footer/completion contracts, confirmed audit hardening contracts, shard isolation/aggregation/reset/cleanup, and current-session/all-session command output.
+* `npm run typecheck`, `npm test`, `npm run check:diff`, `npm run check:pack`, and task context validation pass.
 * User-facing documentation and the relevant Trellis spec are synchronized.
 * All required quality checks pass and the final diff contains no whitespace errors.
 
 ## Technical Approach
 
-* Add a small pure completion helper in `index.ts` that returns Pi-compatible `{ value, label, description? }` items for the supported command grammar.
+* Add a small pure completion helper in `index.ts` that returns Pi-compatible `{ value, label, description? }` items for the supported command grammar, including `stats all` and `stats contributors`.
+* Model persisted runtime stats as immutable ownership shards plus global/model epoch markers; keep parsing, aggregation, output formatting, and cleanup helpers pure enough for deterministic permanent tests.
 * Register that helper as `getArgumentCompletions` on the existing `cache-optimizer` command.
 * Add the leading `· ` at the final footer status assembly boundary rather than changing adapter labels or `/cache-optimizer stats` output.
 * Consume Pi's installed native command-completion and context types directly; remove the full local ambient Pi/Node redeclarations that can mask API incompatibilities.
@@ -73,6 +91,10 @@ Make Pi Cache Optimizer's footer status visually distinct when other extensions 
 
 ## Out of Scope
 
+* Reliably labelling another session as a child/subagent without an upstream parent-child protocol; command output uses current/other contributing sessions instead.
+* Collecting statistics from child agents that do not load this extension, use a different Pi agent directory, run remotely, or expose no cache usage.
+* Migrating old v6 counters into the shard store.
+* Permanent low-frequency TUI polling; watcher misses are repaired by lifecycle and explicit-command refreshes.
 * Replacing Pi's footer renderer or taking ownership of the whole footer.
 * Adding completion for unrelated built-in commands or file paths.
 * Changing cache statistics formatting, counters, warning semantics, or command behavior.

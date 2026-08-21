@@ -1,6 +1,6 @@
-import { createHash } from "node:crypto";
-import { chmod, copyFile, mkdir, readFile, rename, stat, unlink, writeFile } from "node:fs/promises";
-import { constants as fsConstants, readFileSync } from "node:fs";
+import { createHash, randomUUID } from "node:crypto";
+import { chmod, copyFile, lstat, mkdir, readFile, readdir, rename, rm, stat, unlink, writeFile } from "node:fs/promises";
+import { constants as fsConstants, readFileSync, watch } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import {
@@ -102,7 +102,19 @@ const STATUS_KEY = "pi-cache-stats";
 const STATE_DIR = getAgentDir();
 const STATE_FILE_PATH = join(STATE_DIR, "pi-cache-optimizer-stats.json");
 const LEGACY_STATE_FILE_PATH = join(STATE_DIR, "deepseek-cache-optimizer-stats.json");
+const SHARD_STATE_DIR = join(STATE_DIR, "pi-cache-optimizer-stats.d");
+const SHARD_FILES_DIR = join(SHARD_STATE_DIR, "shards");
+const SHARD_EPOCH_DIR = join(SHARD_STATE_DIR, "epochs");
+const SHARD_MODEL_EPOCH_DIR = join(SHARD_EPOCH_DIR, "models");
+const SHARD_MAINTENANCE_DIR = join(SHARD_STATE_DIR, "maintenance");
+const SHARD_GLOBAL_EPOCH_PATH = join(SHARD_EPOCH_DIR, "global.json");
+const SHARD_CLEANUP_LOCK_PATH = join(SHARD_MAINTENANCE_DIR, "cleanup.lock");
+const SHARD_CLEANUP_MARKER_PATH = join(SHARD_MAINTENANCE_DIR, "last-cleanup");
 const CONFIG_FILE_PATH = join(STATE_DIR, "pi-cache-optimizer-config.json");
+const SHARD_RETENTION_MS = 48 * 60 * 60 * 1000;
+const SHARD_TEMP_RETENTION_MS = 24 * 60 * 60 * 1000;
+const SHARD_CLEANUP_INTERVAL_MS = 6 * 60 * 60 * 1000;
+const SHARD_CLEANUP_LOCK_STALE_MS = 60 * 60 * 1000;
 const CACHE_PROVIDER_IDS: CacheProviderId[] = ["deepseek", "openai", "claude", "gemini"];
 const OPENAI_CACHE_KEY_ENV = "PI_CACHE_OPTIMIZER_OPENAI_CACHE_KEY";
 const NO_OPENAI_CACHE_KEY_ENV = "PI_CACHE_OPTIMIZER_NO_OPENAI_CACHE_KEY";
@@ -379,6 +391,46 @@ type OptimizedSystemPrompt = {
  * Contains only numeric counters and booleans — never message content, prompts,
  * payloads, headers, API keys, or model outputs.
  */
+type PersistedStatsShardV7 = {
+  version: 7;
+  kind: "pi-cache-optimizer-shard";
+  instanceId: string;
+  sessionHash: string;
+  process: {
+    pid: number;
+    ppid: number;
+    instanceStartedAt: number;
+  };
+  lifecycle: {
+    state: "active" | "closed";
+    createdAt: number;
+    updatedAt: number;
+    closedAt?: number;
+  };
+  day: string;
+  globalEpoch: string;
+  models: Record<string, {
+    modelEpoch: string;
+    provider: string;
+    modelId: string;
+    modelName?: string;
+    api?: string;
+    stats: CacheStats;
+  }>;
+  lastRoutedModel?: PersistedRoutedModelRef;
+};
+
+type ShardAggregate = {
+  bySession: Record<string, Record<string, CacheStats>>;
+  totalsByModel: Record<string, CacheStats>;
+  instancesBySession: Record<string, number>;
+  instancesBySessionModel: Record<string, Record<string, number>>;
+  sessionsByModel: Record<string, number>;
+  instancesByModel: Record<string, number>;
+  modelRefsByKey: Record<string, PersistedRoutedModelRef>;
+  lastRoutedModelBySession: Record<string, PersistedRoutedModelRef>;
+};
+
 type CacheUsageSample = {
   timestamp: number;
   hit: boolean;
@@ -1171,6 +1223,7 @@ const CACHE_OPTIMIZER_COMMANDS = [
 ] as const;
 const CACHE_OPTIMIZER_CONFIG_ARGUMENTS = ["footer-mode"] as const;
 const CACHE_OPTIMIZER_FOOTER_MODES = ["total", "session", "process"] as const;
+const CACHE_OPTIMIZER_STATS_ARGUMENTS = ["all", "contributors"] as const;
 
 function filterCommandCompletionItems(
   values: readonly string[],
@@ -1209,7 +1262,16 @@ function getCacheOptimizerArgumentCompletions(argumentPrefix: string): CommandCo
     if (subcommandPrefix === "config") {
       return filterCommandCompletionItems(CACHE_OPTIMIZER_CONFIG_ARGUMENTS, "", "config");
     }
+    if (subcommandPrefix === "stats") {
+      return filterCommandCompletionItems(CACHE_OPTIMIZER_STATS_ARGUMENTS, "", "stats");
+    }
     return filterCommandCompletionItems(CACHE_OPTIMIZER_COMMANDS, parts[0]);
+  }
+
+  if (parts[0].toLowerCase() === "stats") {
+    return parts.length === 2
+      ? filterCommandCompletionItems(CACHE_OPTIMIZER_STATS_ARGUMENTS, parts[1], "stats")
+      : null;
   }
 
   if (parts[0].toLowerCase() !== "config") return null;
@@ -1267,7 +1329,7 @@ function resolveFooterStatsMode(
 ): { mode: FooterStatsMode; source: FooterStatsModeSource } {
   if (configuredMode) return { mode: configuredMode, source: "config" };
   const envMode = parseFooterStatsMode(env[FOOTER_MODE_ENV]);
-  return envMode ? { mode: envMode, source: "env" } : { mode: "total", source: "default" };
+  return envMode ? { mode: envMode, source: "env" } : { mode: "session", source: "default" };
 }
 
 function footerStatsMode(
@@ -3840,6 +3902,87 @@ function formatRecentTrendSummary(samples: CacheUsageSample[], maxCount: number)
 /**
  * Build the output for `/cache-optimizer stats`.
  */
+function formatCompactStats(stats: CacheStats): string {
+  const percent = stats.totalInputTokens > 0
+    ? (stats.cachedInputTokens / stats.totalInputTokens) * 100
+    : 0;
+  return `${stats.hitRequests}/${stats.totalRequests}·${formatTokenCount(stats.cachedInputTokens)}/${formatTokenCount(stats.totalInputTokens)} ${percent.toFixed(1)}%`;
+}
+
+function modelFromStatsKey(key: string, ref?: PersistedRoutedModelRef): PiModel | undefined {
+  const slash = key.indexOf("/");
+  if (slash <= 0 || slash >= key.length - 1) return undefined;
+  return routedModelRefToPiModel(ref ?? { provider: key.slice(0, slash), id: key.slice(slash + 1) });
+}
+
+function sortStatsEntries(entries: Array<[string, CacheStats]>, activeModelKey?: string): Array<[string, CacheStats]> {
+  return entries.sort(([left], [right]) => {
+    if (left === activeModelKey) return -1;
+    if (right === activeModelKey) return 1;
+    return left.localeCompare(right);
+  });
+}
+
+function buildSessionStatsOutput(
+  sessionModels: Record<string, CacheStats>,
+  activeModel?: PiModel,
+  modelRefsByKey: Record<string, PersistedRoutedModelRef> = {},
+): string {
+  const activeKey = activeModel ? modelKey(activeModel) : undefined;
+  const models = { ...sessionModels };
+  if (activeModel && selectAdapterForModel(activeModel) && !models[activeKey!]) {
+    models[activeKey!] = emptyCacheStats();
+  }
+  const entries = sortStatsEntries(Object.entries(models), activeKey);
+  if (entries.length === 0) return "ℹ️ No cache statistics recorded for the current session today.";
+  const lines = ["Scope: current session", `Day:   ${currentLocalDay()}`, `Models: ${entries.length}`];
+  for (const [key, stats] of entries) {
+    const model = modelFromStatsKey(key, modelRefsByKey[key]);
+    const adapter = model ? selectAdapterForModel(model) : undefined;
+    lines.push("", `── ${key} ──`, `Adapter: ${adapter?.label ?? "Unknown cache adapter"}`);
+    lines.push(`Requests:      ${stats.hitRequests} hit / ${stats.totalRequests} total`);
+    lines.push(`Cached tokens: ${formatTokenCount(stats.cachedInputTokens)} / ${formatTokenCount(stats.totalInputTokens)} input · ${stats.totalInputTokens > 0 ? `${((stats.cachedInputTokens / stats.totalInputTokens) * 100).toFixed(1)}%` : "0.0%"}`);
+    lines.push(`Summary:       ${formatCompactStats(stats)}`);
+    if (stats.cacheWriteInputTokens > 0) lines.push(`Cache write:   ${formatTokenCount(stats.cacheWriteInputTokens)}`);
+  }
+  return lines.join("\n");
+}
+
+function buildAllStatsOutput(aggregate: ShardAggregate): string {
+  const entries = sortStatsEntries(Object.entries(aggregate.totalsByModel));
+  if (entries.length === 0) return "ℹ️ No local cache statistics recorded today.";
+  const sessionCount = Object.keys(aggregate.instancesBySession).length;
+  const instanceCount = Object.values(aggregate.instancesBySession).reduce((sum, value) => sum + value, 0);
+  const lines = ["Scope: all local sessions", `Day:   ${currentLocalDay()}`, `Sessions: ${sessionCount}`, `Instances: ${instanceCount}`];
+  for (const [key, stats] of entries) {
+    const model = modelFromStatsKey(key, aggregate.modelRefsByKey[key]);
+    const adapter = model ? selectAdapterForModel(model) : undefined;
+    lines.push("", `── ${key} ──`, `Adapter: ${adapter?.label ?? "Unknown cache adapter"}`);
+    lines.push(`Sessions: ${aggregate.sessionsByModel[key] ?? 0} · Instances: ${aggregate.instancesByModel[key] ?? 0}`);
+    lines.push(`Requests:      ${stats.hitRequests} hit / ${stats.totalRequests} total`);
+    lines.push(`Cached tokens: ${formatTokenCount(stats.cachedInputTokens)} / ${formatTokenCount(stats.totalInputTokens)} input · ${stats.totalInputTokens > 0 ? `${((stats.cachedInputTokens / stats.totalInputTokens) * 100).toFixed(1)}%` : "0.0%"}`);
+    lines.push(`Summary:       ${formatCompactStats(stats)}`);
+    if (stats.cacheWriteInputTokens > 0) lines.push(`Cache write:   ${formatTokenCount(stats.cacheWriteInputTokens)}`);
+  }
+  return lines.join("\n");
+}
+
+function buildContributorsStatsOutput(aggregate: ShardAggregate, activeModel: PiModel | undefined, currentSessionHash?: string): string {
+  if (!activeModel) return "ℹ️ No active model selected.";
+  const key = modelKey(activeModel);
+  const rows = Object.entries(aggregate.bySession)
+    .filter(([, models]) => models[key])
+    .sort(([left], [right]) => left === currentSessionHash ? -1 : right === currentSessionHash ? 1 : left.localeCompare(right));
+  if (rows.length === 0) return `ℹ️ No contributors recorded for ${key} today.`;
+  const lines = [`Model: ${key}`, "Scope: contributing local sessions today"];
+  let otherIndex = 0;
+  for (const [sessionHash, models] of rows) {
+    const label = sessionHash === currentSessionHash ? "Current session" : `Other session ${++otherIndex}`;
+    lines.push("", label, `  Instances: ${aggregate.instancesBySessionModel[sessionHash]?.[key] ?? 0}`, `  ${formatCompactStats(models[key])}`);
+  }
+  return lines.join("\n");
+}
+
 function buildStatsOutput(model: PiModel | undefined, adapter: CacheProviderAdapter | undefined, stats: CacheStats | undefined, recentSamples: CacheUsageSample[]): string {
   const lines: string[] = [];
 
@@ -4248,8 +4391,8 @@ function filterRestorableStatsForSession(
  *     `restoreCacheStats` can migrate them on the next load before the session
  *     id is known.
  *
- * Pure function (no I/O) — suitable for unit tests without touching the real
- * state file at `~/.pi/agent/pi-cache-optimizer-stats.json`.
+ * Historical v1-v6 pure helper (no runtime I/O). Permanent migration tests
+ * exercise it directly; v7 startup never reads or writes the obsolete file.
  */
 function mergeCacheSessions(
   existingSessions: Record<string, Record<string, CacheStats>>,
@@ -4409,7 +4552,304 @@ async function writePersistedCacheStats(
   await rename(tempPath, STATE_FILE_PATH);
 }
 
+function modelEpochPath(modelKeyValue: string): string {
+  return join(SHARD_MODEL_EPOCH_DIR, `${createHash("sha256").update(modelKeyValue).digest("hex")}.json`);
+}
 
+function initialEpoch(scope: string): string {
+  return `initial:${scope}`;
+}
+
+function parseEpochRecord(value: unknown): string | undefined {
+  const record = asRecord(value);
+  return record?.version === 1 && isNonEmptyString(record.epoch) ? record.epoch.trim() : undefined;
+}
+
+async function readEpochFile(path: string, fallback: string): Promise<string> {
+  try {
+    return parseEpochRecord(JSON.parse(await readFile(path, "utf8"))) ?? fallback;
+  } catch {
+    return fallback;
+  }
+}
+
+async function readGlobalStatsEpoch(): Promise<string> {
+  return readEpochFile(SHARD_GLOBAL_EPOCH_PATH, initialEpoch("global"));
+}
+
+async function readModelStatsEpoch(modelKeyValue: string): Promise<string> {
+  return readEpochFile(modelEpochPath(modelKeyValue), initialEpoch(`model:${modelKeyValue}`));
+}
+
+async function writeStatsEpoch(path: string, epoch: string): Promise<void> {
+  await mkdir(dirname(path), { recursive: true });
+  const tempPath = `${path}.${process.pid}.${Date.now()}.${randomUUID()}.tmp`;
+  await writeFile(tempPath, JSON.stringify({ version: 1, epoch, createdAt: Date.now() }, null, 2) + "\n", "utf8");
+  await rename(tempPath, path);
+}
+
+async function advanceGlobalStatsEpoch(): Promise<string> {
+  const epoch = `${Date.now()}-${randomUUID()}`;
+  await writeStatsEpoch(SHARD_GLOBAL_EPOCH_PATH, epoch);
+  return epoch;
+}
+
+async function advanceModelStatsEpoch(modelKeyValue: string): Promise<string> {
+  const epoch = `${Date.now()}-${randomUUID()}`;
+  await writeStatsEpoch(modelEpochPath(modelKeyValue), epoch);
+  return epoch;
+}
+
+function parsePersistedStatsShardV7(value: unknown): PersistedStatsShardV7 | undefined {
+  const record = asRecord(value);
+  const processRecord = asRecord(record?.process);
+  const lifecycle = asRecord(record?.lifecycle);
+  const rawModels = asRecord(record?.models);
+  if (
+    record?.version !== 7 ||
+    record.kind !== "pi-cache-optimizer-shard" ||
+    !isNonEmptyString(record.instanceId) ||
+    !isNonEmptyString(record.sessionHash) ||
+    !processRecord ||
+    !Number.isInteger(processRecord.pid) ||
+    !Number.isInteger(processRecord.ppid) ||
+    typeof processRecord.instanceStartedAt !== "number" ||
+    !lifecycle ||
+    (lifecycle.state !== "active" && lifecycle.state !== "closed") ||
+    typeof lifecycle.createdAt !== "number" ||
+    typeof lifecycle.updatedAt !== "number" ||
+    !isNonEmptyString(record.day) ||
+    !/^\d{4}-\d{2}-\d{2}$/.test(record.day) ||
+    !isNonEmptyString(record.globalEpoch) ||
+    !rawModels
+  ) return undefined;
+
+  const models: PersistedStatsShardV7["models"] = {};
+  for (const [key, rawEntry] of Object.entries(rawModels)) {
+    const entry = asRecord(rawEntry);
+    const stats = parseCacheStats(entry?.stats);
+    if (
+      !entry || !stats || !isNonEmptyString(entry.modelEpoch) ||
+      !isNonEmptyString(entry.provider) || !isNonEmptyString(entry.modelId) ||
+      key !== `${entry.provider.trim()}/${entry.modelId.trim()}`
+    ) continue;
+    models[key] = {
+      modelEpoch: entry.modelEpoch.trim(),
+      provider: entry.provider.trim(),
+      modelId: entry.modelId.trim(),
+      ...(isNonEmptyString(entry.modelName) ? { modelName: entry.modelName.trim() } : {}),
+      ...(isNonEmptyString(entry.api) ? { api: entry.api.trim() } : {}),
+      stats,
+    };
+  }
+
+  const lastRoutedModel = parsePersistedRoutedModelRef(record.lastRoutedModel);
+  return {
+    version: 7,
+    kind: "pi-cache-optimizer-shard",
+    instanceId: record.instanceId.trim(),
+    sessionHash: record.sessionHash.trim(),
+    process: {
+      pid: Number(processRecord.pid),
+      ppid: Number(processRecord.ppid),
+      instanceStartedAt: processRecord.instanceStartedAt,
+    },
+    lifecycle: {
+      state: lifecycle.state,
+      createdAt: lifecycle.createdAt,
+      updatedAt: lifecycle.updatedAt,
+      ...(typeof lifecycle.closedAt === "number" ? { closedAt: lifecycle.closedAt } : {}),
+    },
+    day: record.day,
+    globalEpoch: record.globalEpoch.trim(),
+    models,
+    ...(lastRoutedModel ? { lastRoutedModel } : {}),
+  };
+}
+
+async function writeStatsShardV7(path: string, shard: PersistedStatsShardV7): Promise<void> {
+  await mkdir(dirname(path), { recursive: true });
+  const tempPath = `${path}.${process.pid}.${Date.now()}.${randomUUID()}.tmp`;
+  await writeFile(tempPath, JSON.stringify(shard, null, 2) + "\n", "utf8");
+  await rename(tempPath, path);
+}
+
+async function readValidStatsShardsV7(directory: string = SHARD_FILES_DIR): Promise<PersistedStatsShardV7[]> {
+  let names: string[];
+  try {
+    names = await readdir(directory);
+  } catch (error) {
+    if (getErrorCode(error) === "ENOENT") return [];
+    throw error;
+  }
+  const shards: PersistedStatsShardV7[] = [];
+  for (const name of names) {
+    if (!/^[0-9a-f-]+\.json$/i.test(name)) continue;
+    const path = join(directory, name);
+    try {
+      const info = await lstat(path);
+      if (!info.isFile() || info.isSymbolicLink()) continue;
+      const parsed = parsePersistedStatsShardV7(JSON.parse(await readFile(path, "utf8")));
+      const filenameInstanceId = name.slice(0, -".json".length);
+      if (parsed && parsed.instanceId === filenameInstanceId) shards.push(parsed);
+    } catch {
+      // Ignore malformed or transiently unavailable shards. Atomic writers will
+      // publish a complete replacement on the next successful update.
+    }
+  }
+  return shards;
+}
+
+async function aggregateStatsShardsV7(
+  shards: PersistedStatsShardV7[],
+  day: string = currentLocalDay(),
+): Promise<ShardAggregate> {
+  const globalEpoch = await readGlobalStatsEpoch();
+  const modelEpochs = new Map<string, string>();
+  const result: ShardAggregate = {
+    bySession: {},
+    totalsByModel: {},
+    instancesBySession: {},
+    instancesBySessionModel: {},
+    sessionsByModel: {},
+    instancesByModel: {},
+    modelRefsByKey: {},
+    lastRoutedModelBySession: {},
+  };
+  const routedUpdatedAt = new Map<string, number>();
+  const modelRefUpdatedAt = new Map<string, number>();
+  const modelSessions = new Map<string, Set<string>>();
+
+  for (const shard of shards) {
+    if (shard.day !== day || shard.globalEpoch !== globalEpoch) continue;
+    let contributed = false;
+    if (shard.lastRoutedModel && (routedUpdatedAt.get(shard.sessionHash) ?? -1) < shard.lifecycle.updatedAt) {
+      routedUpdatedAt.set(shard.sessionHash, shard.lifecycle.updatedAt);
+      result.lastRoutedModelBySession[shard.sessionHash] = shard.lastRoutedModel;
+    }
+    for (const [key, entry] of Object.entries(shard.models)) {
+      let epoch = modelEpochs.get(key);
+      if (!epoch) {
+        epoch = await readModelStatsEpoch(key);
+        modelEpochs.set(key, epoch);
+      }
+      if (entry.modelEpoch !== epoch || entry.stats.day !== day) continue;
+      contributed = true;
+      const sessionModels = result.bySession[shard.sessionHash] ??= {};
+      sessionModels[key] = mergeCacheStatsForTotal(sessionModels[key], entry.stats);
+      result.totalsByModel[key] = mergeCacheStatsForTotal(result.totalsByModel[key], entry.stats);
+      result.instancesByModel[key] = (result.instancesByModel[key] ?? 0) + 1;
+      if ((modelRefUpdatedAt.get(key) ?? -1) < shard.lifecycle.updatedAt) {
+        modelRefUpdatedAt.set(key, shard.lifecycle.updatedAt);
+        result.modelRefsByKey[key] = {
+          provider: entry.provider,
+          id: entry.modelId,
+          name: entry.modelName ?? entry.modelId,
+        };
+      }
+      const sessionInstances = result.instancesBySessionModel[shard.sessionHash] ??= {};
+      sessionInstances[key] = (sessionInstances[key] ?? 0) + 1;
+      const sessions = modelSessions.get(key) ?? new Set<string>();
+      sessions.add(shard.sessionHash);
+      modelSessions.set(key, sessions);
+    }
+    if (contributed) {
+      result.instancesBySession[shard.sessionHash] = (result.instancesBySession[shard.sessionHash] ?? 0) + 1;
+    }
+  }
+  for (const [key, sessions] of modelSessions) result.sessionsByModel[key] = sessions.size;
+  return result;
+}
+
+async function loadStatsShardAggregateV7(directory: string = SHARD_FILES_DIR): Promise<ShardAggregate> {
+  return aggregateStatsShardsV7(await readValidStatsShardsV7(directory));
+}
+
+function isProcessAlive(pid: number): boolean {
+  if (!Number.isInteger(pid) || pid <= 0) return false;
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    return getErrorCode(error) === "EPERM";
+  }
+}
+
+async function removeLegacyStatsFiles(): Promise<void> {
+  for (const path of [STATE_FILE_PATH, LEGACY_STATE_FILE_PATH]) {
+    try {
+      await unlink(path);
+    } catch (error) {
+      if (getErrorCode(error) !== "ENOENT") console.warn(`${LOG_PREFIX}: failed to remove obsolete stats file ${path}`, error);
+    }
+  }
+}
+
+async function cleanupStatsShardsV7(now = Date.now(), directory: string = SHARD_FILES_DIR): Promise<number> {
+  let names: string[];
+  try {
+    names = await readdir(directory);
+  } catch (error) {
+    return getErrorCode(error) === "ENOENT" ? 0 : Promise.reject(error);
+  }
+  const today = currentLocalDay();
+  let removed = 0;
+  for (const name of names) {
+    const isShard = /^[0-9a-f-]+\.json$/i.test(name);
+    const isTemp = name.endsWith(".tmp");
+    if (!isShard && !isTemp) continue;
+    const path = join(directory, name);
+    try {
+      const info = await lstat(path);
+      if (!info.isFile() || info.isSymbolicLink()) continue;
+      if (isTemp) {
+        if (now - info.mtimeMs < SHARD_TEMP_RETENTION_MS) continue;
+      } else {
+        const parsed = parsePersistedStatsShardV7(JSON.parse(await readFile(path, "utf8")));
+        if (parsed?.day === today) continue;
+        const updatedAt = parsed?.lifecycle.updatedAt ?? info.mtimeMs;
+        if (now - updatedAt < SHARD_RETENTION_MS) continue;
+        if (parsed?.lifecycle.state === "active" && isProcessAlive(parsed.process.pid)) continue;
+      }
+      await unlink(path);
+      removed += 1;
+    } catch {
+      // Best-effort maintenance must never block the extension.
+    }
+  }
+  return removed;
+}
+
+async function maybeCleanupStatsShardsV7(now = Date.now()): Promise<void> {
+  await mkdir(SHARD_MAINTENANCE_DIR, { recursive: true });
+  try {
+    const marker = await stat(SHARD_CLEANUP_MARKER_PATH);
+    if (now - marker.mtimeMs < SHARD_CLEANUP_INTERVAL_MS) return;
+  } catch {}
+
+  try {
+    await mkdir(SHARD_CLEANUP_LOCK_PATH);
+  } catch (error) {
+    if (getErrorCode(error) !== "EEXIST") return;
+    try {
+      const lock = await stat(SHARD_CLEANUP_LOCK_PATH);
+      if (now - lock.mtimeMs <= SHARD_CLEANUP_LOCK_STALE_MS) return;
+      await rm(SHARD_CLEANUP_LOCK_PATH, { recursive: true, force: true });
+      await mkdir(SHARD_CLEANUP_LOCK_PATH);
+    } catch {
+      return;
+    }
+  }
+
+  try {
+    await cleanupStatsShardsV7(now);
+    const tempPath = `${SHARD_CLEANUP_MARKER_PATH}.${process.pid}.${randomUUID()}.tmp`;
+    await writeFile(tempPath, `${now}\n`, "utf8");
+    await rename(tempPath, SHARD_CLEANUP_MARKER_PATH);
+  } finally {
+    await rm(SHARD_CLEANUP_LOCK_PATH, { recursive: true, force: true });
+  }
+}
 
 function isCompatCheckApplicable(model: PiModel): boolean {
   return isOpenAICompatibleProxyApi(model.api) && !isOfficialOpenAIBaseUrl(model) && !isPiBuiltInLlamaCppModel(model);
@@ -6876,6 +7316,10 @@ export const __internals_for_tests = {
   // Recent sample / stats output / diagnosis helpers
   MAX_RECENT_SAMPLES,
   buildStatsOutput,
+  buildSessionStatsOutput,
+  buildAllStatsOutput,
+  buildContributorsStatsOutput,
+  formatCompactStats,
   buildLowHitDiagnosis,
   formatRecentTrendSummary,
   formatHitRatio,
@@ -6923,8 +7367,23 @@ export const __internals_for_tests = {
   createSerializedAsyncRunner,
   writePersistedCacheStats,
   readPersistedCacheStats,
+  parsePersistedStatsShardV7,
+  writeStatsShardV7,
+  readValidStatsShardsV7,
+  aggregateStatsShardsV7,
+  loadStatsShardAggregateV7,
+  cleanupStatsShardsV7,
+  removeLegacyStatsFiles,
+  readGlobalStatsEpoch,
+  readModelStatsEpoch,
+  advanceGlobalStatsEpoch,
+  advanceModelStatsEpoch,
+  modelEpochPath,
   STATE_FILE_PATH,
   LEGACY_STATE_FILE_PATH,
+  SHARD_STATE_DIR,
+  SHARD_FILES_DIR,
+  SHARD_GLOBAL_EPOCH_PATH,
   STATE_DIR,
   // JSONC surgical edit helpers
   MODELS_JSON_PATH,
@@ -6981,17 +7440,25 @@ export default function (pi: ExtensionAPI) {
   let lastStatusText: string | undefined;
   let persistenceWarningShown = false;
   let persistTimer: ReturnType<typeof setTimeout> | null = null;
+  let shardRefreshTimer: ReturnType<typeof setTimeout> | null = null;
+  let shardWatcher: ReturnType<typeof watch> | undefined;
   const enqueuePersist = createSerializedAsyncRunner();
-  let replacePersistedTotalsOnNextWrite = false;
-  let forceReplaceTotalsAfterFailure = false;
-  const pendingDeletedTotalModelKeys = new Set<string>();
+  const instanceId = randomUUID();
+  const instanceStartedAt = Date.now();
+  const instanceShardPath = join(SHARD_FILES_DIR, `${instanceId}.json`);
+  const modelApiByKey = new Map<string, string>();
+  const modelNameByKey = new Map<string, string>();
+  const modelEpochByKey = new Map<string, string>();
+  let currentGlobalEpoch = initialEpoch("global");
   let integrityNotificationShown = false;
   let currentSessionId = "";
   let currentSessionHash = "";
   let currentSessionHashSet = false;
   let lastActualRoutedModel: PersistedRoutedModelRef | undefined;
   let latestCacheHint: PiCacheHintSnapshot | undefined;
+  let shardCreatedAt = Date.now();
   const PERSIST_DEBOUNCE_MS = 2000;
+  const SHARD_REFRESH_DEBOUNCE_MS = 250;
 
   function buildObservedRuntimeFixSuggestion(model: PiModel): FixSuggestion | undefined {
     const key = modelKey(model);
@@ -7106,15 +7573,100 @@ export default function (pi: ExtensionAPI) {
     recentSamplesByModelKey.clear();
   }
 
-  function getCacheStatsState(): CacheStatsState {
+  async function refreshShardAggregate(): Promise<ShardAggregate> {
+    const persistedShards = await readValidStatsShardsV7();
+    const shards = persistedShards.filter((shard) => shard.instanceId !== instanceId);
+    if (currentSessionHashSet) shards.push(buildCurrentStatsShard());
+    const aggregate = await aggregateStatsShardsV7(shards);
+
+    // A reset from another process can advance epochs while this instance is
+    // idle. Adopt those epochs during every aggregate refresh, not only when a
+    // later message_end arrives, so this instance cannot keep an old in-memory
+    // process bucket visible in `process` mode or rewrite stale counters during
+    // shutdown. Model-scoped resets clear only the affected local bucket.
+    const latestGlobalEpoch = await readGlobalStatsEpoch();
+    if (currentGlobalEpoch !== latestGlobalEpoch) {
+      currentGlobalEpoch = latestGlobalEpoch;
+      cacheStatsProcessByModel = {};
+      modelEpochByKey.clear();
+      modelApiByKey.clear();
+      modelNameByKey.clear();
+      lastActualRoutedModel = undefined;
+    } else {
+      for (const key of Object.keys(cacheStatsProcessByModel)) {
+        const latestModelEpoch = await readModelStatsEpoch(key);
+        if ((modelEpochByKey.get(key) ?? initialEpoch(`model:${key}`)) === latestModelEpoch) continue;
+        delete cacheStatsProcessByModel[key];
+        modelEpochByKey.set(key, latestModelEpoch);
+        modelApiByKey.delete(key);
+        modelNameByKey.delete(key);
+      }
+    }
+
+    cacheStatsByModel = {};
+    for (const [sessionHash, models] of Object.entries(aggregate.bySession)) {
+      for (const [key, stats] of Object.entries(models)) {
+        cacheStatsByModel[`${sessionHash}:${key}`] = stats;
+      }
+    }
+    cacheStatsTotalsByModel = aggregate.totalsByModel;
+    if (currentSessionHashSet) {
+      lastActualRoutedModel = aggregate.lastRoutedModelBySession[currentSessionHash];
+    }
+    lastStatusText = undefined;
+    return aggregate;
+  }
+
+  async function ensureCurrentEpochs(): Promise<void> {
+    currentGlobalEpoch = await readGlobalStatsEpoch();
+    for (const key of Object.keys(cacheStatsProcessByModel)) {
+      modelEpochByKey.set(key, await readModelStatsEpoch(key));
+    }
+  }
+
+  function buildCurrentStatsShard(state: "active" | "closed" = "active"): PersistedStatsShardV7 {
+    const now = Date.now();
+    const models: PersistedStatsShardV7["models"] = {};
+    for (const [key, stats] of Object.entries(cacheStatsProcessByModel)) {
+      const slash = key.indexOf("/");
+      if (slash <= 0 || slash >= key.length - 1) continue;
+      models[key] = {
+        modelEpoch: modelEpochByKey.get(key) ?? initialEpoch(`model:${key}`),
+        provider: key.slice(0, slash),
+        modelId: key.slice(slash + 1),
+        ...(modelNameByKey.get(key) ? { modelName: modelNameByKey.get(key) } : {}),
+        ...(modelApiByKey.get(key) ? { api: modelApiByKey.get(key) } : {}),
+        stats: cloneCacheStats(stats),
+      };
+    }
     return {
-      statsByModel: cacheStatsByModel,
-      totalsByModel: cacheStatsTotalsByModel,
-      legacyFamily: cacheStatsLegacyFamily,
-      ...(currentSessionHashSet && lastActualRoutedModel
-        ? { lastRoutedModelBySession: { [currentSessionHash]: lastActualRoutedModel } }
-        : {}),
+      version: 7,
+      kind: "pi-cache-optimizer-shard",
+      instanceId,
+      sessionHash: currentSessionHash || "_nosession",
+      process: { pid: process.pid, ppid: process.ppid, instanceStartedAt },
+      lifecycle: {
+        state,
+        createdAt: shardCreatedAt,
+        updatedAt: now,
+        ...(state === "closed" ? { closedAt: now } : {}),
+      },
+      day: currentLocalDay(),
+      globalEpoch: currentGlobalEpoch,
+      models,
+      ...(lastActualRoutedModel ? { lastRoutedModel: { ...lastActualRoutedModel } } : {}),
     };
+  }
+
+  function scheduleShardRefresh(ctx?: ExtensionContext, model?: PiModel): void {
+    if (shardRefreshTimer !== null) clearTimeout(shardRefreshTimer);
+    shardRefreshTimer = setTimeout(() => {
+      shardRefreshTimer = null;
+      void refreshShardAggregate()
+        .then(() => publishStatus(ctx as ExtensionContext, model ?? ctx?.model))
+        .catch(() => undefined);
+    }, SHARD_REFRESH_DEBOUNCE_MS);
+    shardRefreshTimer.unref?.();
   }
 
   /** Look up visible cumulative stats for a model, falling back to legacy family. */
@@ -7166,79 +7718,41 @@ export default function (pi: ExtensionAPI) {
     return created;
   }
 
-  function resetStatsForModel(model: PiModel): void {
+  async function resetStatsForModel(model: PiModel): Promise<void> {
     const displayKey = modelKey(model);
+    const nextEpoch = await advanceModelStatsEpoch(displayKey);
+    modelEpochByKey.set(displayKey, nextEpoch);
+    delete cacheStatsProcessByModel[displayKey];
+    delete cacheStatsTotalsByModel[displayKey];
     for (const key of Object.keys(cacheStatsByModel)) {
       if (modelKeyFromSessionScoped(key) === displayKey) delete cacheStatsByModel[key];
     }
-    delete cacheStatsTotalsByModel[displayKey];
-    delete cacheStatsProcessByModel[displayKey];
-    pendingDeletedTotalModelKeys.add(displayKey);
     for (const key of Array.from(recentSamplesByModelKey.keys())) {
       if (modelKeyFromSessionScoped(key) === displayKey) recentSamplesByModelKey.delete(key);
     }
     lastStatusText = undefined;
   }
 
-  function resetCurrentSessionStats(): void {
-    const prefix = `${currentSessionHash || "_nosession"}:`;
-    for (const key of Object.keys(cacheStatsByModel)) {
-      if (key.startsWith(prefix)) delete cacheStatsByModel[key];
-    }
-    cacheStatsProcessByModel = {};
+  async function resetCurrentSessionStats(): Promise<void> {
+    currentGlobalEpoch = await advanceGlobalStatsEpoch();
+    cacheStatsByModel = {};
     cacheStatsTotalsByModel = {};
-    replacePersistedTotalsOnNextWrite = true;
-    for (const key of Array.from(recentSamplesByModelKey.keys())) {
-      if (key.startsWith(prefix)) recentSamplesByModelKey.delete(key);
-    }
+    cacheStatsProcessByModel = {};
+    modelEpochByKey.clear();
+    modelApiByKey.clear();
+    modelNameByKey.clear();
+    clearRecentSamples();
     lastActualRoutedModel = undefined;
     lastStatusText = undefined;
   }
 
-  function snapshotCacheStatsState(): CacheStatsState {
-    const state = getCacheStatsState();
-    const statsByModel = Object.fromEntries(
-      Object.entries(state.statsByModel).map(([key, stats]) => [key, { ...stats }]),
-    );
-    const totalsByModel = Object.fromEntries(
-      Object.entries(state.totalsByModel).map(([key, stats]) => [key, { ...stats }]),
-    );
-    const legacyFamily: Partial<Record<CacheProviderId, CacheStats>> = {};
-    for (const id of CACHE_PROVIDER_IDS) {
-      const stats = state.legacyFamily[id];
-      if (stats) legacyFamily[id] = { ...stats };
-    }
-    const lastRoutedModelBySession = state.lastRoutedModelBySession
-      ? Object.fromEntries(
-        Object.entries(state.lastRoutedModelBySession).map(([key, model]) => [key, { ...model }]),
-      )
-      : undefined;
-    return { statsByModel, totalsByModel, legacyFamily, lastRoutedModelBySession };
-  }
-
-  function persistCacheStats(ctx?: ExtensionContext): Promise<void> {
-    const state = snapshotCacheStatsState();
-    const sessionHash = currentSessionHashSet ? currentSessionHash : undefined;
-    const deleteModelKeys = Array.from(pendingDeletedTotalModelKeys);
-    const replaceTotals = replacePersistedTotalsOnNextWrite;
-    // This queued write owns the current intents. Later mutations can enqueue
-    // independent intents without an earlier completion clearing them.
-    pendingDeletedTotalModelKeys.clear();
-    replacePersistedTotalsOnNextWrite = false;
-
+  function persistCacheStats(ctx?: ExtensionContext, lifecycleState: "active" | "closed" = "active"): Promise<void> {
+    const shard = buildCurrentStatsShard(lifecycleState);
     return enqueuePersist(async () => {
-      const recoverFromEarlierFailure = forceReplaceTotalsAfterFailure;
       try {
-        await writePersistedCacheStats(state, sessionHash, {
-          deleteModelKeys,
-          replaceTotals: replaceTotals || recoverFromEarlierFailure,
-        });
-        if (recoverFromEarlierFailure) forceReplaceTotalsAfterFailure = false;
+        await writeStatsShardV7(instanceShardPath, shard);
       } catch (error) {
-        // The next queued write must replace totals authoritatively so a failed
-        // reset/delete cannot merge stale persisted counters back into state.
-        forceReplaceTotalsAfterFailure = true;
-        console.warn(`${LOG_PREFIX}: failed to persist cache stats`, error);
+        console.warn(`${LOG_PREFIX}: failed to persist cache stats shard`, error);
         if (!persistenceWarningShown) {
           persistenceWarningShown = true;
           ctx?.ui.notify(
@@ -7250,61 +7764,37 @@ export default function (pi: ExtensionAPI) {
     });
   }
 
-  /** Schedule a debounced persist. Coalesces rapid message_end writes
-   *  into a single disk write after PERSIST_DEBOUNCE_MS of silence.
-   *  In-memory stats remain instantly up-to-date for the footer; only
-   *  the on-disk persistence is delayed. */
   function schedulePersistCacheStats(ctx?: ExtensionContext): void {
     if (persistTimer !== null) clearTimeout(persistTimer);
     persistTimer = setTimeout(() => {
       persistTimer = null;
-      persistCacheStats(ctx).catch((err) => {
-        console.warn(`${LOG_PREFIX}: debounced persist failed`, err);
-      });
+      void persistCacheStats(ctx).then(() => refreshShardAggregate()).catch(() => undefined);
     }, PERSIST_DEBOUNCE_MS);
+    persistTimer.unref?.();
   }
 
-  /** Flush any pending debounced persist immediately (cancels timer + writes).
-   *  Used on reload and day-rollover where immediate durability matters. */
-  async function flushPersistCacheStats(ctx?: ExtensionContext): Promise<void> {
+  async function flushPersistCacheStats(ctx?: ExtensionContext, lifecycleState: "active" | "closed" = "active"): Promise<void> {
     if (persistTimer !== null) {
       clearTimeout(persistTimer);
       persistTimer = null;
     }
-    await persistCacheStats(ctx);
+    // Adopt resets performed by another Pi process before capturing the shard
+    // snapshot. Otherwise shutdown/command flush could rewrite stale local
+    // counters under an old epoch even though aggregation already hid them.
+    await refreshShardAggregate();
+    await persistCacheStats(ctx, lifecycleState);
+    await refreshShardAggregate();
   }
 
   async function rollOverStatsIfNeeded(ctx?: ExtensionContext): Promise<void> {
     const day = currentLocalDay();
     let changed = false;
-
-    // Roll over per-model entries.
-    for (const key of Object.keys(cacheStatsByModel)) {
-      const stats = cacheStatsByModel[key];
-      if (stats && stats.day !== day) {
-        cacheStatsByModel[key] = emptyCacheStats(day);
-        changed = true;
-      }
-    }
-
-    // Roll over cumulative provider/model totals.
     for (const key of Object.keys(cacheStatsProcessByModel)) {
-      const stats = cacheStatsProcessByModel[key];
-      if (stats && stats.day !== day) {
+      if (cacheStatsProcessByModel[key]?.day !== day) {
         cacheStatsProcessByModel[key] = emptyCacheStats(day);
         changed = true;
       }
     }
-
-    for (const key of Object.keys(cacheStatsTotalsByModel)) {
-      const stats = cacheStatsTotalsByModel[key];
-      if (stats && stats.day !== day) {
-        cacheStatsTotalsByModel[key] = emptyCacheStats(day);
-        changed = true;
-      }
-    }
-
-    // Roll over legacy family entries.
     for (const id of CACHE_PROVIDER_IDS) {
       const stats = cacheStatsLegacyFamily[id];
       if (stats && stats.day !== day) {
@@ -7312,57 +7802,37 @@ export default function (pi: ExtensionAPI) {
         changed = true;
       }
     }
-
     if (changed) {
+      shardCreatedAt = Date.now();
       lastStatusText = undefined;
-      await persistCacheStats(ctx);
+      await ensureCurrentEpochs();
+      await flushPersistCacheStats(ctx);
     }
   }
 
   async function restoreCacheStats(reason: string, ctx: ExtensionContext): Promise<void> {
     syncSessionHash(ctx);
-
+    lastStatusText = undefined;
+    cacheStatsProcessByModel = {};
+    cacheStatsLegacyFamily = emptyAllCacheStats();
+    modelEpochByKey.clear();
+    modelApiByKey.clear();
+    modelNameByKey.clear();
+    currentGlobalEpoch = await readGlobalStatsEpoch();
     if (reason === "reload") {
-      // /reload: preserve session-scoped stats (same session hash).
-      // Pi extension reload creates a fresh closure, so cacheStatsByModel
-      // starts empty. Read persisted data and filter for current session.
-      lastStatusText = undefined;
       lastPromptIntegrityWarningAt = 0;
       integrityNotificationShown = false;
       clearRecentSamples();
-
-      const persisted = await readPersistedCacheStats();
-      cacheStatsByModel = filterRestorableStatsForSession(
-        persisted,
-        currentSessionHashSet ? currentSessionHash : undefined,
-      );
-      cacheStatsProcessByModel = {};
-      cacheStatsTotalsByModel = persisted?.totalsByModel ?? {};
-      cacheStatsLegacyFamily = persisted?.legacyFamily ?? emptyAllCacheStats();
-      lastActualRoutedModel = currentSessionHashSet
-        ? persisted?.lastRoutedModelBySession?.[currentSessionHash]
-        : undefined;
-
-      await rollOverStatsIfNeeded(ctx);
-      return;
     }
-
-    // First load / process start: read persisted stats and filter for
-    // this session's entries. If the session hash is unavailable, start
-    // fresh instead of loading all persisted session buckets.
-    const persisted = await readPersistedCacheStats();
-    cacheStatsByModel = filterRestorableStatsForSession(
-      persisted,
-      currentSessionHashSet ? currentSessionHash : undefined,
-    );
-    cacheStatsProcessByModel = {};
-    cacheStatsTotalsByModel = persisted?.totalsByModel ?? {};
-    cacheStatsLegacyFamily = persisted?.legacyFamily ?? emptyAllCacheStats();
-    lastActualRoutedModel = currentSessionHashSet
-      ? persisted?.lastRoutedModelBySession?.[currentSessionHash]
-      : undefined;
-    lastStatusText = undefined;
-    await rollOverStatsIfNeeded(ctx);
+    await removeLegacyStatsFiles();
+    await mkdir(SHARD_FILES_DIR, { recursive: true });
+    await refreshShardAggregate();
+    await flushPersistCacheStats(ctx);
+    await maybeCleanupStatsShardsV7();
+    // Maintenance may remove expired shard files after the initial refresh.
+    // Re-scan before publishing so startup/footer command state cannot retain
+    // counters from files that no longer exist.
+    await refreshShardAggregate();
   }
 
   async function publishStatus(ctx: ExtensionContext, model: PiModel | undefined = ctx.model): Promise<void> {
@@ -7407,8 +7877,9 @@ export default function (pi: ExtensionAPI) {
     }
 
     if (adapter) {
-      // Footer mode defaults to daily provider/model totals. Users may select
-      // current-session counters through persistent command config or the env var.
+      // Footer mode defaults to current-session provider/model totals. Users may
+      // select all-current-day or current-process counters through persistent
+      // command config or the environment variable.
       const stats = displayModel
         ? selectFooterStatsForModel(mode, sessionHash, cacheStatsByModel, cacheStatsTotalsByModel, displayModel, cacheStatsProcessByModel)
         : undefined;
@@ -7492,13 +7963,35 @@ export default function (pi: ExtensionAPI) {
   pi.on("session_start", async (event, ctx) => {
     if (runtimeOptimizerEnabled) requestLongCacheRetention();
     await restoreCacheStats(event.reason, ctx);
+    if (ctx.mode === "tui" && !shardWatcher) {
+      try {
+        shardWatcher = watch(SHARD_FILES_DIR, () => scheduleShardRefresh(ctx));
+        shardWatcher.unref?.();
+      } catch {
+        // Lifecycle and explicit command refreshes remain authoritative.
+      }
+    }
+    await publishStatus(ctx);
+  });
+
+  pi.on("tool_execution_end", async (_event, ctx) => {
+    await refreshShardAggregate();
+    await publishStatus(ctx);
+  });
+
+  pi.on("agent_settled", async (_event, ctx) => {
+    await refreshShardAggregate();
     await publishStatus(ctx);
   });
 
   pi.on("session_shutdown", async (_event, ctx) => {
     try {
-      await flushPersistCacheStats(ctx);
+      await flushPersistCacheStats(ctx, "closed");
     } finally {
+      if (shardRefreshTimer !== null) clearTimeout(shardRefreshTimer);
+      shardRefreshTimer = null;
+      shardWatcher?.close();
+      shardWatcher = undefined;
       latestCacheHint = undefined;
       delete getProtocolGlobal().__piCacheOptimizerCacheKey__;
       uninstallCacheHintsService();
@@ -7508,6 +8001,7 @@ export default function (pi: ExtensionAPI) {
 
   pi.on("model_select", async (event, ctx) => {
     if (runtimeOptimizerEnabled) notifyCacheCompatIfNeeded(resolveRouteModel(event.model, ctx) ?? event.model, ctx, warnedModels);
+    await refreshShardAggregate();
     await publishStatus(ctx, event.model);
   });
 
@@ -7862,6 +8356,20 @@ export default function (pi: ExtensionAPI) {
     // Update session, process-local, and cumulative buckets for the actual
     // routed model. The process bucket is intentionally never persisted.
     if (statsModel) {
+      const key = modelKey(statsModel);
+      const latestGlobalEpoch = await readGlobalStatsEpoch();
+      const latestModelEpoch = await readModelStatsEpoch(key);
+      if (currentGlobalEpoch !== latestGlobalEpoch) {
+        currentGlobalEpoch = latestGlobalEpoch;
+        cacheStatsProcessByModel = {};
+        modelEpochByKey.clear();
+      }
+      if (modelEpochByKey.get(key) !== latestModelEpoch) {
+        delete cacheStatsProcessByModel[key];
+        modelEpochByKey.set(key, latestModelEpoch);
+      }
+      modelApiByKey.set(key, statsModel.api ?? "");
+      modelNameByKey.set(key, statsModel.name || statsModel.id);
       const sk = sessionModelKey(statsModel);
       addUsageToCacheStats(getOrCreateStatsByModelKey(sk), usage);
       addUsageToCacheStats(getOrCreateProcessStatsForModel(statsModel), usage);
@@ -7871,6 +8379,7 @@ export default function (pi: ExtensionAPI) {
     }
 
     schedulePersistCacheStats(ctx);
+    await refreshShardAggregate();
     await publishStatus(ctx, statsModel);
   });
 
@@ -7881,7 +8390,7 @@ export default function (pi: ExtensionAPI) {
   //   disable — disable runtime prompt/cache optimizations for this process
   //   doctor  — show current model/provider/api/baseUrl/compat status
   //             with low-hit diagnosis
-  //   stats   — show active model stats bucket, recent trend, usage
+  //   stats   — show detailed current-session models; `stats all` shows all local shards
   //   compat  — show compat suggestion with file path
   //   config footer-mode total|session|process — persist footer mode override
   //   fix     — auto-fix compat issues (writes models.json, requires UI)
@@ -7900,17 +8409,18 @@ export default function (pi: ExtensionAPI) {
 
       if (subcommand === "enable") {
         setRuntimeOptimizerEnabled(true);
-        resetCurrentSessionStats();
+        await resetCurrentSessionStats();
         await flushPersistCacheStats(cmdCtx);
         await publishStatus(cmdCtx, model);
         cmdCtx.ui.notify(`✅ Pi Cache Optimizer enabled for this Pi process. Local footer stats were reset for before/after comparison.\n${formatOptimizerRuntimeMode()}`, "info");
       } else if (subcommand === "disable") {
         setRuntimeOptimizerEnabled(false);
-        resetCurrentSessionStats();
+        await resetCurrentSessionStats();
         await flushPersistCacheStats(cmdCtx);
         await publishStatus(cmdCtx, model);
         cmdCtx.ui.notify(`⏸️ Pi Cache Optimizer disabled for this Pi process. Local footer stats were reset and will keep collecting while disabled for comparison.\n${formatOptimizerRuntimeMode()}`, "warning");
       } else if (subcommand === "doctor") {
+        await refreshShardAggregate();
         if (!model) {
           cmdCtx.ui.notify("No active model selected. Select a model first with /model or pi --model.", "warning");
           return;
@@ -7926,16 +8436,18 @@ export default function (pi: ExtensionAPI) {
           : diagnosis;
         cmdCtx.ui.notify(fullDiagnosis, "info");
       } else if (subcommand === "stats") {
-        if (!model) {
-          cmdCtx.ui.notify("No active model selected. Select a model first with /model or pi --model.", "warning");
-          return;
+        const aggregate = await refreshShardAggregate();
+        const statsMode = commandParts[1];
+        if (statsMode === "all") {
+          cmdCtx.ui.notify(buildAllStatsOutput(aggregate), "info");
+        } else if (statsMode === "contributors") {
+          cmdCtx.ui.notify(buildContributorsStatsOutput(aggregate, model, currentSessionHashSet ? currentSessionHash : undefined), "info");
+        } else if (statsMode) {
+          cmdCtx.ui.notify("Usage: /cache-optimizer stats [all|contributors]", "info");
+        } else {
+          const sessionModels = currentSessionHashSet ? aggregate.bySession[currentSessionHash] ?? {} : {};
+          cmdCtx.ui.notify(buildSessionStatsOutput(sessionModels, model, aggregate.modelRefsByKey), "info");
         }
-        const adapter = selectAdapterForModel(model);
-        const sk = model ? sessionModelKey(model) : undefined;
-        const statsState = model ? cacheStatsTotalsByModel[modelKey(model)] : undefined;
-        const samples = sk ? getRecentSamples(sk) : [];
-        const output = buildStatsOutput(model, adapter, statsState, samples);
-        cmdCtx.ui.notify(output, "info");
       } else if (subcommand === "config") {
         const configKey = commandParts[1];
         const requestedMode = commandParts[2];
@@ -7998,7 +8510,7 @@ export default function (pi: ExtensionAPI) {
         // Reset local footer stats for the effective active model. If the
         // selected model is a virtual router and the protocol exposes a live
         // route, this clears the real upstream bucket, not the router shell.
-        resetStatsForModel(model);
+        await resetStatsForModel(model);
 
         // Persist immediately.
         await flushPersistCacheStats(cmdCtx);
@@ -8348,7 +8860,7 @@ export default function (pi: ExtensionAPI) {
             "Enable — Turn on runtime optimizations",
             "Disable — Turn off runtime optimizations",
             "Doctor — Show cache configuration",
-            "Stats — Show cache stats and trend",
+            "Stats — Show current-session model statistics",
             "Compat — Show compat suggestion",
             "Fix — Auto-fix compat issues (writes models.json)",
             "Footer mode — Choose total, session, or process stats",
@@ -8369,12 +8881,12 @@ export default function (pi: ExtensionAPI) {
           } else if (choice === menuOptions[5]) {
             await handleCacheOptimizerCommand("fix", cmdCtx);
           } else if (choice === menuOptions[6]) {
-            const modeOptions = ["total — Daily cumulative totals (default)", "session — Current Pi conversation session", "process — Current Pi process only", "Cancel"];
+            const modeOptions = ["session — Current Pi conversation session (default)", "total — All local sessions today", "process — Current extension instance only", "Cancel"];
             const modeChoice = await cmdCtx.ui.select("Footer cache stats mode", modeOptions);
             const nextMode = modeChoice === modeOptions[0]
-              ? "total"
+              ? "session"
               : modeChoice === modeOptions[1]
-                ? "session"
+                ? "total"
                 : modeChoice === modeOptions[2]
                   ? "process"
                   : undefined;
@@ -8392,7 +8904,9 @@ export default function (pi: ExtensionAPI) {
         diagnosis.push("  enable  — Enable prompt/cache optimizations for this Pi process");
         diagnosis.push("  disable — Disable prompt/cache optimizations for this Pi process");
         diagnosis.push("  doctor  — Show current model/provider/api/baseUrl/compat and low-hit diagnosis");
-        diagnosis.push("  stats   — Show active model stats bucket and recent trend");
+        diagnosis.push("  stats   — Show detailed statistics for every model in the current session");
+        diagnosis.push("  stats all — Show detailed totals for every model across all local sessions");
+        diagnosis.push("  stats contributors — Show per-session contributors for the active model");
         diagnosis.push("  compat  — Show compat suggestion with edit location");
         diagnosis.push("  config footer-mode total|session|process — Persist the footer stats mode");
         diagnosis.push("  fix     — Auto-fix compat issues (writes models.json, requires UI)");

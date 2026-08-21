@@ -101,7 +101,7 @@ Tests should assert external behavior and protocol behavior, not private impleme
 
 ### 2. Signatures
 - Extension hooks: `session_start`, `model_select`, `before_agent_start`, `before_provider_request`, `after_provider_response`, `message_end`.
-- State file: `~/.pi/agent/pi-cache-optimizer-stats.json` (legacy rename source: `~/.pi/agent/deepseek-cache-optimizer-stats.json`).
+- Historical test-only state files: `~/.pi/agent/pi-cache-optimizer-stats.json` and `~/.pi/agent/deepseek-cache-optimizer-stats.json`; runtime v7 uses UUID-owned shards under `pi-cache-optimizer-stats.d/shards/` and never imports these files.
 - Status key: `pi-cache-stats` via `ctx.ui.setStatus(key, textOrUndefined)`.
 - OpenAI-compatible prompt cache key env: enabled by default; opt out with `PI_CACHE_OPTIMIZER_NO_OPENAI_CACHE_KEY=1` or `PI_CACHE_OPTIMIZER_OPENAI_CACHE_KEY=0`.
 

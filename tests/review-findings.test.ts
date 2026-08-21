@@ -181,6 +181,14 @@ describe("footer status separation and command completion", () => {
       [{ value: "config footer-mode", label: "footer-mode" }],
     );
     assert.deepEqual(
+      internals.getCacheOptimizerArgumentCompletions("stats "),
+      ["all", "contributors"].map((value) => ({ value: `stats ${value}`, label: value })),
+    );
+    assert.deepEqual(
+      internals.getCacheOptimizerArgumentCompletions("stats a"),
+      [{ value: "stats all", label: "all" }],
+    );
+    assert.deepEqual(
       internals.getCacheOptimizerArgumentCompletions("config footer-mode "),
       ["total", "session", "process"].map((value) => ({ value: `config footer-mode ${value}`, label: value })),
     );
@@ -223,9 +231,9 @@ describe("footer stats modes", () => {
   };
   const totalsByModel = { [`${model.provider}/${model.id}`]: totalStats };
 
-  test("defaults to total and accepts session, total, or process environment values", () => {
+  test("defaults to session and accepts session, total, or process environment values", () => {
     assert.deepEqual(internals.resolveFooterStatsMode(undefined, {}), {
-      mode: "total",
+      mode: "session",
       source: "default",
     });
     assert.deepEqual(
@@ -242,7 +250,7 @@ describe("footer stats modes", () => {
     );
     assert.deepEqual(
       internals.resolveFooterStatsMode(undefined, { PI_CACHE_OPTIMIZER_FOOTER_MODE: "daily" }),
-      { mode: "total", source: "default" },
+      { mode: "session", source: "default" },
     );
     assert.equal(
       internals.parsePersistedCacheOptimizerConfig({ version: 1, footerMode: "daily" }),

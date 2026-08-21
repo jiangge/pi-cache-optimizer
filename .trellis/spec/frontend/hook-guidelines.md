@@ -12,6 +12,8 @@ Primary hooks/events:
 
 - `session_start`
 - `session_shutdown`
+- `tool_execution_end`
+- `agent_settled`
 - `model_select`
 - `before_agent_start`
 - `before_provider_request`
@@ -24,17 +26,24 @@ Primary hooks/events:
 
 ### `session_start`
 
-- Restore persisted stats for the current session hash.
-- On reload, preserve session-scoped stats and restore exact last routed model metadata.
-- Notify compat only when runtime optimizer is enabled.
-- Publish footer status after restore.
+- Delete/ignore obsolete v1-v6 single-file stats and load the v7 shard aggregate for the current local day.
+- Create an empty instance-owned shard; on reload, older shards with the same session hash preserve the session scope without copying counters into the new shard.
+- In TUI mode, install an unreferenced `fs.watch` listener for shard changes. Do not install a permanent polling interval.
+- Run best-effort expired-shard maintenance under the cross-process cleanup lease.
+- Notify compat only when runtime optimizer is enabled and publish footer status after restore.
 
 ### `session_shutdown`
 
-- Cancel any pending debounced stats timer and await a final serialized persistence write before Pi tears down the runtime.
+- Cancel any pending debounced stats timer and await a final serialized `closed` shard write before Pi tears down the runtime.
+- Close the shard watcher and pending refresh timer, but retain the current-day shard so the day's parent/child totals remain available.
 - Uninstall the extension-owned `Symbol.for("pi.cache.hints.v1")` service without deleting a newer replacement owner.
 - Clear extension-owned legacy cache-key globals and transient hint state.
 - Restore the process-original `PI_CACHE_RETENTION` value. The baseline is process-scoped and must survive extension module reloads.
+
+### `tool_execution_end` / `agent_settled`
+
+- Re-scan shard aggregates and publish footer status. These lifecycle refreshes make watcher delivery an optimization rather than a correctness requirement.
+- Explicit stats/doctor/config/reset commands also force an aggregate refresh before reading or publishing relevant state.
 
 ### `model_select`
 
@@ -68,7 +77,8 @@ Primary hooks/events:
 - Before the normal error/aborted stats early return, detect only Anthropic's explicit mixed-TTL ordering error and record a process-local provider/model fallback for the next subsequent request. This is a non-retryable 400 in Pi 0.82.1; do not promise built-in automatic retry. Do not classify generic 400 or prompt-too-long errors.
 - Assistant message metadata is authoritative for final stats identity.
 - Use message-local provider/model/api/usage when available; do not use global route state for final stats.
-- Update session-scoped stats and recent samples only with numeric counters.
+- Update current-instance stats and recent samples only with numeric counters, then atomically persist the instance-owned shard.
+- Before recording a model, re-read global/model reset epochs; an epoch change clears only the affected current-instance counters before the new usage is added.
 
 ---
 
@@ -89,3 +99,4 @@ Primary hooks/events:
 - Adding hook behavior that cannot be disabled by the established runtime/env gates.
 - Leaving debounced writes, global protocol services, legacy hint globals, or extension-mutated environment values alive after `session_shutdown`.
 - Allowing same-instance stats writes to overlap; atomic rename prevents partial files but does not preserve write order.
+- Treating `fs.watch` as authoritative or adding an unconditional periodic poll; lifecycle/command refreshes provide eventual correctness without idle I/O.
