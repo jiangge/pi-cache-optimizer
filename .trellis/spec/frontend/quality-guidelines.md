@@ -48,6 +48,7 @@ python3 ./.trellis/scripts/task.py validate .trellis/tasks/<task>
 - Add/update permanent regression tests under `tests/` for runtime contracts. `npm test` must execute every `tests/*.test.ts` file. A task-level verifier may supplement them for one-off investigation or release evidence, but archived task files must not be the only coverage.
 - Keep footer behavior truthful; never fake cache counters for transports that do not expose usage fields.
 - Prefer conservative fallback behavior over crashes in Pi hooks.
+- When extension-provider composition can drop lower-level compat, resolve exact models.json/runtime precedence before diagnosing or bridging request behavior; never silence a warning without ensuring the corresponding wire behavior is active.
 - Commit Trellis archive moves after implementation commits so task history stays durable.
 
 ---

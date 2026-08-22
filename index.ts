@@ -21,6 +21,7 @@ type CacheRetentionEnvSnapshot = {
 const PI_CACHE_RETENTION_ENV = "PI_CACHE_RETENTION";
 const LONG_CACHE_RETENTION_VALUE = "long";
 const PI_CACHE_RETENTION_BASELINE_SYMBOL = Symbol.for("pi.cache.optimizer.retention-baseline.v1");
+const ROUTED_FALLBACK_MODEL_SYMBOL = Symbol("pi-cache-optimizer.routed-fallback-model");
 
 type CacheRetentionBaselineV1 = {
   version: 1;
@@ -236,6 +237,10 @@ type CacheCompat = {
   cacheControlFormat?: string;
   forceAdaptiveThinking?: boolean;
   allowEmptySignature?: boolean;
+  openRouterRouting?: UnknownRecord;
+  vercelGatewayRouting?: UnknownRecord;
+  chatTemplateKwargs?: UnknownRecord;
+  chatTemplateArgs?: UnknownRecord;
 };
 
 type CacheStats = {
@@ -1013,19 +1018,23 @@ function resolveActiveRouteSnapshot(
 }
 
 function routeSnapshotToPiModel(snapshot: PiRouteSnapshot, fallback?: PiModel): PiModel {
+  const sameIdentity = fallback?.provider === snapshot.provider && fallback?.id === snapshot.modelId;
   return {
-    ...(fallback ?? {}),
+    ...(sameIdentity ? fallback ?? {} : {}),
     id: snapshot.modelId,
     name: snapshot.canonicalModelId ?? snapshot.modelId,
     provider: snapshot.provider,
-    api: snapshot.api ?? fallback?.api ?? "",
-    baseUrl: fallback?.baseUrl ?? "",
-    reasoning: fallback?.reasoning ?? false,
-    input: fallback?.input ?? ["text"],
-    cost: fallback?.cost ?? { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-    contextWindow: fallback?.contextWindow ?? 0,
-    maxTokens: fallback?.maxTokens ?? 0,
-    compat: fallback?.compat,
+    api: snapshot.api ?? (sameIdentity ? fallback?.api : undefined) ?? "",
+    baseUrl: sameIdentity ? fallback?.baseUrl ?? "" : "",
+    reasoning: sameIdentity ? fallback?.reasoning ?? false : false,
+    input: sameIdentity ? fallback?.input ?? ["text"] : ["text"],
+    cost: sameIdentity
+      ? fallback?.cost ?? { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }
+      : { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+    contextWindow: sameIdentity ? fallback?.contextWindow ?? 0 : 0,
+    maxTokens: sameIdentity ? fallback?.maxTokens ?? 0 : 0,
+    compat: sameIdentity ? fallback?.compat : undefined,
+    [ROUTED_FALLBACK_MODEL_SYMBOL]: true,
   } as PiModel;
 }
 
@@ -1041,6 +1050,27 @@ function findModelInRegistry(registry: ModelRegistryLike | undefined, provider: 
   return all.find((candidate) => candidate.provider === provider && candidate.id === id);
 }
 
+function isRoutedFallbackModel(model: PiModel | undefined): boolean {
+  return !!model && (model as PiModel & Record<symbol, unknown>)[ROUTED_FALLBACK_MODEL_SYMBOL] === true;
+}
+
+function applyConfiguredTransportToModel(model: PiModel, config: unknown): PiModel {
+  const providers = asRecord(asRecord(config)?.providers);
+  const provider = asRecord(providers?.[model.provider]);
+  const customModel = Array.isArray(provider?.models)
+    ? asRecord(provider.models.find((entry: unknown) => asRecord(entry)?.id === model.id))
+    : undefined;
+  const configuredApi = customModel?.api ?? provider?.api;
+  const configuredBaseUrl = customModel?.baseUrl ?? provider?.baseUrl;
+  const api = isNonEmptyString(model.api)
+    ? model.api
+    : (isNonEmptyString(configuredApi) ? configuredApi : model.api);
+  const baseUrl = isNonEmptyString(model.baseUrl)
+    ? model.baseUrl
+    : (isNonEmptyString(configuredBaseUrl) ? configuredBaseUrl : model.baseUrl);
+  return api === model.api && baseUrl === model.baseUrl ? model : { ...model, api, baseUrl };
+}
+
 function resolveRouteModel(
   model: PiModel | undefined,
   ctx?: ContextWithOptionalModelRegistry,
@@ -1048,8 +1078,9 @@ function resolveRouteModel(
   const snapshot = resolveActiveRouteSnapshot(model, ctx);
   if (!snapshot) return undefined;
 
-  return findModelInRegistry(ctx?.modelRegistry, snapshot.provider, snapshot.modelId)
+  const resolved = findModelInRegistry(ctx?.modelRegistry, snapshot.provider, snapshot.modelId)
     ?? routeSnapshotToPiModel(snapshot, model);
+  return applyConfiguredTransportToModel(resolved, readEffectiveCompatConfig());
 }
 
 function isVirtualRoutingModel(model: PiModel | undefined, ctx?: Pick<ExtensionContext, "sessionManager">): boolean {
@@ -1134,17 +1165,286 @@ function getNonNegativeNumber(record: UnknownRecord, key: string): number | unde
  * Model-level compat takes precedence over provider-level compat for overlapping keys.
  * This matches Pi's model-registry.js mergeCompat behavior.
  */
+const NESTED_COMPAT_KEYS = [
+  "openRouterRouting",
+  "vercelGatewayRouting",
+  "chatTemplateKwargs",
+  "chatTemplateArgs",
+] as const;
+
+function mergeCacheCompat(...sources: Array<UnknownRecord | undefined>): CacheCompat {
+  const merged: CacheCompat = {};
+  for (const source of sources) {
+    if (!source) continue;
+    const previousNested = Object.fromEntries(
+      NESTED_COMPAT_KEYS.map((key) => [key, asRecord(merged[key])]),
+    ) as Partial<Record<(typeof NESTED_COMPAT_KEYS)[number], UnknownRecord | undefined>>;
+    Object.assign(merged, source);
+    for (const key of NESTED_COMPAT_KEYS) {
+      const baseValue = previousNested[key];
+      const overrideValue = asRecord(source[key]);
+      if (baseValue || overrideValue) {
+        merged[key] = { ...baseValue, ...overrideValue };
+      }
+    }
+  }
+  return merged;
+}
+
+function getEffectiveCompatSources(model: PiModel, config: unknown): Array<{ source: "provider" | "model" | "runtime" | "modelOverride"; compat: UnknownRecord }> {
+  const root = asRecord(config);
+  const providers = asRecord(root?.providers);
+  const provider = asRecord(providers?.[model.provider]);
+  const providerCompat = asRecord(provider?.compat);
+  const customModel = Array.isArray(provider?.models)
+    ? provider.models.find((entry: unknown) => asRecord(entry)?.id === model.id)
+    : undefined;
+  const customModelCompat = asRecord(asRecord(customModel)?.compat);
+  const runtimeCompat = asRecord(model.compat);
+  const modelOverride = asRecord(asRecord(provider?.modelOverrides)?.[model.id]);
+  const modelOverrideCompat = asRecord(modelOverride?.compat);
+
+  return [
+    ...(providerCompat ? [{ source: "provider" as const, compat: providerCompat }] : []),
+    ...(customModelCompat ? [{ source: "model" as const, compat: customModelCompat }] : []),
+    ...(runtimeCompat ? [{ source: "runtime" as const, compat: runtimeCompat }] : []),
+    ...(modelOverrideCompat ? [{ source: "modelOverride" as const, compat: modelOverrideCompat }] : []),
+  ];
+}
+
+function resolveEffectiveCompatFromConfig(model: PiModel, config: unknown): CacheCompat {
+  // Pi's effective precedence is provider → models[] → runtime model →
+  // modelOverrides. The runtime layer is intentionally included between the
+  // config model and modelOverride: extension providers can replace the model
+  // object after lower config layers were applied, while the override remains
+  // Pi's highest-precedence user layer.
+  return mergeCacheCompat(...getEffectiveCompatSources(model, config).map(({ compat }) => compat));
+}
+
+function getEffectiveCompatValueSource(
+  model: PiModel,
+  config: unknown,
+  key: keyof CacheCompat,
+): "provider" | "model" | "runtime" | "modelOverride" | undefined {
+  let source: "provider" | "model" | "runtime" | "modelOverride" | undefined;
+  for (const candidate of getEffectiveCompatSources(model, config)) {
+    if (Object.prototype.hasOwnProperty.call(candidate.compat, key)) source = candidate.source;
+  }
+  return source;
+}
+
+function isOptionalString(value: unknown): boolean {
+  return value === undefined || (typeof value === "string" && value.length > 0);
+}
+
+function isOptionalBoolean(value: unknown): boolean {
+  return value === undefined || typeof value === "boolean";
+}
+
+function isFiniteNumber(value: unknown): value is number {
+  return typeof value === "number" && Number.isFinite(value);
+}
+
+function isRecordOfStrings(value: unknown): boolean {
+  const record = asRecord(value);
+  return !!record && Object.values(record).every((entry) => typeof entry === "string");
+}
+
+function isThinkingLevelMap(value: unknown): boolean {
+  const map = asRecord(value);
+  if (!map) return false;
+  return ["off", "minimal", "low", "medium", "high", "xhigh", "max"].every((key) =>
+    map[key] === undefined || map[key] === null || typeof map[key] === "string"
+  );
+}
+
+function isValidModelCostTier(value: unknown): boolean {
+  const tier = asRecord(value);
+  return !!tier
+    && isFiniteNumber(tier.inputTokensAbove)
+    && isFiniteNumber(tier.input)
+    && isFiniteNumber(tier.output)
+    && isFiniteNumber(tier.cacheRead)
+    && isFiniteNumber(tier.cacheWrite);
+}
+
+function isValidModelCost(value: unknown, partial: boolean): boolean {
+  const cost = asRecord(value);
+  if (!cost) return false;
+  for (const key of ["input", "output", "cacheRead", "cacheWrite"]) {
+    if ((!partial || cost[key] !== undefined) && !isFiniteNumber(cost[key])) return false;
+  }
+  return cost.tiers === undefined || (Array.isArray(cost.tiers) && cost.tiers.every(isValidModelCostTier));
+}
+
+function isValidModelDefinition(value: unknown): boolean {
+  const model = asRecord(value);
+  if (!model || !isNonEmptyString(model.id)) return false;
+  if (!isOptionalString(model.name) || !isOptionalString(model.api) || !isOptionalString(model.baseUrl)) return false;
+  if (!isOptionalBoolean(model.reasoning) || !isValidCompatRecord(model.compat)) return false;
+  if (model.thinkingLevelMap !== undefined && !isThinkingLevelMap(model.thinkingLevelMap)) return false;
+  if (model.input !== undefined && (!Array.isArray(model.input) || !model.input.every((entry) => entry === "text" || entry === "image"))) return false;
+  if (model.cost !== undefined && !isValidModelCost(model.cost, false)) return false;
+  if (model.contextWindow !== undefined && !isFiniteNumber(model.contextWindow)) return false;
+  if (model.maxTokens !== undefined && !isFiniteNumber(model.maxTokens)) return false;
+  if (model.samplingParams !== undefined && !asRecord(model.samplingParams)) return false;
+  if (model.headers !== undefined && !isRecordOfStrings(model.headers)) return false;
+  return true;
+}
+
+function isValidModelOverride(value: unknown): boolean {
+  const override = asRecord(value);
+  if (!override || !isValidCompatRecord(override.compat)) return false;
+  if (!isOptionalString(override.name) || !isOptionalBoolean(override.reasoning)) return false;
+  if (override.thinkingLevelMap !== undefined && !isThinkingLevelMap(override.thinkingLevelMap)) return false;
+  if (override.input !== undefined && (!Array.isArray(override.input) || !override.input.every((entry) => entry === "text" || entry === "image"))) return false;
+  if (override.cost !== undefined && !isValidModelCost(override.cost, true)) return false;
+  if (override.contextWindow !== undefined && !isFiniteNumber(override.contextWindow)) return false;
+  if (override.maxTokens !== undefined && !isFiniteNumber(override.maxTokens)) return false;
+  if (override.samplingParams !== undefined && !asRecord(override.samplingParams)) return false;
+  if (override.headers !== undefined && !isRecordOfStrings(override.headers)) return false;
+  return true;
+}
+
+function isValidOpenAICompletionsCompat(compat: UnknownRecord): boolean {
+  const booleanKeys = [
+    "supportsStore", "supportsDeveloperRole", "supportsReasoningEffort",
+    "supportsUsageInStreaming", "requiresToolResultName", "requiresAssistantAfterToolResult",
+    "requiresThinkingAsText", "requiresReasoningContentOnAssistantMessages",
+    "supportsOpenAIGrammarTools", "supportsStrictMode", "sendSessionAffinityHeaders",
+    "supportsLongCacheRetention",
+  ];
+  if (booleanKeys.some((key) => !isOptionalBoolean(compat[key]))) return false;
+  if (compat.maxTokensField !== undefined && compat.maxTokensField !== "max_completion_tokens" && compat.maxTokensField !== "max_tokens") return false;
+  if (compat.thinkingFormat !== undefined && ![
+    "openai", "openrouter", "together", "baseten", "deepseek", "zai", "qwen",
+    "chat-template", "qwen-chat-template", "string-thinking", "ant-ling",
+  ].includes(String(compat.thinkingFormat))) return false;
+  if (compat.cacheControlFormat !== undefined && compat.cacheControlFormat !== "anthropic") return false;
+  if (compat.deferredToolsMode !== undefined && compat.deferredToolsMode !== "kimi") return false;
+  if (compat.sessionAffinityFormat !== undefined && !["openai", "openai-nosession", "openrouter"].includes(String(compat.sessionAffinityFormat))) return false;
+  for (const key of NESTED_COMPAT_KEYS) {
+    if (compat[key] !== undefined && !asRecord(compat[key])) return false;
+  }
+  return true;
+}
+
+function isValidOpenAIResponsesCompat(compat: UnknownRecord): boolean {
+  const booleanKeys = [
+    "supportsDeveloperRole", "supportsLongCacheRetention", "supportsStrictMode",
+    "supportsOpenAIGrammarTools", "supportsAdditionalTools", "supportsToolSearch",
+  ];
+  if (booleanKeys.some((key) => !isOptionalBoolean(compat[key]))) return false;
+  return compat.sessionAffinityFormat === undefined
+    || ["openai", "openai-nosession", "openrouter"].includes(String(compat.sessionAffinityFormat));
+}
+
+function isValidAnthropicMessagesCompat(compat: UnknownRecord): boolean {
+  return [
+    "supportsEagerToolInputStreaming", "supportsLongCacheRetention",
+    "sendSessionAffinityHeaders", "supportsCacheControlOnTools", "supportsTemperature",
+    "forceAdaptiveThinking", "allowEmptySignature", "supportsStrictTools", "supportsToolReferences",
+  ].every((key) => isOptionalBoolean(compat[key]));
+}
+
+function isValidCompatRecord(value: unknown): boolean {
+  if (value === undefined) return true;
+  const compat = asRecord(value);
+  return !!compat && (
+    isValidOpenAICompletionsCompat(compat)
+    || isValidOpenAIResponsesCompat(compat)
+    || isValidAnthropicMessagesCompat(compat)
+  );
+}
+
+function isValidModelsConfigForEffectiveCompat(value: unknown): boolean {
+  const root = asRecord(value);
+  const providers = asRecord(root?.providers);
+  if (!root || !providers) return false;
+
+  for (const providerValue of Object.values(providers)) {
+    const provider = asRecord(providerValue);
+    if (!provider) return false;
+    if (!isOptionalString(provider.name) || !isOptionalString(provider.baseUrl) || !isOptionalString(provider.apiKey) || !isOptionalString(provider.api)) return false;
+    if (!isOptionalBoolean(provider.authHeader) || !isValidCompatRecord(provider.compat)) return false;
+    if (provider.oauth !== undefined && provider.oauth !== "radius") return false;
+    if (provider.headers !== undefined && !isRecordOfStrings(provider.headers)) return false;
+    if (provider.models !== undefined && (!Array.isArray(provider.models) || !provider.models.every(isValidModelDefinition))) return false;
+    const overrides = provider.modelOverrides === undefined ? undefined : asRecord(provider.modelOverrides);
+    if (provider.modelOverrides !== undefined && (!overrides || !Object.values(overrides).every(isValidModelOverride))) return false;
+  }
+  return true;
+}
+
+function readEffectiveCompatConfig(): unknown | undefined {
+  try {
+    const parsed = parseJsonc(readFileSync(MODELS_JSON_PATH, "utf8"));
+    return isValidModelsConfigForEffectiveCompat(parsed) ? parsed : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 function getCompat(model: PiModel | undefined): CacheCompat {
   if (!model) return {} as CacheCompat;
+  return resolveEffectiveCompatFromConfig(model, readEffectiveCompatConfig());
+}
 
-  // Pi merges provider.compat with model.compat (model wins on conflicts)
-  // We approximate this by reading from ctx.model which should already have merged compat
-  // However, for safety, we check both levels if available
-  const modelCompat = (model.compat ?? {}) as CacheCompat;
+function hasProviderHeader(headers: Record<string, unknown>, name: string): boolean {
+  const normalized = name.toLowerCase();
+  return Object.keys(headers).some((headerName) => headerName.toLowerCase() === normalized);
+}
 
-  // Note: ctx.model from Pi should already contain merged compat,
-  // but we document the two-level structure for clarity
-  return modelCompat;
+function setProviderHeaderIfMissing(
+  headers: Record<string, string | null | undefined>,
+  name: string,
+  value: string,
+): boolean {
+  if (hasProviderHeader(headers, name)) return false;
+  headers[name] = value;
+  return true;
+}
+
+function addEffectiveSessionAffinityHeaders(
+  headers: Record<string, string | null | undefined>,
+  model: PiModel | undefined,
+  sessionId: string | undefined,
+  effectiveCompat?: CacheCompat,
+  optimizerEnabled: boolean = runtimeOptimizerEnabled,
+  effectiveSource?: "provider" | "model" | "runtime" | "modelOverride",
+): boolean {
+  if (!optimizerEnabled || !model || !isNonEmptyString(sessionId)) return false;
+  if (!isOpenAICompatibleProxyApi(model.api) || !isNonEmptyString(model.baseUrl) || isOfficialOpenAIBaseUrl(model)) return false;
+  const config = effectiveCompat === undefined || effectiveSource === undefined
+    ? readEffectiveCompatConfig()
+    : undefined;
+  const compat = effectiveCompat ?? resolveEffectiveCompatFromConfig(model, config);
+  const source = effectiveSource
+    ?? getEffectiveCompatValueSource(model, config, "sendSessionAffinityHeaders")
+    ?? (Object.prototype.hasOwnProperty.call(asRecord(model.compat) ?? {}, "sendSessionAffinityHeaders") ? "runtime" : undefined);
+  if (compat.sendSessionAffinityHeaders !== true) return false;
+
+  // Pi already handles an effective runtime-model true. The bridge is only for
+  // effective values that live in models.json layers and were lost when an
+  // extension provider rebuilt/replaced the runtime model object.
+  if (source === "runtime") return false;
+
+  const format = compat.sessionAffinityFormat ?? (
+    lower(model.provider).includes("openrouter") || lower(model.baseUrl).includes("openrouter.ai")
+      ? "openrouter"
+      : "openai"
+  );
+  const value = sessionId.trim();
+  let changed = false;
+  if (format === "openrouter") {
+    return setProviderHeaderIfMissing(headers, "x-session-id", value);
+  }
+  if (format === "openai") {
+    changed = setProviderHeaderIfMissing(headers, "session_id", value) || changed;
+  }
+  changed = setProviderHeaderIfMissing(headers, "x-client-request-id", value) || changed;
+  changed = setProviderHeaderIfMissing(headers, "x-session-affinity", value) || changed;
+  return changed;
 }
 
 /** Join display-only path fragments without resolving them for I/O. */
@@ -1626,6 +1926,14 @@ function isKimiCodingEmptySignatureModel(model: PiModel | undefined): boolean {
 }
 
 function isAdaptiveThinkingCompatApplicable(model: PiModel): boolean {
+  // A routed registry miss may preserve the upstream API/model identity while
+  // lacking a verified endpoint. Do not diagnose or suggest compat fixes for
+  // that incomplete transport metadata; ordinary direct Anthropic models still
+  // use their normal native adaptive-thinking check.
+  if (isRoutedFallbackModel(model) && !isNonEmptyString(model.baseUrl)) {
+    return false;
+  }
+
   return lower(model.api) === "anthropic-messages"
     && (isAdaptiveGenerationModel(model) || isKimiCodingAdaptiveModel(model));
 }
@@ -2451,13 +2759,17 @@ function isOfficialOpenAIBaseUrl(model: PiModel): boolean {
   }
 }
 
+function isKnownThirdPartyOpenAIEndpoint(model: PiModel): boolean {
+  return isNonEmptyString(model.baseUrl) && !isOfficialOpenAIBaseUrl(model);
+}
+
 function describeMissingOpenAIFamilyProxyCompat(model: PiModel): string[] {
   const compat = getCompat(model);
   const missing: string[] = [];
 
   if (!isOpenAIFamilyModel(model)) return missing;
   if (!isOpenAICompatibleProxyApi(model.api)) return missing;
-  if (isOfficialOpenAIBaseUrl(model)) return missing;
+  if (!isKnownThirdPartyOpenAIEndpoint(model)) return missing;
 
   if (compat.sendSessionAffinityHeaders !== true) {
     missing.push("sendSessionAffinityHeaders");
@@ -2477,7 +2789,7 @@ function describeMissingOpenAICompatibleProxyCompat(model: PiModel): string[] {
   const missing: string[] = [];
 
   if (!isOpenAICompatibleProxyApi(model.api)) return missing;
-  if (isOfficialOpenAIBaseUrl(model)) return missing;
+  if (!isKnownThirdPartyOpenAIEndpoint(model)) return missing;
   if (isPiBuiltInLlamaCppModel(model)) return missing;
 
   if (compat.sendSessionAffinityHeaders === undefined) {
@@ -2505,7 +2817,7 @@ function describeOptionalOpenAICompatibleProxyCompat(model: PiModel): string[] {
   const optional: string[] = [];
 
   if (!isOpenAICompatibleProxyApi(model.api)) return optional;
-  if (isOfficialOpenAIBaseUrl(model)) return optional;
+  if (!isKnownThirdPartyOpenAIEndpoint(model)) return optional;
   if (isPiBuiltInLlamaCppModel(model)) return optional;
 
   if (compat.supportsLongCacheRetention !== true) {
@@ -2690,7 +3002,10 @@ function describeMissingDeepSeekCompat(model: PiModel): string[] {
 }
 
 function isDeepSeekCompatCheckApplicable(model: PiModel): boolean {
-  return isDeepSeekLikeModel(model) && isOpenAICompatibleApi(model.api) && !isPiBuiltInLlamaCppModel(model);
+  return isDeepSeekLikeModel(model)
+    && isOpenAICompatibleApi(model.api)
+    && isKnownThirdPartyOpenAIEndpoint(model)
+    && !isPiBuiltInLlamaCppModel(model);
 }
 
 function describeMissingCacheCompatForModel(model: PiModel): string[] {
@@ -4852,12 +5167,12 @@ async function maybeCleanupStatsShardsV7(now = Date.now()): Promise<void> {
 }
 
 function isCompatCheckApplicable(model: PiModel): boolean {
-  return isOpenAICompatibleProxyApi(model.api) && !isOfficialOpenAIBaseUrl(model) && !isPiBuiltInLlamaCppModel(model);
+  return isOpenAICompatibleProxyApi(model.api) && isKnownThirdPartyOpenAIEndpoint(model) && !isPiBuiltInLlamaCppModel(model);
 }
 
 function isPromptCacheRetention400Applicable(model: PiModel): boolean {
   return isOpenAICompatibleApi(model.api) &&
-    !isOfficialOpenAIBaseUrl(model) &&
+    isKnownThirdPartyOpenAIEndpoint(model) &&
     !isPiBuiltInLlamaCppModel(model) &&
     getCompat(model).supportsLongCacheRetention === true;
 }
@@ -4885,6 +5200,7 @@ function isExplicitPromptCacheRetentionUnsupportedApplicable(model: PiModel): bo
  */
 function isSessionAffinity403Applicable(model: PiModel): boolean {
   if (!isOpenAICompatibleProxyApi(model.api)) return false;
+  if (!isKnownThirdPartyOpenAIEndpoint(model)) return false;
   if (isPiBuiltInLlamaCppModel(model)) return false;
   return getCompat(model).sendSessionAffinityHeaders === true;
 }
@@ -4901,7 +5217,7 @@ function isSessionAffinity403Applicable(model: PiModel): boolean {
  */
 function isOpenAISdkHeader403Applicable(model: PiModel): boolean {
   if (!isOpenAICompatibleProxyApi(model.api)) return false;
-  if (isOfficialOpenAIBaseUrl(model)) return false;
+  if (!isKnownThirdPartyOpenAIEndpoint(model)) return false;
   if (isPiBuiltInLlamaCppModel(model)) return false;
   return getCompat(model).sendSessionAffinityHeaders !== true;
 }
@@ -4939,8 +5255,9 @@ function describeRouterChannelDiagnostics(model: PiModel): string[] {
     return notes;
   }
 
-  // Official OpenAI bypass — no notes needed.
-  if (isOfficialOpenAIBaseUrl(model)) {
+  // Unknown/default endpoints and official OpenAI are not diagnosable as
+  // third-party router channels. Request-header bridging also fails closed.
+  if (!isKnownThirdPartyOpenAIEndpoint(model)) {
     return notes;
   }
 
@@ -5104,6 +5421,13 @@ function getCompatCheckNotApplicableLines(model: PiModel): string[] {
     return [
       "ℹ️ Compat check not applicable for this model.",
       "   Native Responses transports already use Pi core request handling; OpenAI-compatible proxy compat flags do not apply.",
+    ];
+  }
+
+  if (isOpenAICompatibleApi(api) && !isNonEmptyString(model.baseUrl)) {
+    return [
+      "ℹ️ Compat check not applicable for this model.",
+      "   Upstream endpoint metadata is unavailable; session-affinity header injection is disabled.",
     ];
   }
 
@@ -7158,6 +7482,7 @@ export const __internals_for_tests = {
   buildSafeOpenAIProxyCompatSuggestion,
   getPromptCacheRetentionUnsupportedHint,
   isOfficialOpenAIBaseUrl,
+  isKnownThirdPartyOpenAIEndpoint,
   isCompatCheckApplicable,
   isPromptCacheRetention400Applicable,
   isSessionAffinity403Applicable,
@@ -7278,6 +7603,11 @@ export const __internals_for_tests = {
   buildOpenAIProxyCompatWarningText,
   getModelIdNameTokenValues,
   getAssistantMessageModelTokenValues,
+  mergeCacheCompat,
+  resolveEffectiveCompatFromConfig,
+  getEffectiveCompatValueSource,
+  isValidModelsConfigForEffectiveCompat,
+  addEffectiveSessionAffinityHeaders,
   getCompat,
   modelKey,
   modelFromAssistantMessage,
@@ -7352,6 +7682,8 @@ export const __internals_for_tests = {
   parseRouteSnapshot,
   resolveActiveRouteSnapshot,
   routeSnapshotToPiModel,
+  isRoutedFallbackModel,
+  applyConfiguredTransportToModel,
   resolveRouteModel,
   isVirtualRoutingModel,
   installCacheHintsService,
@@ -7951,13 +8283,11 @@ export default function (pi: ExtensionAPI) {
    * The caller strips prompt_cache_retention when this returns false.
    */
   function hasExplicitLongRetentionOptIn(model: PiModel): boolean {
-    try {
-      const text = readFileSync(MODELS_JSON_PATH, "utf8");
-      const parsed = parseJsonc(text);
-      return hasExplicitLongRetentionOptInFromConfig(parsed, model.provider, model.id);
-    } catch {
-      return false;
-    }
+    return hasExplicitLongRetentionOptInFromConfig(
+      readEffectiveCompatConfig(),
+      model.provider,
+      model.id,
+    );
   }
 
   pi.on("session_start", async (event, ctx) => {
@@ -8123,6 +8453,15 @@ export default function (pi: ExtensionAPI) {
 
     publishHint(event.systemPrompt);
     return {};
+  });
+
+  pi.on("before_provider_headers", (event, ctx) => {
+    const requestModel = resolveRouteModel(ctx.model, ctx) ?? ctx.model;
+    addEffectiveSessionAffinityHeaders(
+      event.headers,
+      requestModel,
+      ctx.sessionManager.getSessionId(),
+    );
   });
 
   pi.on("before_provider_request", (event, ctx) => {

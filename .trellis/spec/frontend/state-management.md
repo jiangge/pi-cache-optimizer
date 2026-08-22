@@ -52,6 +52,8 @@ Rules:
 
 `~/.pi/agent/models.json` is not mutated during normal operation. The only allowed writer is `/cache-optimizer fix`, and only after explicit interactive confirmation.
 
+Normal operation may read compat-only configuration from this file to resolve effective diagnostics/request behavior. Resolution is exact-provider/exact-model and follows `provider.compat → matching models[].compat → runtime model.compat → modelOverrides[modelId].compat`; malformed or unreadable configuration falls back to runtime model compat without blocking hooks. Raw credentials and unrelated configuration are never displayed, logged, or persisted elsewhere.
+
 Rules for `/cache-optimizer fix`:
 
 - Create a timestamped backup.
@@ -65,7 +67,7 @@ Rules for `/cache-optimizer fix`:
 
 - Adapter selection derives from model id/name tokens only.
 - Stats bucket keys derive from opaque session hash + exact provider/model key; shard filenames derive from random instance UUIDs.
-- Compat marker derives from safe fix suggestions for the effective model.
+- Compat marker derives from safe fix suggestions for the effective model after exact models.json/runtime compat precedence is applied.
 - Routing-provider live state may derive an effective upstream model for pre-message UX, but final stats derive from assistant message metadata.
 
 ---

@@ -58,6 +58,13 @@ Primary hooks/events:
 - Publish query-scoped cache hints through `Symbol.for("pi.cache.hints.v1")` when applicable.
 - Never persist prompt contents to disk.
 
+### `before_provider_headers`
+
+- Resolve effective compat from exact provider/model configuration with precedence `provider.compat → matching models[].compat → runtime model.compat → modelOverrides[modelId].compat`. Reject schema-invalid config as a whole, and match Pi's one-level merge behavior for nested routing/chat-template compat objects.
+- For runtime-enabled, non-official `openai-completions` channels, if effective `sendSessionAffinityHeaders` is `true` from a models.json layer but an extension provider's runtime model lost that behavior, add Pi-compatible session-affinity headers from the current Pi session id. Routed fallback models must never inherit compat or transport metadata from a different virtual provider/model identity; recover exact upstream `api`/`baseUrl` only from validated models.json configuration so official OpenAI remains excluded, and fail closed when no non-empty effective base URL is known. Unknown endpoints are diagnostically not applicable, never “fully configured”.
+- Match Pi's format rules (`x-session-id` for OpenRouter format; otherwise `x-client-request-id` + `x-session-affinity`, and `session_id` for OpenAI format), never overwrite existing headers case-insensitively, and respect explicit `false`.
+- Never persist, display, or log the raw session id or request headers.
+
 ### `before_provider_request`
 
 - For every effective `anthropic-messages` model, validate final cache breakpoints in `tools → system → messages` order and downgrade a visible invalid 5-minute-to-1-hour transition. Preserve legal third-party 1-hour retention unless this exact provider/model previously returned Anthropic's explicit TTL-ordering error in the current process.
@@ -92,7 +99,8 @@ Primary hooks/events:
 ## Common Mistakes
 
 - Doing final stats attribution from live/global router state instead of assistant message metadata.
-- Injecting OpenAI cache keys into custom transports such as `kiro-api`.
+- Injecting OpenAI cache keys or affinity headers into custom transports such as `kiro-api`.
+- Treating `ctx.model.compat` as the only effective compat source for extension providers; `registerProvider()` model replacement can omit provider/custom-model compat even though exact `models.json` configuration remains authoritative.
 - Normalizing Anthropic TTLs by provider/model name instead of validating the effective API and final wire-order payload.
 - Treating a provider id alone (including `llama.cpp`) as proof of transport capabilities; prefer Pi's explicit model/compat fingerprint and honor overrides.
 - Writing prompt or payload data to task reports, stats files, logs, or notifications.

@@ -650,6 +650,128 @@ describe("explicit compat precedence", () => {
     );
   });
 
+  test("effective compat merges provider, custom model, runtime model, and modelOverrides", () => {
+    const runtimeModel = {
+      provider,
+      id: modelId,
+      compat: { sendSessionAffinityHeaders: true, supportsLongCacheRetention: true },
+    } as any;
+    const input = {
+      providers: {
+        [provider]: {
+          compat: { sendSessionAffinityHeaders: true, supportsLongCacheRetention: false },
+          models: [{
+            id: modelId,
+            compat: { sendSessionAffinityHeaders: false, supportsDeveloperRole: false },
+          }],
+          modelOverrides: {
+            [modelId]: { compat: { supportsLongCacheRetention: false } },
+          },
+        },
+      },
+    };
+
+    assert.deepEqual(
+      internals.resolveEffectiveCompatFromConfig(runtimeModel, input),
+      {
+        sendSessionAffinityHeaders: true,
+        supportsLongCacheRetention: false,
+        supportsDeveloperRole: false,
+      },
+    );
+    assert.deepEqual(
+      internals.resolveEffectiveCompatFromConfig(
+        { ...runtimeModel, compat: {} },
+        {
+          providers: {
+            [provider]: {
+              compat: { openRouterRouting: { allow_fallbacks: false, only: ["openai"] } },
+              models: [{ id: modelId, compat: { openRouterRouting: { order: ["openai", "anthropic"] } } }],
+            },
+          },
+        },
+      ).openRouterRouting,
+      { allow_fallbacks: false, only: ["openai"], order: ["openai", "anthropic"] },
+    );
+    const overrideInput = {
+      providers: {
+        [provider]: {
+          compat: { sendSessionAffinityHeaders: true },
+          models: [{ id: modelId, compat: { sendSessionAffinityHeaders: false } }],
+          modelOverrides: { [modelId]: { compat: { sendSessionAffinityHeaders: true } } },
+        },
+      },
+    };
+    assert.equal(
+      internals.resolveEffectiveCompatFromConfig(
+        { ...runtimeModel, compat: { sendSessionAffinityHeaders: false } },
+        overrideInput,
+      ).sendSessionAffinityHeaders,
+      true,
+    );
+    assert.equal(
+      internals.getEffectiveCompatValueSource(
+        { ...runtimeModel, compat: { sendSessionAffinityHeaders: false } },
+        overrideInput,
+        "sendSessionAffinityHeaders",
+      ),
+      "modelOverride",
+    );
+  });
+
+  test("malformed models.json falls back to runtime model compat", () => {
+    const runtimeModel = {
+      provider,
+      id: modelId,
+      compat: { sendSessionAffinityHeaders: true },
+    } as any;
+    assert.equal(
+      internals.resolveEffectiveCompatFromConfig(runtimeModel, undefined).sendSessionAffinityHeaders,
+      true,
+    );
+    assert.equal(
+      internals.resolveEffectiveCompatFromConfig(runtimeModel, { providers: "invalid" }).sendSessionAffinityHeaders,
+      true,
+    );
+  });
+
+  test("schema-invalid models.json is rejected before compat resolution", () => {
+    assert.equal(
+      internals.isValidModelsConfigForEffectiveCompat({
+        providers: {
+          [provider]: {
+            baseUrl: 123,
+            compat: { sendSessionAffinityHeaders: true },
+          },
+        },
+      }),
+      false,
+    );
+    assert.equal(
+      internals.isValidModelsConfigForEffectiveCompat({
+        providers: {
+          [provider]: {
+            compat: { sendSessionAffinityHeaders: true },
+            models: [{ id: modelId, thinkingLevelMap: { high: 4 } }],
+          },
+        },
+      }),
+      false,
+    );
+    assert.equal(
+      internals.isValidModelsConfigForEffectiveCompat({
+        providers: {
+          [provider]: {
+            baseUrl: "https://proxy.example/v1",
+            compat: { sendSessionAffinityHeaders: true },
+            modelOverrides: { [modelId]: { cost: { input: 1, extra: 2 } } },
+          },
+        },
+      }),
+      true,
+    );
+  });
+
   test("before_provider_request reads modelOverrides from the active agent directory", async () => {
     const tempAgentDir = await mkdtemp(join(tmpdir(), "pi-cache-review-test-"));
     const previousAgentDir = process.env.PI_CODING_AGENT_DIR;
@@ -707,6 +829,21 @@ describe("explicit compat precedence", () => {
       const allowedPayload: Record<string, unknown> = { prompt_cache_retention: "24h" };
       hook({ payload: allowedPayload }, context);
       assert.equal(allowedPayload.prompt_cache_retention, "24h");
+
+      await writeFile(
+        join(tempAgentDir, "models.json"),
+        JSON.stringify({
+          providers: {
+            [provider]: {
+              compat: { supportsLongCacheRetention: true },
+              models: [{ id: modelId, thinkingLevelMap: { high: 4 } }],
+            },
+          },
+        }),
+      );
+      const invalidConfigPayload: Record<string, unknown> = { prompt_cache_retention: "24h" };
+      hook({ payload: invalidConfigPayload }, context);
+      assert.equal("prompt_cache_retention" in invalidConfigPayload, false);
     } finally {
       if (previousAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
       else process.env.PI_CODING_AGENT_DIR = previousAgentDir;

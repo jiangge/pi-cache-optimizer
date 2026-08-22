@@ -251,8 +251,15 @@ breakpoints in wire processing order: `tools`, then `system`, then
 #### Third-party OpenAI-compatible proxy compat warning
 
 For models using `api: "openai-completions"` through a non-official
-base URL (not `api.openai.com`), warn/mark missing compat only when merged compat
-has no `sendSessionAffinityHeaders` value (`undefined`). Pi's untouched built-in
+base URL (not `api.openai.com`), warn/mark missing compat only when effective compat
+has no `sendSessionAffinityHeaders` value (`undefined`). Effective compat uses exact
+provider/model ids and precedence `models.json provider.compat → matching
+models[].compat → runtime model.compat → modelOverrides[modelId].compat`. The runtime
+model layer is included because extension providers using `registerProvider()` may
+replace their model list after lower configuration was composed; Pi 0.84.2 can
+therefore expose a model object without provider/custom-model compat even though the
+user configured it. Malformed/missing/unreadable or Pi-schema-invalid config falls
+back to runtime model compat without blocking hooks. Pi's untouched built-in
 `llama.cpp` compat fingerprint is excluded because no proxy-routing configuration
 is exposed there by default; an overridden same-id provider or explicit compat
 configuration is not blanket-exempt. An explicit
@@ -282,6 +289,25 @@ parameter itself is unsupported. This extension does not write
 may send the parameter when compat says long retention is supported.
 
 This warning is advisory only and MUST NOT mutate the user's `models.json`.
+
+When effective `sendSessionAffinityHeaders` is `true` for a runtime-enabled,
+non-official `openai-completions` request but the runtime model itself does not carry
+`true`, the `before_provider_headers` hook MUST bridge the verified Pi composition
+gap so diagnostic success matches wire behavior. It uses the current Pi session id,
+does not persist/log/display it, and never overwrites an existing header
+case-insensitively. `sessionAffinityFormat: "openrouter"` adds only `x-session-id`;
+default/OpenAI behavior adds `x-client-request-id` and `x-session-affinity`, plus
+`session_id` for OpenAI format. Explicit effective `false`, official OpenAI,
+Responses/custom transports, runtime disable, and missing session ids MUST remain
+no-ops. If the final effective value comes from the runtime model layer, Pi owns
+that decision and this bridge no-ops; a higher-priority models.json
+`modelOverrides[modelId]` value may intentionally override a conflicting runtime
+value and re-enable the bridge. For routed registry misses, upstream transport metadata
+(`api`/`baseUrl`) is restored only from the same validated exact-provider/model config;
+virtual-router metadata is never inherited across identities, so official OpenAI remains
+excluded. If no non-empty effective base URL can be established, the bridge fails closed,
+adds no affinity headers, and diagnostics report the compat check as not applicable rather
+than claiming the channel is fully configured.
 
 #### DeepSeek Pi Mono compat warning
 

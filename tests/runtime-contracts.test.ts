@@ -58,6 +58,406 @@ afterEach(() => {
 });
 
 describe("OpenAI-compatible request contracts", () => {
+  test("bridges provider-level session-affinity compat dropped from extension models", () => {
+    const extensionModel = model({
+      provider: "Opencode-Go",
+      id: "mimo-v2.5",
+      name: "MiMo V2.5",
+      compat: {},
+    });
+    const effective = internals.resolveEffectiveCompatFromConfig(extensionModel, {
+      providers: {
+        "Opencode-Go": {
+          compat: { sendSessionAffinityHeaders: true },
+        },
+      },
+    });
+    const headers: Record<string, string | null | undefined> = {};
+
+    assert.equal(
+      internals.addEffectiveSessionAffinityHeaders(headers, extensionModel, "session-123", effective, true, "provider"),
+      true,
+    );
+    assert.deepEqual(headers, {
+      session_id: "session-123",
+      "x-client-request-id": "session-123",
+      "x-session-affinity": "session-123",
+    });
+    assert.deepEqual(internals.describeMissingOpenAICompatibleProxyCompat({ ...extensionModel, compat: effective }), []);
+    assert.equal(internals.buildFixSuggestion({ ...extensionModel, compat: effective }), undefined);
+  });
+
+  test("preserves explicit false, existing headers, and OpenRouter header format", () => {
+    const extensionModel = model({ provider: "router-proxy", id: "gpt-5.5", compat: {} });
+    const existing: Record<string, string | null | undefined> = {
+      "X-Client-Request-Id": "provider-value",
+    };
+    assert.equal(
+      internals.addEffectiveSessionAffinityHeaders(
+        existing,
+        extensionModel,
+        "session-123",
+        { sendSessionAffinityHeaders: true },
+        true,
+        "provider",
+      ),
+      true,
+    );
+    assert.deepEqual(existing, {
+      "X-Client-Request-Id": "provider-value",
+      session_id: "session-123",
+      "x-session-affinity": "session-123",
+    });
+
+    const openRouterHeaders: Record<string, string | null | undefined> = {};
+    assert.equal(
+      internals.addEffectiveSessionAffinityHeaders(
+        openRouterHeaders,
+        model({ provider: "openrouter-custom", baseUrl: "https://openrouter.ai/api/v1", compat: {} }),
+        "session-456",
+        { sendSessionAffinityHeaders: true, sessionAffinityFormat: "openrouter" },
+        true,
+        "provider",
+      ),
+      true,
+    );
+    assert.deepEqual(openRouterHeaders, { "x-session-id": "session-456" });
+
+    for (const [candidate, compat, enabled, sessionId] of [
+      [extensionModel, { sendSessionAffinityHeaders: false }, true, "session-123"],
+      [model({ baseUrl: "https://api.openai.com/v1", compat: {} }), { sendSessionAffinityHeaders: true }, true, "session-123"],
+      [model({ api: "openai-responses", compat: {} }), { sendSessionAffinityHeaders: true }, true, "session-123"],
+      [model({ api: "kiro-api", compat: {} }), { sendSessionAffinityHeaders: true }, true, "session-123"],
+      [extensionModel, { sendSessionAffinityHeaders: true }, false, "session-123"],
+      [extensionModel, { sendSessionAffinityHeaders: true }, true, ""],
+      [model({ compat: { sendSessionAffinityHeaders: true } }), { sendSessionAffinityHeaders: true }, true, "session-123"],
+      [model({ compat: { sendSessionAffinityHeaders: false } }), { sendSessionAffinityHeaders: true }, true, "session-123"],
+    ] as const) {
+      const headers: Record<string, string | null | undefined> = {};
+      assert.equal(
+        internals.addEffectiveSessionAffinityHeaders(
+          headers,
+          candidate,
+          sessionId,
+          compat,
+          enabled,
+          (candidate.compat as { sendSessionAffinityHeaders?: boolean } | undefined)?.sendSessionAffinityHeaders !== undefined
+            ? "runtime"
+            : "provider",
+        ),
+        false,
+      );
+      assert.deepEqual(headers, {});
+    }
+  });
+
+  test("route fallback does not inherit compat across provider/model identity changes", () => {
+    const snapshot = {
+      virtualProvider: "router",
+      virtualModelId: "smart",
+      provider: "upstream-proxy",
+      modelId: "gpt-5.5",
+      api: "openai-completions",
+      timestamp: Date.now(),
+    };
+    const routed = internals.routeSnapshotToPiModel(snapshot as any, model({
+      provider: "router",
+      id: "smart",
+      compat: { sendSessionAffinityHeaders: false },
+    }));
+    assert.equal(routed.provider, "upstream-proxy");
+    assert.equal(routed.id, "gpt-5.5");
+    assert.equal(routed.compat, undefined);
+  });
+
+  test("schema validation agrees with installed Pi for reviewed edge cases", async () => {
+    const tempAgentDir = await mkdtemp(join(tmpdir(), "pi-cache-schema-parity-test-"));
+    try {
+      const piRuntimeModule = await createJiti(join(process.cwd(), "tests", "pi-schema-test.ts"), { interopDefault: false, moduleCache: false }).import<typeof import("../node_modules/@earendil-works/pi-coding-agent/dist/core/model-config.js")>(
+        join(process.cwd(), "node_modules", "@earendil-works", "pi-coding-agent", "dist", "core", "model-config.js"),
+      );
+      for (const [name, config] of Object.entries({
+        invalidThinkingLevel: {
+          providers: {
+            proxy: {
+              compat: { sendSessionAffinityHeaders: true },
+              models: [{ id: "gpt-5.5", thinkingLevelMap: { high: 4 } }],
+            },
+          },
+        },
+        validExtraOverrideCostKey: {
+          providers: {
+            proxy: {
+              compat: { sendSessionAffinityHeaders: true },
+              modelOverrides: { "gpt-5.5": { cost: { input: 1, extra: 2 } } },
+            },
+          },
+        },
+      })) {
+        const modelsPath = join(tempAgentDir, `${name}.json`);
+        await writeFile(modelsPath, JSON.stringify(config));
+        const piConfig = await piRuntimeModule.ModelConfig.load(modelsPath);
+        assert.equal(
+          internals.isValidModelsConfigForEffectiveCompat(config),
+          (piConfig as unknown as { error?: string }).error === undefined,
+          name,
+        );
+      }
+    } finally {
+      await rm(tempAgentDir, { recursive: true, force: true });
+    }
+  });
+
+  test("installed Pi registerProvider drops lower provider compat for extension-owned models", async () => {
+    const tempAgentDir = await mkdtemp(join(tmpdir(), "pi-cache-extension-provider-model-test-"));
+    try {
+      const modelsPath = join(tempAgentDir, "models.json");
+      await writeFile(modelsPath, JSON.stringify({
+        providers: {
+          "Opencode-Go": {
+            compat: { sendSessionAffinityHeaders: true },
+          },
+        },
+      }));
+      const piRuntimeModule = await createJiti(join(process.cwd(), "tests", "pi-runtime-test.ts"), { interopDefault: false, moduleCache: false }).import<typeof import("../node_modules/@earendil-works/pi-coding-agent/dist/core/model-runtime.js")>(
+        join(process.cwd(), "node_modules", "@earendil-works", "pi-coding-agent", "dist", "core", "model-runtime.js"),
+      );
+      const runtime = await piRuntimeModule.ModelRuntime.create({
+        modelsPath,
+        authPath: join(tempAgentDir, "auth.json"),
+        modelsStorePath: join(tempAgentDir, "models-store.json"),
+        allowModelNetwork: false,
+        refreshOnCreate: false,
+      });
+      runtime.registerProvider("Opencode-Go", {
+        name: "Opencode Go",
+        baseUrl: "https://proxy.example/v1",
+        apiKey: "test-only-placeholder",
+        api: "openai-completions",
+        models: [{
+          id: "mimo-v2.5",
+          name: "MiMo V2.5",
+          reasoning: false,
+          input: ["text"],
+          cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+          contextWindow: 128_000,
+          maxTokens: 8192,
+        }],
+      });
+      const registered = runtime.getModel("Opencode-Go", "mimo-v2.5");
+      assert.ok(registered);
+      assert.equal((registered.compat as { sendSessionAffinityHeaders?: boolean } | undefined)?.sendSessionAffinityHeaders, undefined);
+      assert.equal(
+        internals.resolveEffectiveCompatFromConfig(registered as PiModel, JSON.parse(await readFile(modelsPath, "utf8"))).sendSessionAffinityHeaders,
+        true,
+      );
+    } finally {
+      await rm(tempAgentDir, { recursive: true, force: true });
+    }
+  });
+
+  test("extension hook honors provider-level affinity and explicit modelOverride false", async () => {
+    const tempAgentDir = await mkdtemp(join(tmpdir(), "pi-cache-affinity-hook-test-"));
+    const previousAgentDir = process.env.PI_CODING_AGENT_DIR;
+    const previousRetention = process.env.PI_CACHE_RETENTION;
+    try {
+      process.env.PI_CODING_AGENT_DIR = tempAgentDir;
+      const jiti = createJiti(join(process.cwd(), "tests", "affinity-hook-test.ts"), { interopDefault: false, moduleCache: false });
+      const fresh = await jiti.import<typeof import("../index.ts")>(join(process.cwd(), "index.ts"));
+      const handlers = new Map<string, Handler>();
+      fresh.default({ on(name: string, handler: Handler) { handlers.set(name, handler); }, registerCommand() {} } as any);
+      const requestHeaders = handlers.get("before_provider_headers");
+      assert.ok(requestHeaders);
+      const runtimeModel = model({ provider: "Opencode-Go", id: "mimo-v2.5", name: "MiMo V2.5", compat: {} });
+      const notifications: string[] = [];
+      const statuses: Array<string | undefined> = [];
+      const context = {
+        model: runtimeModel,
+        sessionManager: { getSessionId: () => "hook-session" },
+        modelRegistry: { find: () => undefined, getAvailable: () => [], getAll: () => [] },
+        ui: {
+          notify(message: string) { notifications.push(message); },
+          setStatus(_key: string, value: string | undefined) { statuses.push(value); },
+        },
+      };
+
+      await writeFile(join(tempAgentDir, "models.json"), JSON.stringify({
+        providers: { "Opencode-Go": { compat: { sendSessionAffinityHeaders: true } } },
+      }));
+      const enabledHeaders: Record<string, string | null> = {};
+      requestHeaders({ headers: enabledHeaders }, context);
+      assert.deepEqual(enabledHeaders, {
+        session_id: "hook-session",
+        "x-client-request-id": "hook-session",
+        "x-session-affinity": "hook-session",
+      });
+      assert.deepEqual(fresh.__internals_for_tests.describeMissingOpenAICompatibleProxyCompat(runtimeModel), []);
+      assert.equal(fresh.__internals_for_tests.buildFixSuggestion(runtimeModel), undefined);
+      assert.match(fresh.__internals_for_tests.buildDoctorDiagnosis(runtimeModel), /✅ Compat fully configured\./);
+      assert.equal(fresh.__internals_for_tests.buildCompatDiagnosis(runtimeModel)?.includes("Missing compat"), false);
+      await handlers.get("model_select")?.({ model: runtimeModel, previousModel: undefined, source: "set" }, context);
+      assert.equal(notifications.some((message) => message.includes("merged compat lacks")), false);
+      assert.equal(statuses.some((status) => status?.includes("⚠️ compat")), false);
+
+      await writeFile(join(tempAgentDir, "models.json"), JSON.stringify({
+        providers: {
+          "Opencode-Go": {
+            compat: { sendSessionAffinityHeaders: true },
+            modelOverrides: {
+              "mimo-v2.5": { compat: { sendSessionAffinityHeaders: false } },
+            },
+          },
+        },
+      }));
+      const disabledHeaders: Record<string, string | null> = {};
+      requestHeaders({ headers: disabledHeaders }, context);
+      assert.deepEqual(disabledHeaders, {});
+      assert.deepEqual(fresh.__internals_for_tests.describeMissingOpenAICompatibleProxyCompat(runtimeModel), []);
+      assert.equal(fresh.__internals_for_tests.buildFixSuggestion(runtimeModel), undefined);
+
+      const routeSnapshot = {
+        virtualProvider: "router",
+        virtualModelId: "smart",
+        provider: "openai-alias",
+        modelId: "gpt-5.5",
+        api: "openai-completions",
+        timestamp: Date.now(),
+      };
+      const routeContext = {
+        ...context,
+        model: model({ provider: "router", id: "smart", api: "router-api", baseUrl: "https://router.example", compat: {} }),
+        modelRegistry: { find: () => undefined, getAvailable: () => [], getAll: () => [] },
+      };
+      const unregisterRouter = fresh.__internals_for_tests.ensureRoutingRegistry().registerRouter({
+        virtualProvider: "router",
+        resolveActiveRoute: () => routeSnapshot,
+      });
+      try {
+        await writeFile(join(tempAgentDir, "models.json"), JSON.stringify({
+          providers: {
+            "openai-alias": {
+              compat: { sendSessionAffinityHeaders: true },
+            },
+          },
+        }));
+        const unknownEndpointHeaders: Record<string, string | null> = {};
+        requestHeaders({ headers: unknownEndpointHeaders }, routeContext);
+        assert.deepEqual(unknownEndpointHeaders, {});
+        const unknownResolved = fresh.__internals_for_tests.resolveRouteModel(routeContext.model, routeContext as any);
+        assert.ok(unknownResolved);
+        assert.equal(fresh.__internals_for_tests.isCompatCheckApplicable(unknownResolved), false);
+        assert.equal(fresh.__internals_for_tests.isDeepSeekCompatCheckApplicable({ ...unknownResolved, id: "deepseek-chat", name: "DeepSeek" }), false);
+        assert.equal(
+          fresh.__internals_for_tests.isAdaptiveThinkingCompatApplicable({
+            ...unknownResolved,
+            provider: "kimi-coding",
+            id: "k3",
+            name: "Kimi K3",
+            api: "anthropic-messages",
+          }),
+          false,
+        );
+        assert.deepEqual(fresh.__internals_for_tests.describeMissingOpenAICompatibleProxyCompat(unknownResolved), []);
+        const unknownKimi = {
+          ...unknownResolved,
+          provider: "kimi-coding",
+          id: "k3",
+          name: "Kimi K3",
+          api: "anthropic-messages",
+        };
+        assert.deepEqual(
+          fresh.__internals_for_tests.describeMissingCacheCompatForModel({ ...unknownResolved, id: "deepseek-chat", name: "DeepSeek" }),
+          [],
+        );
+        assert.deepEqual(fresh.__internals_for_tests.describeMissingCacheCompatForModel(unknownKimi), []);
+        assert.equal(fresh.__internals_for_tests.buildFixSuggestion(unknownKimi), undefined);
+        assert.match(
+          fresh.__internals_for_tests.buildDoctorDiagnosis(unknownKimi),
+          /ℹ️ Compat check not applicable for this model\./,
+        );
+
+        // Exercise the lifecycle paths as well as the pure diagnostics: a
+        // routed fallback with unknown endpoint metadata must not emit an
+        // adaptive-thinking warning or add a compat footer marker.
+        const originalRouteSnapshot = { ...routeSnapshot };
+        Object.assign(routeSnapshot, {
+          provider: "anthropic",
+          modelId: "claude-opus-5",
+          api: "anthropic-messages",
+        });
+        const notificationCountBeforeUnknownRoute = notifications.length;
+        const statusCountBeforeUnknownRoute = statuses.length;
+        try {
+          await handlers.get("model_select")?.(
+            { model: routeContext.model, previousModel: undefined, source: "set" },
+            routeContext,
+          );
+          assert.equal(notifications.length, notificationCountBeforeUnknownRoute);
+          const unknownRouteStatuses = statuses.slice(statusCountBeforeUnknownRoute);
+          assert.ok(unknownRouteStatuses.length > 0, "model_select should publish the routed footer status");
+          assert.match(unknownRouteStatuses.at(-1) ?? "", /Claude cache/);
+          assert.equal(
+            unknownRouteStatuses.some((status) => status?.includes("⚠️ compat")),
+            false,
+          );
+        } finally {
+          Object.assign(routeSnapshot, originalRouteSnapshot);
+        }
+
+        assert.equal(fresh.__internals_for_tests.buildFixSuggestion(unknownResolved), undefined);
+        assert.match(
+          fresh.__internals_for_tests.buildDoctorDiagnosis(unknownResolved),
+          /Upstream endpoint metadata is unavailable; session-affinity header injection is disabled\./,
+        );
+        assert.equal(fresh.__internals_for_tests.describeRouterChannelDiagnostics(unknownResolved).length, 0);
+
+        await writeFile(join(tempAgentDir, "models.json"), JSON.stringify({
+          providers: {
+            "openai-alias": {
+              baseUrl: "https://api.openai.com/v1",
+              compat: { sendSessionAffinityHeaders: true },
+            },
+          },
+        }));
+        const officialHeaders: Record<string, string | null> = {};
+        requestHeaders({ headers: officialHeaders }, routeContext);
+        assert.deepEqual(officialHeaders, {});
+
+        await writeFile(join(tempAgentDir, "models.json"), JSON.stringify({
+          providers: {
+            "openai-alias": {
+              baseUrl: "https://third-party.example/v1",
+              compat: { sendSessionAffinityHeaders: true },
+            },
+          },
+        }));
+        const routedProxyHeaders: Record<string, string | null> = {};
+        requestHeaders({ headers: routedProxyHeaders }, routeContext);
+        assert.equal(routedProxyHeaders["x-session-affinity"], "hook-session");
+      } finally {
+        unregisterRouter();
+      }
+
+      await writeFile(join(tempAgentDir, "models.json"), JSON.stringify({
+        providers: {
+          "Opencode-Go": {
+            baseUrl: 123,
+            compat: { sendSessionAffinityHeaders: true },
+          },
+        },
+      }));
+      const invalidConfigHeaders: Record<string, string | null> = {};
+      requestHeaders({ headers: invalidConfigHeaders }, context);
+      assert.deepEqual(invalidConfigHeaders, {});
+    } finally {
+      if (previousAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
+      else process.env.PI_CODING_AGENT_DIR = previousAgentDir;
+      if (previousRetention === undefined) delete process.env.PI_CACHE_RETENTION;
+      else process.env.PI_CACHE_RETENTION = previousRetention;
+      await rm(tempAgentDir, { recursive: true, force: true });
+    }
+  });
+
   test("adds a session cache key only when no effective key exists", () => {
     assert.deepEqual(
       internals.addOpenAIPromptCacheKey({ messages: [] }, "session-key"),
