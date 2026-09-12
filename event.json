@@ -1,1 +1,1 @@
-{"event_id":"evt_12af72ab","schema_version":1,"event_type":"intent.abandoned","actor_id":"actor_31506cbe","actor_name":"jiangge","timestamp":"2026-09-12T05:40:36Z","intent_id":"int_7a87e8e3","reason":"功能实现与深度审查已纳入同一分支的 2.8.8 发布意图 int_0ae01682；代码、测试和原作者归属保留，本独立功能提案不再单独追踪。"}
+{"event_id":"evt_701376e7","schema_version":1,"event_type":"intent.abandoned","actor_id":"actor_31506cbe","actor_name":"jiangge","timestamp":"2026-09-12T07:05:09Z","intent_id":"int_0ae01682","reason":"2.8.8 发布准备已完成并已发布；后续项目 Pi 0.85.1 升级属于新的修正阶段，代码历史保留，本发布准备意图不再作为当前工作追踪。"}
