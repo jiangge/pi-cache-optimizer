@@ -18,6 +18,11 @@ import { type FileIdentity, atomicCreateTextFileNoReplace, atomicReplaceTextFile
 import { getAssistantMessageModelTokenValues, getModelIdNameTokenValues, hasAnyTokenContaining, isAdaptiveGenerationModel, isKimiCodingAdaptiveModel, modelOrAssistantMessageHas } from "./src/model-detect.ts";
 import { type CacheCompat, NESTED_COMPAT_KEYS, findLastExactModelDefinition, getEffectiveCompatSources, mergeCacheCompat, resolveEffectiveCompatFromConfig } from "./src/compat-config.ts";
 import { analyzeModelsJsonForMissingEntry, applyModelsJsonFixTransaction, chooseFixPlacement, composeFixInsertion, composeMissingEntryInsertion, composeModelOverrideInsertion, composeModelsJsonReceiptRollback, composeProviderAffinityInsertion, createModelsJsonFixReceipt, createRollbackBackupPath, decideFixPlacement, formatCompatKeysForInsertion, formatMissingEntryManualSnippet, hasExplicitLongRetentionOptInFromConfig, hasReceiptReasoningProtocolChange, isActionableModelsJsonFixReceipt, locateModelInJsonc, markModelsJsonFixReceiptRolledBack, parseModelsJsonFixReceipt, prepareModelsJsonRollback, readModelsJsonFixReceipt, readModelsJsonFixReceiptSnapshot, receiptBackupPath, resolveExplicitCompatValue, selfCheckFix, selfCheckMissingEntryInsertion, validateModelsJsonRollback, writeModelsJsonFixReceipt } from "./src/models-json-fix.ts";
+import { getNonNegativeNumber, getNumber } from "./src/common.ts";
+import { CACHE_PROVIDER_IDS, type CacheProviderId, type CacheStats, LEGACY_STATE_FILE_PATH, type PersistedRoutedModelRef, type PersistedStatsShardV7, SHARD_FILES_DIR, SHARD_GLOBAL_EPOCH_PATH, SHARD_STATE_DIR, STATE_FILE_PATH, type ShardAggregate, type UsageSnapshot, addUsageToCacheStats, advanceGlobalStatsEpoch, advanceModelStatsEpoch, aggregateStatsShardsV7, cleanupStatsShardsV7, cloneCacheStats, currentLocalDay, emptyAllCacheStats, emptyCacheStats, initialEpoch, loadStatsShardAggregateV7, maybeCleanupStatsShardsV7, mergeCacheStatsForTotal, modelEpochPath, parseCacheStats, parsePersistedRoutedModelRef, parsePersistedStatsShardV7, readGlobalStatsEpoch, readModelStatsEpoch, readValidStatsShardsV7, removeLegacyStatsFiles, writeStatsShardV7 } from "./src/stats-store.ts";
+import { ALEPH_MODEL_PATTERN, ARCTIC_MODEL_PATTERN, AYA_MODEL_PATTERN, DOUBAO_SEED_PATTERN, MIMO_MODEL_PATTERN, MPT_MODEL_PATTERN, NOVA_MODEL_PATTERN, ORION_MODEL_PATTERN, PHI_MODEL_PATTERN, PI_VIRTUAL_MODEL_API, PPLX_MODEL_PATTERN, ROUTED_FALLBACK_MODEL_SYMBOL, XAI_MODEL_PATTERN, YI_MODEL_PATTERN, getAssistantRecord, getCompat, isAnthropicMessagesApi, isAssistantMessage, isClaudeLikeAssistantMessage, isClaudeLikeModel, isDeepSeekLikeAssistantMessage, isDeepSeekLikeModel, isGeminiLikeAssistantMessage, isGeminiLikeModel, isKimiCodingEmptySignatureModel, isKnownThirdPartyOpenAIEndpoint, isMistralConversationsApi, isNativeVirtualModel, isOfficialOpenAIBaseUrl, isOpenAICompatibleApi, isOpenAICompatibleProxyApi, isOpenAIFamilyAssistantMessage, isOpenAIFamilyModel, isOpenAIFamilyToken, isPiBuiltInLlamaCppModel, isResponsesPromptRewriteBypassApi, isRoutedFallbackModel, isValidModelsConfigForEffectiveCompat, modelKey, readEffectiveCompatConfig } from "./src/model-identity.ts";
+import { invalidateModelsConfigCache } from "./src/model-identity.ts";
+import { getAnthropicRawUsage, getDeepSeekRawUsage, getGeminiRawUsage, getOpenAIRawUsage, normalizeWithFallback, usageRecordFromAssistant } from "./src/usage.ts";
 
 type MutableEnv = Record<string, string | undefined>;
 
@@ -29,8 +34,6 @@ type CacheRetentionEnvSnapshot = {
 const PI_CACHE_RETENTION_ENV = "PI_CACHE_RETENTION";
 const LONG_CACHE_RETENTION_VALUE = "long";
 const PI_CACHE_RETENTION_BASELINE_SYMBOL = Symbol.for("pi.cache.optimizer.retention-baseline.v1");
-const ROUTED_FALLBACK_MODEL_SYMBOL = Symbol("pi-cache-optimizer.routed-fallback-model");
-
 type CacheRetentionBaselineV1 = {
   version: 1;
   snapshot: CacheRetentionEnvSnapshot;
@@ -101,28 +104,11 @@ const STARTUP_CACHE_RETENTION_ENV = getOrCaptureCacheRetentionBaseline();
 // ============================================================
 requestLongCacheRetention();
 
-type CacheProviderId = "deepseek" | "openai" | "claude" | "gemini";
-
 const STATUS_KEY = "pi-cache-stats";
 
-const STATE_FILE_PATH = join(STATE_DIR, "pi-cache-optimizer-stats.json");
-const LEGACY_STATE_FILE_PATH = join(STATE_DIR, "deepseek-cache-optimizer-stats.json");
-const SHARD_STATE_DIR = join(STATE_DIR, "pi-cache-optimizer-stats.d");
-const SHARD_FILES_DIR = join(SHARD_STATE_DIR, "shards");
-const SHARD_EPOCH_DIR = join(SHARD_STATE_DIR, "epochs");
-const SHARD_MODEL_EPOCH_DIR = join(SHARD_EPOCH_DIR, "models");
-const SHARD_MAINTENANCE_DIR = join(SHARD_STATE_DIR, "maintenance");
-const SHARD_GLOBAL_EPOCH_PATH = join(SHARD_EPOCH_DIR, "global.json");
-const SHARD_CLEANUP_LOCK_PATH = join(SHARD_MAINTENANCE_DIR, "cleanup.lock");
-const SHARD_CLEANUP_MARKER_PATH = join(SHARD_MAINTENANCE_DIR, "last-cleanup");
 const CONFIG_FILE_PATH = join(STATE_DIR, "pi-cache-optimizer-config.json");
 const CONFIG_RECEIPT_FILE_NAME = "pi-cache-optimizer-config-receipt.json";
 const CONFIG_RECEIPT_PATH = join(STATE_DIR, CONFIG_RECEIPT_FILE_NAME);
-const SHARD_RETENTION_MS = 48 * 60 * 60 * 1000;
-const SHARD_TEMP_RETENTION_MS = 24 * 60 * 60 * 1000;
-const SHARD_CLEANUP_INTERVAL_MS = 6 * 60 * 60 * 1000;
-const SHARD_CLEANUP_LOCK_STALE_MS = 60 * 60 * 1000;
-const CACHE_PROVIDER_IDS: CacheProviderId[] = ["deepseek", "openai", "claude", "gemini"];
 const OPENAI_CACHE_KEY_ENV = "PI_CACHE_OPTIMIZER_OPENAI_CACHE_KEY";
 const NO_OPENAI_CACHE_KEY_ENV = "PI_CACHE_OPTIMIZER_NO_OPENAI_CACHE_KEY";
 const OPENAI_PROMPT_CACHE_KEY_MAX_LENGTH = 64;
@@ -177,8 +163,6 @@ type PromptCacheKeyConfigReceiptSnapshot = {
 };
 const PI_ROUTING_REGISTRY_SYMBOL = Symbol.for("pi.routing.registry.v1");
 const PI_CACHE_HINTS_SYMBOL = Symbol.for("pi.cache.hints.v1");
-// Model API that Pi 0.99+ assigns to native virtual models (VIRTUAL_MODEL_API).
-const PI_VIRTUAL_MODEL_API = "pi-virtual";
 const PI_CACHE_HINTS_OWNER_SYMBOL = Symbol.for("pi.cache.optimizer.hints-owner.v1");
 const ANTHROPIC_TTL_FALLBACK_SYMBOL = Symbol.for("pi.cache.optimizer.anthropic-ttl-fallback.v1");
 const REASONING_PROTOCOL_FALLBACK_SYMBOL = Symbol.for("pi.cache.optimizer.reasoning-protocol-fallback.v1");
@@ -242,38 +226,9 @@ let runtimeOptimizerEnabled = true;
 // or two skills is well under 1 KB and not worth touching.
 const SKILL_COMPRESSION_MIN_COUNT = 4;
 
-const OPENAI_REASONING_MODEL_PATTERN = /(^|[/\s:_-])o[1345]($|[-_.:/\s])/;
-const XAI_MODEL_PATTERN = /(^|[/\s:_-])xai($|[-_.:/\s])/;
-const MIMO_MODEL_PATTERN = /(^|[/\s:_-])mi-?mo($|[-_.:/\s])/i;
-const PPLX_MODEL_PATTERN = /(^|[/\s:_-])pplx($|[-_.:/\s])/i;
-const NOVA_MODEL_PATTERN = /(^|[/\s:_-])nova($|[-_.:/\s])/i;
-const MPT_MODEL_PATTERN = /(^|[/\s:_-])mpt($|[-_.:/\s])/i;
-const ALEPH_MODEL_PATTERN = /(^|[/\s:_-])aleph($|[-_.:/\s])/i;
-
-// Safe-boundary patterns for models with short or ambiguous tokens
-const ARCTIC_MODEL_PATTERN = /(^|[\/\s:_-])arctic($|[\-_.:\/\s])/i;
-const AYA_MODEL_PATTERN = /(^|[\/\s:_-])aya($|[\-_.:\/\s])/i;
-const ORION_MODEL_PATTERN = /(^|[\/\s:_-])orion($|[\-_.:\/\s])/i;
-
-type CacheStats = {
-  day: string;
-  totalRequests: number;
-  hitRequests: number;
-  cachedInputTokens: number;
-  cacheWriteInputTokens: number;
-  totalInputTokens: number;
-};
-
 type PersistedCacheStatsV2 = {
   version: 2;
   statsByProvider: Partial<Record<CacheProviderId, CacheStats>>;
-};
-
-/** Per-model-key scoped state. Used in memory and for v3 persistence. */
-type PersistedRoutedModelRef = {
-  provider: string;
-  id: string;
-  name?: string;
 };
 
 type PiRouteSnapshot = {
@@ -391,12 +346,6 @@ type PersistedCacheStatsV6 = {
   lastRoutedModelBySession?: Record<string, PersistedRoutedModelRef>;
 };
 
-type UsageSnapshot = {
-  cacheRead: number;
-  cacheWrite: number;
-  totalInput: number;
-};
-
 type ToolOrderApi =
   | "openai-completions"
   | "openai-responses"
@@ -405,51 +354,6 @@ type ToolOrderApi =
   | "google-vertex"
   | "bedrock-converse-stream";
 
-
-/**
- * Per-request sample stored for trend analysis and usage-field-missing detection.
- * Contains only numeric counters and booleans — never message content, prompts,
- * payloads, headers, API keys, or model outputs.
- */
-type PersistedStatsShardV7 = {
-  version: 7;
-  kind: "pi-cache-optimizer-shard";
-  instanceId: string;
-  sessionHash: string;
-  process: {
-    pid: number;
-    ppid: number;
-    instanceStartedAt: number;
-  };
-  lifecycle: {
-    state: "active" | "closed";
-    createdAt: number;
-    updatedAt: number;
-    closedAt?: number;
-  };
-  day: string;
-  globalEpoch: string;
-  models: Record<string, {
-    modelEpoch: string;
-    provider: string;
-    modelId: string;
-    modelName?: string;
-    api?: string;
-    stats: CacheStats;
-  }>;
-  lastRoutedModel?: PersistedRoutedModelRef;
-};
-
-type ShardAggregate = {
-  bySession: Record<string, Record<string, CacheStats>>;
-  totalsByModel: Record<string, CacheStats>;
-  instancesBySession: Record<string, number>;
-  instancesBySessionModel: Record<string, Record<string, number>>;
-  sessionsByModel: Record<string, number>;
-  instancesByModel: Record<string, number>;
-  modelRefsByKey: Record<string, PersistedRoutedModelRef>;
-  lastRoutedModelBySession: Record<string, PersistedRoutedModelRef>;
-};
 
 type CacheUsageSample = {
   timestamp: number;
@@ -1129,10 +1033,6 @@ function findModelInRegistry(registry: ModelRegistryLike | undefined, provider: 
   }
 }
 
-function isRoutedFallbackModel(model: PiModel | undefined): boolean {
-  return !!model && (model as PiModel & Record<symbol, unknown>)[ROUTED_FALLBACK_MODEL_SYMBOL] === true;
-}
-
 function applyConfiguredTransportToModel(model: PiModel, config: unknown): PiModel {
   const providers = asRecord(asRecord(config)?.providers);
   const provider = asRecord(providers?.[model.provider]);
@@ -1176,10 +1076,6 @@ function isVirtualRoutingModel(model: PiModel | undefined, ctx?: Pick<ExtensionC
 // model; only assistant messages and the provider payload name that model.
 // Older Pi hosts never produce this API, so every native-virtual path is inert.
 type NativeVirtualDispatch = { provider: string; id: string; api: string };
-
-function isNativeVirtualModel(model: { api?: unknown } | undefined): boolean {
-  return model?.api === PI_VIRTUAL_MODEL_API;
-}
 
 function readSessionBranch(ctx: Pick<ExtensionContext, "sessionManager"> | undefined): unknown[] {
   try {
@@ -1392,15 +1288,6 @@ function modelKeyFromSessionKey(sessionModelKey: string): string {
   return idx >= 0 ? sessionModelKey.slice(idx + 1) : sessionModelKey;
 }
 
-function getNumber(value: unknown): number | undefined {
-  return typeof value === "number" && Number.isFinite(value) ? value : undefined;
-}
-
-function getNonNegativeNumber(record: UnknownRecord, key: string): number | undefined {
-  const value = getNumber(record[key]);
-  return value !== undefined && value >= 0 ? value : undefined;
-}
-
 function getEffectiveCompatValueSource(
   model: PiModel,
   config: unknown,
@@ -1411,198 +1298,6 @@ function getEffectiveCompatValueSource(
     if (Object.prototype.hasOwnProperty.call(candidate.compat, key)) source = candidate.source;
   }
   return source;
-}
-
-function isOptionalString(value: unknown): boolean {
-  return value === undefined || (typeof value === "string" && value.length > 0);
-}
-
-function isOptionalBoolean(value: unknown): boolean {
-  return value === undefined || typeof value === "boolean";
-}
-
-function isFiniteNumber(value: unknown): value is number {
-  return typeof value === "number" && Number.isFinite(value);
-}
-
-function isRecordOfStrings(value: unknown): boolean {
-  const record = asRecord(value);
-  return !!record && Object.values(record).every((entry) => typeof entry === "string");
-}
-
-function isThinkingLevelMap(value: unknown): boolean {
-  const map = asRecord(value);
-  if (!map) return false;
-  return ["off", "minimal", "low", "medium", "high", "xhigh", "max"].every((key) =>
-    map[key] === undefined || map[key] === null || typeof map[key] === "string"
-  );
-}
-
-function isValidModelCostTier(value: unknown): boolean {
-  const tier = asRecord(value);
-  return !!tier
-    && isFiniteNumber(tier.inputTokensAbove)
-    && isFiniteNumber(tier.input)
-    && isFiniteNumber(tier.output)
-    && isFiniteNumber(tier.cacheRead)
-    && isFiniteNumber(tier.cacheWrite);
-}
-
-function isValidModelCost(value: unknown, partial: boolean): boolean {
-  const cost = asRecord(value);
-  if (!cost) return false;
-  for (const key of ["input", "output", "cacheRead", "cacheWrite"]) {
-    if ((!partial || cost[key] !== undefined) && !isFiniteNumber(cost[key])) return false;
-  }
-  return cost.tiers === undefined || (Array.isArray(cost.tiers) && cost.tiers.every(isValidModelCostTier));
-}
-
-function isValidModelDefinition(value: unknown): boolean {
-  const model = asRecord(value);
-  if (!model || !isNonEmptyString(model.id)) return false;
-  if (!isOptionalString(model.name) || !isOptionalString(model.api) || !isOptionalString(model.baseUrl)) return false;
-  if (!isOptionalBoolean(model.reasoning) || !isValidCompatRecord(model.compat)) return false;
-  if (model.thinkingLevelMap !== undefined && !isThinkingLevelMap(model.thinkingLevelMap)) return false;
-  if (model.input !== undefined && (!Array.isArray(model.input) || !model.input.every((entry) => entry === "text" || entry === "image"))) return false;
-  if (model.cost !== undefined && !isValidModelCost(model.cost, false)) return false;
-  if (model.contextWindow !== undefined && !isFiniteNumber(model.contextWindow)) return false;
-  if (model.maxTokens !== undefined && !isFiniteNumber(model.maxTokens)) return false;
-  if (model.samplingParams !== undefined && !asRecord(model.samplingParams)) return false;
-  if (model.headers !== undefined && !isRecordOfStrings(model.headers)) return false;
-  return true;
-}
-
-function isValidModelOverride(value: unknown): boolean {
-  const override = asRecord(value);
-  if (!override || !isValidCompatRecord(override.compat)) return false;
-  if (!isOptionalString(override.name) || !isOptionalBoolean(override.reasoning)) return false;
-  if (override.thinkingLevelMap !== undefined && !isThinkingLevelMap(override.thinkingLevelMap)) return false;
-  if (override.input !== undefined && (!Array.isArray(override.input) || !override.input.every((entry) => entry === "text" || entry === "image"))) return false;
-  if (override.cost !== undefined && !isValidModelCost(override.cost, true)) return false;
-  if (override.contextWindow !== undefined && !isFiniteNumber(override.contextWindow)) return false;
-  if (override.maxTokens !== undefined && !isFiniteNumber(override.maxTokens)) return false;
-  if (override.samplingParams !== undefined && !asRecord(override.samplingParams)) return false;
-  if (override.headers !== undefined && !isRecordOfStrings(override.headers)) return false;
-  return true;
-}
-
-function isValidOpenAICompletionsCompat(compat: UnknownRecord): boolean {
-  const booleanKeys = [
-    "supportsStore", "supportsDeveloperRole", "supportsReasoningEffort",
-    "supportsUsageInStreaming", "requiresToolResultName", "requiresAssistantAfterToolResult",
-    "requiresThinkingAsText", "requiresReasoningContentOnAssistantMessages",
-    "supportsOpenAIGrammarTools", "supportsStrictMode", "sendSessionAffinityHeaders",
-    "supportsLongCacheRetention",
-  ];
-  if (booleanKeys.some((key) => !isOptionalBoolean(compat[key]))) return false;
-  if (compat.maxTokensField !== undefined && compat.maxTokensField !== "max_completion_tokens" && compat.maxTokensField !== "max_tokens") return false;
-  if (compat.thinkingFormat !== undefined && ![
-    "openai", "openrouter", "together", "baseten", "deepseek", "zai", "qwen",
-    "chat-template", "qwen-chat-template", "string-thinking", "ant-ling",
-  ].includes(String(compat.thinkingFormat))) return false;
-  if (compat.cacheControlFormat !== undefined && compat.cacheControlFormat !== "anthropic") return false;
-  if (compat.deferredToolsMode !== undefined && compat.deferredToolsMode !== "kimi") return false;
-  if (compat.sessionAffinityFormat !== undefined && !["openai", "openai-nosession", "openrouter"].includes(String(compat.sessionAffinityFormat))) return false;
-  for (const key of NESTED_COMPAT_KEYS) {
-    if (compat[key] !== undefined && !asRecord(compat[key])) return false;
-  }
-  return true;
-}
-
-function isValidOpenAIResponsesCompat(compat: UnknownRecord): boolean {
-  const booleanKeys = [
-    "supportsDeveloperRole", "supportsLongCacheRetention", "supportsStrictMode",
-    "supportsOpenAIGrammarTools", "supportsAdditionalTools", "supportsToolSearch",
-  ];
-  if (booleanKeys.some((key) => !isOptionalBoolean(compat[key]))) return false;
-  return compat.sessionAffinityFormat === undefined
-    || ["openai", "openai-nosession", "openrouter"].includes(String(compat.sessionAffinityFormat));
-}
-
-function isValidAnthropicMessagesCompat(compat: UnknownRecord): boolean {
-  return [
-    "supportsEagerToolInputStreaming", "supportsLongCacheRetention",
-    "sendSessionAffinityHeaders", "supportsCacheControlOnTools", "supportsTemperature",
-    "forceAdaptiveThinking", "allowEmptySignature", "supportsStrictTools", "supportsToolReferences",
-  ].every((key) => isOptionalBoolean(compat[key]));
-}
-
-function isValidCompatRecord(value: unknown): boolean {
-  if (value === undefined) return true;
-  const compat = asRecord(value);
-  return !!compat
-    && !Object.prototype.hasOwnProperty.call(compat, "supportsPromptCacheKey")
-    && (
-    isValidOpenAICompletionsCompat(compat)
-    || isValidOpenAIResponsesCompat(compat)
-    || isValidAnthropicMessagesCompat(compat)
-  );
-}
-
-// Credential-blind fail-closed subset of Pi's models.json validation. This
-// intentionally covers only fields consumed by compat diagnostics, transport
-// recovery, and exact route fallback; it is not a replacement for Pi's full
-// schema and must stay conservative when the file is malformed.
-function isValidModelsConfigForEffectiveCompat(value: unknown): boolean {
-  const root = asRecord(value);
-  const providers = asRecord(root?.providers);
-  if (!root || !providers) return false;
-
-  for (const providerValue of Object.values(providers)) {
-    const provider = asRecord(providerValue);
-    if (!provider) return false;
-    if (!isOptionalString(provider.name) || !isOptionalString(provider.baseUrl) || !isOptionalString(provider.apiKey) || !isOptionalString(provider.api)) return false;
-    if (!isOptionalBoolean(provider.authHeader) || !isValidCompatRecord(provider.compat)) return false;
-    if (provider.oauth !== undefined && provider.oauth !== "radius") return false;
-    if (provider.headers !== undefined && !isRecordOfStrings(provider.headers)) return false;
-    if (provider.models !== undefined && (!Array.isArray(provider.models) || !provider.models.every(isValidModelDefinition))) return false;
-    const overrides = provider.modelOverrides === undefined ? undefined : asRecord(provider.modelOverrides);
-    if (provider.modelOverrides !== undefined && (!overrides || !Object.values(overrides).every(isValidModelOverride))) return false;
-  }
-  return true;
-}
-
-type ModelsConfigCache = {
-  signature: string;
-  value: unknown | undefined;
-};
-
-let modelsConfigCache: ModelsConfigCache | undefined;
-
-function invalidateModelsConfigCache(): void {
-  modelsConfigCache = undefined;
-}
-
-function getModelsConfigSignature(): string {
-  try {
-    const info = statSync(MODELS_JSON_PATH);
-    return `${info.dev}:${info.ino}:${info.size}:${info.mtimeMs}:${info.ctimeMs}`;
-  } catch {
-    return "missing";
-  }
-}
-
-function readEffectiveCompatConfig(): unknown | undefined {
-  const signature = getModelsConfigSignature();
-  if (modelsConfigCache?.signature === signature) return modelsConfigCache.value;
-
-  let value: unknown | undefined;
-  if (signature !== "missing") {
-    try {
-      const parsed = parseJsonc(readFileSync(MODELS_JSON_PATH, "utf8"));
-      value = isValidModelsConfigForEffectiveCompat(parsed) ? parsed : undefined;
-    } catch {
-      value = undefined;
-    }
-  }
-
-  modelsConfigCache = { signature, value };
-  return value;
-}
-
-function getCompat(model: PiModel | undefined): CacheCompat {
-  if (!model) return {} as CacheCompat;
-  return resolveEffectiveCompatFromConfig(model, readEffectiveCompatConfig());
 }
 
 function hasProviderHeader(headers: Record<string, unknown>, name: string): boolean {
@@ -2445,56 +2140,6 @@ function formatOptimizerRuntimeMode(): string {
   return getOptimizerRuntimeModeLines().join("\n");
 }
 
-function isAssistantMessage(message: unknown): boolean {
-  return asRecord(message)?.role === "assistant";
-}
-
-function getAssistantRecord(message: unknown): UnknownRecord | undefined {
-  const record = asRecord(message);
-  return record?.role === "assistant" ? record : undefined;
-}
-
-function isDeepSeekLikeModel(model: PiModel | undefined): boolean {
-  return hasAnyTokenContaining(getModelIdNameTokenValues(model), ["deepseek"]);
-}
-
-function isDeepSeekLikeAssistantMessage(message: unknown, model: PiModel | undefined): boolean {
-  return modelOrAssistantMessageHas(message, model, ["deepseek"]);
-}
-
-function isOpenAICompatibleApi(api: unknown): boolean {
-  const value = lower(api);
-  return value === "openai-completions" || value === "openai-responses";
-}
-
-function isAnthropicMessagesApi(api: unknown): boolean {
-  return lower(api) === "anthropic-messages";
-}
-
-function isOpenAICompatibleProxyApi(api: unknown): boolean {
-  return lower(api) === "openai-completions";
-}
-
-function isPiBuiltInLlamaCppModel(model: PiModel | undefined): boolean {
-  if (lower(model?.provider) !== "llama.cpp" || !isOpenAICompatibleProxyApi(model?.api)) return false;
-
-  // Pi's built-in llama.cpp provider supplies this exact explicit compat
-  // fingerprint. Provider ids are extension-overridable and models.json can add
-  // cache/routing overrides, so provider id alone must never imply exemption.
-  // supportsUsageInStreaming is deliberately not part of the fingerprint: Pi
-  // 0.82.x sets it false and Pi 0.83+ sets it true after fixing streamed usage,
-  // and it carries no routing or cache configuration.
-  const compat = getCompat(model);
-  return compat.supportsStore === false
-    && compat.supportsDeveloperRole === false
-    && compat.supportsReasoningEffort === false
-    && compat.supportsStrictMode === false
-    && compat.maxTokensField === "max_tokens"
-    && compat.sendSessionAffinityHeaders === undefined
-    && compat.sessionAffinityFormat === undefined
-    && compat.supportsLongCacheRetention === undefined;
-}
-
 function shouldInjectOpenAIPromptCacheKeyForModel(model: PiModel | undefined): boolean {
   // Pi 1.0+ owns prompt_cache_key for Responses/Codex transports. Keep this
   // extension's fallback limited to openai-completions proxies, where Pi's
@@ -2596,55 +2241,6 @@ function normalizeAnthropicCacheControlTtlOrder(payload: unknown): boolean {
   return downgradeAnthropicLongCacheControls(payload);
 }
 
-function isResponsesPromptRewriteBypassApi(api: unknown): boolean {
-  const value = lower(api);
-  return value === "openai-codex-responses" || value === "openai-responses" || value === "azure-openai-responses";
-}
-
-function isMistralConversationsApi(api: unknown): boolean {
-  return lower(api) === "mistral-conversations";
-}
-
-function isOpenAIFamilyToken(token: string): boolean {
-  return token.includes("gpt-") || token.includes("chatgpt") || OPENAI_REASONING_MODEL_PATTERN.test(token);
-}
-
-function isOpenAIFamilyModel(model: PiModel | undefined): boolean {
-  return getModelIdNameTokenValues(model).some(isOpenAIFamilyToken);
-}
-
-function isOpenAIFamilyAssistantMessage(message: unknown, model: PiModel | undefined): boolean {
-  return [...getModelIdNameTokenValues(model), ...getAssistantMessageModelTokenValues(message)].some(isOpenAIFamilyToken);
-}
-
-function isClaudeLikeModel(model: PiModel | undefined): boolean {
-  return hasAnyTokenContaining(getModelIdNameTokenValues(model), ["anthropic", "claude"]);
-}
-
-function isClaudeLikeAssistantMessage(message: unknown, model: PiModel | undefined): boolean {
-  return modelOrAssistantMessageHas(message, model, ["anthropic", "claude"]);
-}
-
-function isGeminiLikeModel(model: PiModel | undefined): boolean {
-  return hasAnyTokenContaining(getModelIdNameTokenValues(model), ["gemini", "vertex"]);
-}
-
-function isGeminiLikeAssistantMessage(message: unknown, model: PiModel | undefined): boolean {
-  return modelOrAssistantMessageHas(message, model, ["gemini", "vertex"]);
-}
-
-function isKimiCodingEmptySignatureModel(model: PiModel | undefined): boolean {
-  if (!isKimiCodingAdaptiveModel(model)) return false;
-  return getModelIdNameTokenValues(model).some((token) =>
-    token === "k3"
-    || token === "kimi-k3"
-    || token.startsWith("kimi-k3-")
-    || token === "kimi k3"
-    || token === "kimi-for-coding"
-    || token === "kimi for coding"
-  );
-}
-
 function isAdaptiveThinkingCompatApplicable(model: PiModel): boolean {
   // A routed registry miss may preserve the upstream API/model identity while
   // lacking a verified endpoint. Do not diagnose or suggest compat fixes for
@@ -2712,26 +2308,6 @@ function buildAdaptiveThinkingCompatWarningText(key: string, missing: string[]):
 }
 
 // ── Non-GPT OpenAI-compatible model detection ──────────────────────
-
-// ── Additional OpenAI-compatible model detection ──────────────────
-
-const YI_MODEL_PATTERN = /(^|[\/\s:_-])yi($|[\-_.:\/\s])/;
-
-// ── More OpenAI-compatible model detection (batch 2) ───────────────
-
-const DOUBAO_SEED_PATTERN = /(^|[\/\s:_-])seed($|[\-_.:\/\s])/i;
-
-const PHI_MODEL_PATTERN = /(^|[\/\s:_-])phi($|[\-_.:\/\s])/i;
-
-// ── New OpenAI-compatible model detection (batch 3, 12 families) ──────
-
-// ── More OpenAI-compatible model detection (batch 4, 18 families) ──
-
-// ── Model key ──────────────────────────────────────────────────────
-
-function modelKey(model: ModelIdentity): string {
-  return `${model.provider}/${model.id}`;
-}
 
 function isRouterModel(model: PiModel | undefined): boolean {
   return lower(model?.provider) === "router";
@@ -2907,175 +2483,6 @@ function consolidateDirectProviderStatsModel(
   };
 }
 
-function usageRecordFromAssistant(message: unknown): UnknownRecord | undefined {
-  return asRecord(getAssistantRecord(message)?.usage);
-}
-
-function getNestedRecord(record: UnknownRecord | undefined, key: string): UnknownRecord | undefined {
-  return asRecord(record?.[key]);
-}
-
-function getFirstNonNegativeNumber(...values: unknown[]): number | undefined {
-  for (const value of values) {
-    const number = getNumber(value);
-    if (number !== undefined && number >= 0) return number;
-  }
-  return undefined;
-}
-
-function readCachedTokensFromDetails(details: UnknownRecord | undefined): number | undefined {
-  return getFirstNonNegativeNumber(details?.cached_tokens, details?.cachedTokens);
-}
-
-function readCacheWriteFromDetails(details: UnknownRecord | undefined): number | undefined {
-  return getFirstNonNegativeNumber(details?.cache_write_tokens, details?.cacheWriteTokens);
-}
-
-// Pi normalizes provider-specific raw usage (prompt_cache_hit_tokens, cached_tokens,
-// cache_read_input_tokens, etc.) into a common shape:
-//   input     = uncached prompt portion (total prompt minus cacheRead minus cacheWrite)
-//   cacheRead = tokens read from a previously-cached prefix
-//   cacheWrite= tokens newly written into cache in this request
-//
-// We reconstruct the total prompt-token count as input + cacheRead + cacheWrite.
-// Pi guarantees that input, cacheRead, and cacheWrite are always present on
-// assistant messages processed through its provider pipeline (at least as zero).
-//
-// Only DeepSeek sets allowInputOnly=true so that a cache miss (cacheRead=0) still
-// contributes total input tokens to the denominator.
-function getPiNormalizedUsage(message: unknown, allowInputOnly = false): UsageSnapshot | undefined {
-  const usage = usageRecordFromAssistant(message);
-  if (!usage) return undefined;
-
-  const input = getNonNegativeNumber(usage, "input");
-  const cacheRead = getNonNegativeNumber(usage, "cacheRead");
-  const cacheWrite = getNonNegativeNumber(usage, "cacheWrite");
-  const hasCacheSignal = cacheRead !== undefined || cacheWrite !== undefined;
-
-  if (!hasCacheSignal && (input === undefined || !allowInputOnly)) return undefined;
-
-  // Under healthy Pi normalization input is the uncached portion, so
-  // totalInput = input + cacheRead + cacheWrite gives the full prompt token count.
-  // Guard against degenerate reads where a broken proxy omits prompt_tokens and
-  // Pi's input falls to zero: totalInput must never be less than cacheRead + cacheWrite.
-  const computed = (input ?? 0) + (cacheRead ?? 0) + (cacheWrite ?? 0);
-  const floor = (cacheRead ?? 0) + (cacheWrite ?? 0);
-  return {
-    cacheRead: cacheRead ?? 0,
-    cacheWrite: cacheWrite ?? 0,
-    totalInput: computed >= floor ? computed : floor,
-  };
-}
-
-// Raw fallback for DeepSeek responses that still carry their native usage fields.
-// In practice Pi normalizes usage before message_end fires, so this path is only
-// reached when Pi-normalized fields are absent (e.g. custom/foreign providers).
-function getDeepSeekRawUsage(message: unknown): UsageSnapshot | undefined {
-  const usage = usageRecordFromAssistant(message);
-  if (!usage) return undefined;
-
-  const cacheRead = getFirstNonNegativeNumber(usage.prompt_cache_hit_tokens);
-  if (cacheRead === undefined) return undefined;
-
-  const cacheMiss = getFirstNonNegativeNumber(usage.prompt_cache_miss_tokens);
-  const promptTokens = getFirstNonNegativeNumber(usage.prompt_tokens);
-  // DeepSeek guarantees prompt_tokens = prompt_cache_hit_tokens + prompt_cache_miss_tokens.
-  const totalInput = promptTokens ?? cacheRead + (cacheMiss ?? 0);
-
-  return { cacheRead, cacheWrite: 0, totalInput };
-}
-
-// Raw fallback for OpenAI-family responses that still carry their native usage fields.
-// In practice Pi normalizes usage before message_end fires, so this path is only
-// reached when Pi-normalized fields are absent (e.g. custom/foreign providers).
-function getOpenAIRawUsage(message: unknown): UsageSnapshot | undefined {
-  const usage = usageRecordFromAssistant(message);
-  if (!usage) return undefined;
-
-  const promptDetails = getNestedRecord(usage, "prompt_tokens_details") ?? getNestedRecord(usage, "promptTokensDetails");
-  const inputDetails = getNestedRecord(usage, "input_tokens_details") ?? getNestedRecord(usage, "inputTokensDetails");
-  const cacheRead = readCachedTokensFromDetails(promptDetails) ?? readCachedTokensFromDetails(inputDetails);
-  if (cacheRead === undefined) return undefined;
-
-  const cacheWrite = readCacheWriteFromDetails(promptDetails) ?? readCacheWriteFromDetails(inputDetails) ?? 0;
-  const totalInput = getFirstNonNegativeNumber(
-    usage.prompt_tokens,
-    usage.promptTokens,
-    usage.input_tokens,
-    usage.inputTokens,
-  ) ?? cacheRead + cacheWrite;
-
-  return { cacheRead, cacheWrite, totalInput };
-}
-
-// Raw fallback for Anthropic/Claude responses that still carry their native usage fields.
-// In practice Pi normalizes usage before message_end fires, so this path is only
-// reached when Pi-normalized fields are absent (e.g. custom/foreign providers).
-function getAnthropicRawUsage(message: unknown): UsageSnapshot | undefined {
-  const usage = usageRecordFromAssistant(message);
-  if (!usage) return undefined;
-
-  const cacheRead = getFirstNonNegativeNumber(usage.cache_read_input_tokens, usage.cacheReadInputTokens);
-  const cacheWrite = getFirstNonNegativeNumber(usage.cache_creation_input_tokens, usage.cacheCreationInputTokens);
-  if (cacheRead === undefined && cacheWrite === undefined) return undefined;
-
-  // Anthropic input_tokens = tokens after the last cache breakpoint (neither read nor written).
-  const input = getFirstNonNegativeNumber(usage.input_tokens, usage.inputTokens) ?? 0;
-  return {
-    cacheRead: cacheRead ?? 0,
-    cacheWrite: cacheWrite ?? 0,
-    totalInput: input + (cacheRead ?? 0) + (cacheWrite ?? 0),
-  };
-}
-
-// Raw fallback for Gemini/Vertex responses that still carry their native usage fields.
-// In practice Pi normalizes usage before message_end fires, so this path is only
-// reached when Pi-normalized fields are absent (e.g. custom/foreign providers).
-function getGeminiRawUsage(message: unknown): UsageSnapshot | undefined {
-  const record = getAssistantRecord(message);
-  if (!record) return undefined;
-
-  const usage = asRecord(record.usage);
-  const metadata =
-    getNestedRecord(record, "usageMetadata") ??
-    getNestedRecord(record, "usage_metadata") ??
-    getNestedRecord(usage, "usageMetadata") ??
-    getNestedRecord(usage, "usage_metadata") ??
-    usage;
-  if (!metadata) return undefined;
-
-  const cacheRead = getFirstNonNegativeNumber(
-    metadata.cachedContentTokenCount,
-    metadata.cached_content_token_count,
-  );
-  if (cacheRead === undefined) return undefined;
-
-  const totalInput = getFirstNonNegativeNumber(
-    metadata.promptTokenCount,
-    metadata.prompt_token_count,
-    metadata.inputTokenCount,
-    metadata.input_token_count,
-    usage?.input_tokens,
-    usage?.inputTokens,
-    usage?.prompt_tokens,
-    usage?.promptTokens,
-  ) ?? cacheRead;
-
-  return { cacheRead, cacheWrite: 0, totalInput };
-}
-
-// Try Pi-normalized usage first (always present for messages that went through Pi's
-// provider pipeline). Fall back to provider-specific raw-field readers when Pi-normalized
-// fields are absent (e.g. messages from custom/foreign providers whose raw usage shape
-// matches the official API).
-function normalizeWithFallback(
-  message: unknown,
-  rawNormalizer: (message: unknown) => UsageSnapshot | undefined,
-  options: { allowInputOnlyPiUsage?: boolean } = {},
-): UsageSnapshot | undefined {
-  return getPiNormalizedUsage(message, options.allowInputOnlyPiUsage) ?? rawNormalizer(message);
-}
-
 function addOpenAIPromptCacheKey(payload: unknown, cacheKey: string | undefined): unknown | undefined {
   const record = asRecord(payload);
   const normalizedCacheKey = clampPromptCacheKey(cacheKey);
@@ -3090,23 +2497,6 @@ function addOpenAIPromptCacheKey(payload: unknown, cacheKey: string | undefined)
 
 function hasEffectivePromptCacheKey(record: UnknownRecord): boolean {
   return isNonEmptyString(record.prompt_cache_key) || isNonEmptyString(record.promptCacheKey);
-}
-
-function isOfficialOpenAIBaseUrl(model: PiModel): boolean {
-  const value = lower(model.baseUrl).trim();
-  if (!value) {
-    return lower(model.provider) === "openai";
-  }
-
-  try {
-    return new URL(value).hostname === "api.openai.com";
-  } catch {
-    return value === "api.openai.com" || value.startsWith("api.openai.com/");
-  }
-}
-
-function isKnownThirdPartyOpenAIEndpoint(model: PiModel): boolean {
-  return isNonEmptyString(model.baseUrl) && !isOfficialOpenAIBaseUrl(model);
 }
 
 function describeMissingOpenAIFamilyProxyCompat(model: PiModel): string[] {
@@ -3944,37 +3334,6 @@ function notifyCacheCompatIfNeeded(
   ctx.ui.notify(text, "warning");
 }
 
-function currentLocalDay(): string {
-  const now = new Date();
-  const year = now.getFullYear();
-  const month = String(now.getMonth() + 1).padStart(2, "0");
-  const day = String(now.getDate()).padStart(2, "0");
-  return `${year}-${month}-${day}`;
-}
-
-function emptyCacheStats(day = currentLocalDay()): CacheStats {
-  return {
-    day,
-    totalRequests: 0,
-    hitRequests: 0,
-    cachedInputTokens: 0,
-    cacheWriteInputTokens: 0,
-    totalInputTokens: 0,
-  };
-}
-
-function emptyAllCacheStats(day = currentLocalDay()): Partial<Record<CacheProviderId, CacheStats>> {
-  return Object.fromEntries(CACHE_PROVIDER_IDS.map((id) => [id, emptyCacheStats(day)])) as Partial<Record<CacheProviderId, CacheStats>>;
-}
-
-function addUsageToCacheStats(stats: CacheStats, usage: UsageSnapshot): void {
-  stats.totalRequests += 1;
-  if (usage.cacheRead > 0) stats.hitRequests += 1;
-  stats.cachedInputTokens += usage.cacheRead;
-  stats.cacheWriteInputTokens += usage.cacheWrite;
-  stats.totalInputTokens += usage.totalInput;
-}
-
 function formatTokenCount(value: number): string {
   const millions = Math.max(0, Math.round(value)) / 1_000_000;
   if (millions === 0) return "0M";
@@ -4194,60 +3553,6 @@ function buildStatsOutput(model: PiModel | undefined, adapter: CacheProviderAdap
   return lines.join("\n");
 }
 
-function parseCacheStats(value: unknown): CacheStats | undefined {
-  const stats = asRecord(value);
-  if (!stats || typeof stats.day !== "string" || !/^\d{4}-\d{2}-\d{2}$/.test(stats.day)) {
-    return undefined;
-  }
-
-  const totalRequests = getNonNegativeNumber(stats, "totalRequests");
-  const hitRequests = getNonNegativeNumber(stats, "hitRequests");
-  const cachedInputTokens = getNonNegativeNumber(stats, "cachedInputTokens");
-  const cacheWriteInputTokens = getNonNegativeNumber(stats, "cacheWriteInputTokens") ?? 0;
-  const totalInputTokens = getNonNegativeNumber(stats, "totalInputTokens");
-
-  if (
-    totalRequests === undefined ||
-    hitRequests === undefined ||
-    cachedInputTokens === undefined ||
-    totalInputTokens === undefined ||
-    hitRequests > totalRequests ||
-    cachedInputTokens > totalInputTokens ||
-    cacheWriteInputTokens > totalInputTokens
-  ) {
-    return undefined;
-  }
-
-  return {
-    day: stats.day,
-    totalRequests,
-    hitRequests,
-    cachedInputTokens,
-    cacheWriteInputTokens,
-    totalInputTokens,
-  };
-}
-
-function cloneCacheStats(stats: CacheStats): CacheStats {
-  return { ...stats };
-}
-
-function addCacheStatsTotals(target: CacheStats, source: CacheStats): void {
-  target.totalRequests += source.totalRequests;
-  target.hitRequests += source.hitRequests;
-  target.cachedInputTokens += source.cachedInputTokens;
-  target.cacheWriteInputTokens += source.cacheWriteInputTokens;
-  target.totalInputTokens += source.totalInputTokens;
-}
-
-function mergeCacheStatsForTotal(existing: CacheStats | undefined, incoming: CacheStats): CacheStats {
-  if (!existing) return cloneCacheStats(incoming);
-  if (incoming.day > existing.day) return cloneCacheStats(incoming);
-  if (incoming.day < existing.day) return existing;
-  addCacheStatsTotals(existing, incoming);
-  return existing;
-}
-
 function deriveTotalsByModelFromSessionStats(statsByModel: Record<string, CacheStats>): Record<string, CacheStats> {
   const totals: Record<string, CacheStats> = {};
   for (const [fullKey, stats] of Object.entries(statsByModel)) {
@@ -4269,20 +3574,6 @@ function parsePersistedTotalsByModel(value: unknown): Record<string, CacheStats>
     if (stats) totals[modelKeyStr] = stats;
   }
   return totals;
-}
-
-function parsePersistedRoutedModelRef(value: unknown): PersistedRoutedModelRef | undefined {
-  const record = asRecord(value);
-  const provider = record?.provider;
-  const id = record?.id;
-  const name = record?.name;
-  if (!isNonEmptyString(provider) || !isNonEmptyString(id)) return undefined;
-
-  return {
-    provider: provider.trim(),
-    id: id.trim(),
-    name: isNonEmptyString(name) ? name.trim() : id.trim(),
-  };
 }
 
 function routedModelRefToPiModel(ref: PersistedRoutedModelRef): PiModel {
@@ -4718,295 +4009,6 @@ async function writePersistedCacheStats(
 
   await writeFile(tempPath, JSON.stringify(payload, null, 2) + "\n", "utf8");
   await rename(tempPath, STATE_FILE_PATH);
-}
-
-function modelEpochPath(modelKeyValue: string): string {
-  return join(SHARD_MODEL_EPOCH_DIR, `${createHash("sha256").update(modelKeyValue).digest("hex")}.json`);
-}
-
-function initialEpoch(scope: string): string {
-  return `initial:${scope}`;
-}
-
-function parseEpochRecord(value: unknown): string | undefined {
-  const record = asRecord(value);
-  return record?.version === 1 && isNonEmptyString(record.epoch) ? record.epoch.trim() : undefined;
-}
-
-async function readEpochFile(path: string, fallback: string): Promise<string> {
-  try {
-    return parseEpochRecord(JSON.parse(await readFile(path, "utf8"))) ?? fallback;
-  } catch {
-    return fallback;
-  }
-}
-
-async function readGlobalStatsEpoch(): Promise<string> {
-  return readEpochFile(SHARD_GLOBAL_EPOCH_PATH, initialEpoch("global"));
-}
-
-async function readModelStatsEpoch(modelKeyValue: string): Promise<string> {
-  return readEpochFile(modelEpochPath(modelKeyValue), initialEpoch(`model:${modelKeyValue}`));
-}
-
-async function writeStatsEpoch(path: string, epoch: string): Promise<void> {
-  await mkdir(dirname(path), { recursive: true });
-  const tempPath = `${path}.${process.pid}.${Date.now()}.${randomUUID()}.tmp`;
-  await writeFile(tempPath, JSON.stringify({ version: 1, epoch, createdAt: Date.now() }, null, 2) + "\n", "utf8");
-  await rename(tempPath, path);
-}
-
-async function advanceGlobalStatsEpoch(): Promise<string> {
-  const epoch = `${Date.now()}-${randomUUID()}`;
-  await writeStatsEpoch(SHARD_GLOBAL_EPOCH_PATH, epoch);
-  return epoch;
-}
-
-async function advanceModelStatsEpoch(modelKeyValue: string): Promise<string> {
-  const epoch = `${Date.now()}-${randomUUID()}`;
-  await writeStatsEpoch(modelEpochPath(modelKeyValue), epoch);
-  return epoch;
-}
-
-function parsePersistedStatsShardV7(value: unknown): PersistedStatsShardV7 | undefined {
-  const record = asRecord(value);
-  const processRecord = asRecord(record?.process);
-  const lifecycle = asRecord(record?.lifecycle);
-  const rawModels = asRecord(record?.models);
-  if (
-    record?.version !== 7 ||
-    record.kind !== "pi-cache-optimizer-shard" ||
-    !isNonEmptyString(record.instanceId) ||
-    !isNonEmptyString(record.sessionHash) ||
-    !processRecord ||
-    !Number.isInteger(processRecord.pid) ||
-    !Number.isInteger(processRecord.ppid) ||
-    typeof processRecord.instanceStartedAt !== "number" ||
-    !lifecycle ||
-    (lifecycle.state !== "active" && lifecycle.state !== "closed") ||
-    typeof lifecycle.createdAt !== "number" ||
-    typeof lifecycle.updatedAt !== "number" ||
-    !isNonEmptyString(record.day) ||
-    !/^\d{4}-\d{2}-\d{2}$/.test(record.day) ||
-    !isNonEmptyString(record.globalEpoch) ||
-    !rawModels
-  ) return undefined;
-
-  const models: PersistedStatsShardV7["models"] = {};
-  for (const [key, rawEntry] of Object.entries(rawModels)) {
-    const entry = asRecord(rawEntry);
-    const stats = parseCacheStats(entry?.stats);
-    if (
-      !entry || !stats || !isNonEmptyString(entry.modelEpoch) ||
-      !isNonEmptyString(entry.provider) || !isNonEmptyString(entry.modelId) ||
-      key !== `${entry.provider.trim()}/${entry.modelId.trim()}`
-    ) continue;
-    models[key] = {
-      modelEpoch: entry.modelEpoch.trim(),
-      provider: entry.provider.trim(),
-      modelId: entry.modelId.trim(),
-      ...(isNonEmptyString(entry.modelName) ? { modelName: entry.modelName.trim() } : {}),
-      ...(isNonEmptyString(entry.api) ? { api: entry.api.trim() } : {}),
-      stats,
-    };
-  }
-
-  const lastRoutedModel = parsePersistedRoutedModelRef(record.lastRoutedModel);
-  return {
-    version: 7,
-    kind: "pi-cache-optimizer-shard",
-    instanceId: record.instanceId.trim(),
-    sessionHash: record.sessionHash.trim(),
-    process: {
-      pid: Number(processRecord.pid),
-      ppid: Number(processRecord.ppid),
-      instanceStartedAt: processRecord.instanceStartedAt,
-    },
-    lifecycle: {
-      state: lifecycle.state,
-      createdAt: lifecycle.createdAt,
-      updatedAt: lifecycle.updatedAt,
-      ...(typeof lifecycle.closedAt === "number" ? { closedAt: lifecycle.closedAt } : {}),
-    },
-    day: record.day,
-    globalEpoch: record.globalEpoch.trim(),
-    models,
-    ...(lastRoutedModel ? { lastRoutedModel } : {}),
-  };
-}
-
-async function writeStatsShardV7(path: string, shard: PersistedStatsShardV7): Promise<void> {
-  await mkdir(dirname(path), { recursive: true });
-  const tempPath = `${path}.${process.pid}.${Date.now()}.${randomUUID()}.tmp`;
-  await writeFile(tempPath, JSON.stringify(shard, null, 2) + "\n", "utf8");
-  await rename(tempPath, path);
-}
-
-async function readValidStatsShardsV7(directory: string = SHARD_FILES_DIR): Promise<PersistedStatsShardV7[]> {
-  let names: string[];
-  try {
-    names = await readdir(directory);
-  } catch (error) {
-    if (getErrorCode(error) === "ENOENT") return [];
-    throw error;
-  }
-  const shards: PersistedStatsShardV7[] = [];
-  for (const name of names) {
-    if (!/^[0-9a-f-]+\.json$/i.test(name)) continue;
-    const path = join(directory, name);
-    try {
-      const info = await lstat(path);
-      if (!info.isFile() || info.isSymbolicLink()) continue;
-      const parsed = parsePersistedStatsShardV7(JSON.parse(await readFile(path, "utf8")));
-      const filenameInstanceId = name.slice(0, -".json".length);
-      if (parsed && parsed.instanceId === filenameInstanceId) shards.push(parsed);
-    } catch {
-      // Ignore malformed or transiently unavailable shards. Atomic writers will
-      // publish a complete replacement on the next successful update.
-    }
-  }
-  return shards;
-}
-
-async function aggregateStatsShardsV7(
-  shards: PersistedStatsShardV7[],
-  day: string = currentLocalDay(),
-): Promise<ShardAggregate> {
-  const globalEpoch = await readGlobalStatsEpoch();
-  const modelEpochs = new Map<string, string>();
-  const result: ShardAggregate = {
-    bySession: {},
-    totalsByModel: {},
-    instancesBySession: {},
-    instancesBySessionModel: {},
-    sessionsByModel: {},
-    instancesByModel: {},
-    modelRefsByKey: {},
-    lastRoutedModelBySession: {},
-  };
-  const routedUpdatedAt = new Map<string, number>();
-  const modelRefUpdatedAt = new Map<string, number>();
-  const modelSessions = new Map<string, Set<string>>();
-
-  for (const shard of shards) {
-    if (shard.day !== day || shard.globalEpoch !== globalEpoch) continue;
-    let contributed = false;
-    if (shard.lastRoutedModel && (routedUpdatedAt.get(shard.sessionHash) ?? -1) < shard.lifecycle.updatedAt) {
-      routedUpdatedAt.set(shard.sessionHash, shard.lifecycle.updatedAt);
-      result.lastRoutedModelBySession[shard.sessionHash] = shard.lastRoutedModel;
-    }
-    for (const [key, entry] of Object.entries(shard.models)) {
-      let epoch = modelEpochs.get(key);
-      if (!epoch) {
-        epoch = await readModelStatsEpoch(key);
-        modelEpochs.set(key, epoch);
-      }
-      if (entry.modelEpoch !== epoch || entry.stats.day !== day) continue;
-      contributed = true;
-      const sessionModels = result.bySession[shard.sessionHash] ??= {};
-      sessionModels[key] = mergeCacheStatsForTotal(sessionModels[key], entry.stats);
-      result.totalsByModel[key] = mergeCacheStatsForTotal(result.totalsByModel[key], entry.stats);
-      result.instancesByModel[key] = (result.instancesByModel[key] ?? 0) + 1;
-      if ((modelRefUpdatedAt.get(key) ?? -1) < shard.lifecycle.updatedAt) {
-        modelRefUpdatedAt.set(key, shard.lifecycle.updatedAt);
-        result.modelRefsByKey[key] = {
-          provider: entry.provider,
-          id: entry.modelId,
-          name: entry.modelName ?? entry.modelId,
-        };
-      }
-      const sessionInstances = result.instancesBySessionModel[shard.sessionHash] ??= {};
-      sessionInstances[key] = (sessionInstances[key] ?? 0) + 1;
-      const sessions = modelSessions.get(key) ?? new Set<string>();
-      sessions.add(shard.sessionHash);
-      modelSessions.set(key, sessions);
-    }
-    if (contributed) {
-      result.instancesBySession[shard.sessionHash] = (result.instancesBySession[shard.sessionHash] ?? 0) + 1;
-    }
-  }
-  for (const [key, sessions] of modelSessions) result.sessionsByModel[key] = sessions.size;
-  return result;
-}
-
-async function loadStatsShardAggregateV7(directory: string = SHARD_FILES_DIR): Promise<ShardAggregate> {
-  return aggregateStatsShardsV7(await readValidStatsShardsV7(directory));
-}
-
-async function removeLegacyStatsFiles(): Promise<void> {
-  for (const path of [STATE_FILE_PATH, LEGACY_STATE_FILE_PATH]) {
-    try {
-      await unlink(path);
-    } catch (error) {
-      if (getErrorCode(error) !== "ENOENT") console.warn(`${LOG_PREFIX}: failed to remove obsolete stats file ${path}`, error);
-    }
-  }
-}
-
-async function cleanupStatsShardsV7(now = Date.now(), directory: string = SHARD_FILES_DIR): Promise<number> {
-  let names: string[];
-  try {
-    names = await readdir(directory);
-  } catch (error) {
-    return getErrorCode(error) === "ENOENT" ? 0 : Promise.reject(error);
-  }
-  const today = currentLocalDay();
-  let removed = 0;
-  for (const name of names) {
-    const isShard = /^[0-9a-f-]+\.json$/i.test(name);
-    const isTemp = name.endsWith(".tmp");
-    if (!isShard && !isTemp) continue;
-    const path = join(directory, name);
-    try {
-      const info = await lstat(path);
-      if (!info.isFile() || info.isSymbolicLink()) continue;
-      if (isTemp) {
-        if (now - info.mtimeMs < SHARD_TEMP_RETENTION_MS) continue;
-      } else {
-        const parsed = parsePersistedStatsShardV7(JSON.parse(await readFile(path, "utf8")));
-        if (parsed?.day === today) continue;
-        const updatedAt = parsed?.lifecycle.updatedAt ?? info.mtimeMs;
-        if (now - updatedAt < SHARD_RETENTION_MS) continue;
-        if (parsed?.lifecycle.state === "active" && isProcessAlive(parsed.process.pid)) continue;
-      }
-      await unlink(path);
-      removed += 1;
-    } catch {
-      // Best-effort maintenance must never block the extension.
-    }
-  }
-  return removed;
-}
-
-async function maybeCleanupStatsShardsV7(now = Date.now()): Promise<void> {
-  await mkdir(SHARD_MAINTENANCE_DIR, { recursive: true });
-  try {
-    const marker = await stat(SHARD_CLEANUP_MARKER_PATH);
-    if (now - marker.mtimeMs < SHARD_CLEANUP_INTERVAL_MS) return;
-  } catch {}
-
-  try {
-    await mkdir(SHARD_CLEANUP_LOCK_PATH);
-  } catch (error) {
-    if (getErrorCode(error) !== "EEXIST") return;
-    try {
-      const lock = await stat(SHARD_CLEANUP_LOCK_PATH);
-      if (now - lock.mtimeMs <= SHARD_CLEANUP_LOCK_STALE_MS) return;
-      await rm(SHARD_CLEANUP_LOCK_PATH, { recursive: true, force: true });
-      await mkdir(SHARD_CLEANUP_LOCK_PATH);
-    } catch {
-      return;
-    }
-  }
-
-  try {
-    await cleanupStatsShardsV7(now);
-    const tempPath = `${SHARD_CLEANUP_MARKER_PATH}.${process.pid}.${randomUUID()}.tmp`;
-    await writeFile(tempPath, `${now}\n`, "utf8");
-    await rename(tempPath, SHARD_CLEANUP_MARKER_PATH);
-  } finally {
-    await rm(SHARD_CLEANUP_LOCK_PATH, { recursive: true, force: true });
-  }
 }
 
 function isCompatCheckApplicable(model: PiModel): boolean {
