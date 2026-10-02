@@ -278,52 +278,12 @@ function getAnthropicTtlFallbackState(): AnthropicTtlFallbackStateV1 {
 
 let runtimeOptimizerEnabled = true;
 
-// WORM-flag: if optimizeSystemPrompt ever detects that candidate extraction
-// has accidentally truncated a structural marker (any XML tag or
-// HTML comment boundary marker present in the original prompt), we flip
-// this. publishStatus reads it once, appends a footer warning, then
-// resets it. The flag surface is kept separate from the regular
-// cache-stats counter so that a one-turn glitch doesn't poison the
-// persisted metrics.
-let promptTruncationDetected = false;
-
-// Timestamp (ms) of the most recent integrity truncation event.
-// Used by /cache-optimizer doctor to surface recovery guidance.
-// Reset to 0 on reload.
-let lastPromptIntegrityWarningAt = 0;
-
-/** Getter for lastPromptIntegrityWarningAt (exported for tests via __internals_for_tests). */
-function getLastPromptIntegrityWarningAt(): number {
-  return lastPromptIntegrityWarningAt;
-}
-
 // Minimum count of skills before compression is worth applying.
 // Below this, pi's verbose XML block is small enough that the overhead of
 // an additional one-line index isn't worth the loss of per-skill
 // description hints. The 31-skill snapshot in this repo was 13.3 KB; one
 // or two skills is well under 1 KB and not worth touching.
 const SKILL_COMPRESSION_MIN_COUNT = 4;
-
-// Minimum trimmed length for a candidate to qualify as a stable-prefix "part".
-//
-// `optimizeSystemPrompt` removes each uniquely occurring accepted candidate
-// from the dynamic remainder. Short or character-class candidates (think: `S`,
-// `- u`, `- (`, `- }`) are too likely to match unrelated prompt text, so they
-// are never eligible for lifting.
-//
-// The threshold also caps the upstream string-vs-array regression we saw with
-// trellis 0.5.16 / 0.6.0-beta.17 (subagent tool registration passing
-// `promptGuidelines: "<long string>"` instead of `["<long string>"]`, which
-// pi then iterates char-by-char). Even if a similar bug recurs upstream, this
-// extension will not lift its single-character byproducts into the stable
-// prefix candidate list.
-//
-// 8 chars is comfortably above all single-bullet (`- X` = 3 chars) and
-// short-token noise while leaving every legitimate guideline / tool snippet /
-// context-file payload above the bar. If a real future guideline is shorter
-// than 8 chars, the cost is that it is not lifted into the stable prefix; the
-// dynamic-remainder path still includes it untouched.
-const MIN_STABLE_CANDIDATE_LENGTH = 8;
 
 const ASSISTANT_MESSAGE_MODEL_TOKEN_KEYS = ["model", "name"];
 const OPENAI_REASONING_MODEL_PATTERN = /(^|[/\s:_-])o[1345]($|[-_.:/\s])/;
@@ -502,12 +462,6 @@ type UsageSnapshot = {
   totalInput: number;
 };
 
-type OptimizedSystemPrompt = {
-  systemPrompt: string;
-  stablePrefix: string;
-  changed: boolean;
-};
-
 type ToolOrderApi =
   | "openai-completions"
   | "openai-responses"
@@ -591,20 +545,6 @@ function escapeXml(value: string): string {
     .replace(/>/g, "&gt;")
     .replace(/\"/g, "&quot;")
     .replace(/'/g, "&apos;");
-}
-
-function isStableContextFilePath(filePath: string): boolean {
-  const normalized = filePath.replace(/\\/g, "/").toLowerCase();
-  const name = normalized.split("/").pop();
-
-  return (
-    name === "agents.md" ||
-    name === "claude.md" ||
-    name === "gemini.md" ||
-    name === "cursor.md" ||
-    normalized.startsWith(".trellis/spec/") ||
-    normalized.includes("/.trellis/spec/")
-  );
 }
 
 function isKnownToolOrderApi(api: unknown): api is ToolOrderApi {
@@ -938,49 +878,6 @@ function compressSkillsInSystemPrompt(
   return prompt.replace(verbose, () => compressed);
 }
 
-function buildStableCandidates(opts: BuildSystemPromptOptions): string[] {
-  const candidates: string[] = [];
-
-  if (opts.customPrompt) candidates.push(opts.customPrompt);
-  if (opts.appendSystemPrompt) candidates.push(opts.appendSystemPrompt);
-
-  const tools = opts.selectedTools ?? ["read", "bash", "edit", "write"];
-  const toolLines = tools
-    .filter((name) => opts.toolSnippets?.[name])
-    .map((name) => `- ${name}: ${opts.toolSnippets?.[name]}`);
-  if (toolLines.length > 0) {
-    candidates.push(`Available tools:\n${toolLines.join("\n")}`);
-  }
-
-  for (const guideline of opts.promptGuidelines ?? []) {
-    const normalized = guideline.trim();
-    if (normalized.length > 0) candidates.push(`- ${normalized}`);
-  }
-
-  for (const file of opts.contextFiles ?? []) {
-    // Provider caches work best when stable instructions are part of the earliest prefix.
-    // Only lift known-stable project/spec instruction files. Dynamic task/session context
-    // can be large too, so size alone must never make a context file cache-prefix material.
-    if (!isStableContextFilePath(file.path)) continue;
-    candidates.push(`## ${file.path}\n\n${file.content}`);
-    candidates.push(file.content);
-  }
-
-  if (opts.skills && opts.skills.length > 0) {
-    // Push BOTH forms so `optimizeSystemPrompt` finds whichever is
-    // actually present in the prompt. The `rest.includes(part)`
-    // short-circuit skips the form that isn't there. The two strings
-    // are mutually distinguishable (the verbose form contains the
-    // literal `<available_skills>` envelope; the compressed form
-    // contains `Skills under ` and no XML tags) so they cannot
-    // accidentally match each other.
-    candidates.push(formatSkillsForPrompt(opts.skills));
-    candidates.push(formatSkillsForPromptCompressed(opts.skills));
-  }
-
-  return candidates;
-}
-
 /**
  * Strip per-turn churn from trellis `<session-overview>` block.
  *
@@ -1026,156 +923,6 @@ function stripSessionOverviewChurn(prompt: string): string {
     .replace(/\nLine count:[^\n]*/g, "");
 
   return before + cleaned + after;
-}
-
-/**
- * Extract structural markers from a prompt for the integrity guard.
- *
- * The guard runs in `optimizeSystemPrompt` to catch cases where the
- * candidate extraction accidentally eats text inside
- * an extension-injected structural block (e.g., trellis
- * `<workflow-state>`, a hypothetical `<task-tracker>`, or AGENTS.md
- * `<!-- TRELLIS:START -->` markers). When the original prompt contains
- * a marker that the result is missing, we fall back to the original
- * prompt rather than ship a corrupted one.
- *
- * Three marker categories are recognized (covers ~99% of real-world
- * extension injection patterns in the pi ecosystem):
- *
- *   1. XML-style opening tags  `<tagname>` (lowercase, alpha-num + `_`/`-`)
- *   2. XML-style closing tags  `</tagname>`
- *   3. HTML comment START/END  `<!-- NAME:START -->` / `<!-- NAME:END -->`
- *
- * Tags with attributes (e.g., `<task id="42">`) are not currently emitted
- * by any pi extension we know of and are skipped to keep the regex tight.
- * Markdown headers, horizontal rules, and timestamp patterns are not
- * usable as guards because they have no closing form to verify.
- *
- * The check is deliberately set-based (presence/absence) rather than
- * count-based: a single occurrence per request is the universal
- * convention, and a count drop with the same set of unique tags would
- * be a different class of bug not catchable here.
- */
-function extractStructuralMarkers(prompt: string): {
-  openingTags: Set<string>;
-  closingTags: Set<string>;
-  commentMarkers: Set<string>;
-} {
-  const openingTags = new Set<string>();
-  const closingTags = new Set<string>();
-  const commentMarkers = new Set<string>();
-
-  // Opening tags: <tagname> with no attributes and no leading slash.
-  // Tagname must start with a letter and contain only alpha-num, `-`, `_`.
-  for (const match of prompt.matchAll(/<([a-z][a-z0-9_-]*)>/gi)) {
-    openingTags.add(match[1].toLowerCase());
-  }
-  // Closing tags: </tagname>
-  for (const match of prompt.matchAll(/<\/([a-z][a-z0-9_-]*)>/gi)) {
-    closingTags.add(match[1].toLowerCase());
-  }
-  // HTML comments with NAME:START or NAME:END inside.
-  // Trellis emits `<!-- TRELLIS:START -->` / `<!-- TRELLIS:END -->` in
-  // the AGENTS.md managed block; other extensions follow this convention.
-  for (const match of prompt.matchAll(/<!--\s*([A-Z][A-Z0-9_-]*):(START|END)\s*-->/g)) {
-    commentMarkers.add(`${match[1]}:${match[2]}`);
-  }
-
-  return { openingTags, closingTags, commentMarkers };
-}
-
-function optimizeSystemPrompt(
-  original: string,
-  opts: BuildSystemPromptOptions,
-): OptimizedSystemPrompt {
-  const stableParts: string[] = [];
-  const seen = new Set<string>();
-  let rest = original;
-
-  // Classify candidate ambiguity against one immutable snapshot. Candidates
-  // can be nested (a full context-file block also contains its bare content),
-  // so recomputing occurrence counts after each removal is unsafe: deleting
-  // the full block can make the dynamic copy of its bare content appear unique.
-  const candidates: string[] = [];
-  for (const candidate of buildStableCandidates(opts)) {
-    const part = candidate.trim();
-    if (!part || part.length < MIN_STABLE_CANDIDATE_LENGTH || seen.has(part)) continue;
-    seen.add(part);
-    candidates.push(part);
-  }
-
-  const initialRemainder = rest;
-  const occurrenceCount = new Map<string, number>();
-  for (const part of candidates) {
-    let count = 0;
-    let searchFrom = 0;
-    while (searchFrom < initialRemainder.length) {
-      const occurrence = initialRemainder.indexOf(part, searchFrom);
-      if (occurrence < 0) break;
-      count++;
-      if (count > 1) break;
-      searchFrom = occurrence + 1;
-    }
-    occurrenceCount.set(part, count);
-  }
-
-  // Stable layer: content likely to be identical across sessions/turns.
-  // Short / single-char candidates are dropped: see MIN_STABLE_CANDIDATE_LENGTH.
-  for (const part of candidates) {
-    if (occurrenceCount.get(part) !== 1) continue;
-
-    const firstOccurrence = rest.indexOf(part);
-    if (firstOccurrence < 0) continue;
-
-    stableParts.push(part);
-    rest = rest.slice(0, firstOccurrence) + rest.slice(firstOccurrence + part.length);
-  }
-
-  const stablePrefix = stableParts.join("\n\n");
-
-  // Dynamic layer: git status, active task context, recent session context, etc.
-  const dynamicRemainder = rest.trim();
-
-  if (stableParts.length === 0) {
-    return { systemPrompt: original, stablePrefix: "", changed: false };
-  }
-
-  const systemPrompt =
-    stablePrefix +
-    (dynamicRemainder.length > 0 ? "\n\n---\n\n" + dynamicRemainder : "");
-
-  // Sanity check: scan ALL structural markers (XML tags + HTML comment
-  // boundary markers) in the original and verify each one survives the
-  // reorder. If any marker drops, candidate extraction ate something it
-  // shouldn't have — fall back to the original
-  // prompt and flag the footer warning. This is provider-agnostic and
-  // extension-agnostic: trellis `<workflow-state>`, a hypothetical
-  // `<task-tracker>`, AGENTS.md `<!-- TRELLIS:START -->`, etc., are all
-  // protected without code changes when new extensions ship.
-  //
-  // Our skills compression runs BEFORE optimizeSystemPrompt and replaces
-  // pi's verbose `<available_skills>` block with a compressed text
-  // section that has no XML tag. So `original` here (post-compression)
-  // does not contain `<available_skills>` and the result doesn't either
-  // — no false positive.
-  const originalMarkers = extractStructuralMarkers(original);
-  const resultMarkers = extractStructuralMarkers(systemPrompt);
-
-  const missing =
-    [...originalMarkers.openingTags].some((tag) => !resultMarkers.openingTags.has(tag)) ||
-    [...originalMarkers.closingTags].some((tag) => !resultMarkers.closingTags.has(tag)) ||
-    [...originalMarkers.commentMarkers].some((m) => !resultMarkers.commentMarkers.has(m));
-
-  if (missing) {
-    promptTruncationDetected = true;
-    return { systemPrompt: original, stablePrefix: "", changed: false };
-  }
-
-  return {
-    systemPrompt,
-    stablePrefix,
-    changed: true,
-  };
 }
 
 function clampPromptCacheKey(key: string | undefined): string | undefined {
@@ -7097,23 +6844,6 @@ function buildDoctorDiagnosis(model: PiModel, options: { promptCacheRetention400
     }
   }
 
-  // ── Integrity diagnostics ──
-  if (lastPromptIntegrityWarningAt > 0) {
-    const ago = Date.now() - lastPromptIntegrityWarningAt;
-    const mins = Math.floor(ago / 60000);
-    if (mins < 5) {
-      lines.push("");
-      lines.push("⚠️  Recent prompt integrity issue detected:");
-      lines.push(`   Last detected ${mins > 0 ? `${mins} min` : `${Math.floor(ago / 1000)}s`} ago. The prompt reorder was`);
-      lines.push(`   skipped on that turn to preserve structural markers.`);
-      lines.push(`   Common causes: extension system prompt format change, substring collision.`);
-      lines.push(`   Steps:`);
-      lines.push(`     1. Run /reload to reset (may clear transient issues).`);
-      lines.push(`     2. Set PI_CACHE_OPTIMIZER_NO_PROMPT_REWRITE=1 & /reload to disable reorder.`);
-      lines.push(`     3. If persistent, file an issue with this doctor output.`);
-    }
-  }
-
   return lines.join("\n");
 }
 
@@ -10239,14 +9969,10 @@ async function prepareModelsJsonRollback(
 // (.trellis/tasks/.../verify.ts) can exercise them. They are not part of the
 // extension's public API; pi only invokes the default export below.
 export const __internals_for_tests = {
-  buildStableCandidates,
-  optimizeSystemPrompt,
   stripSessionOverviewChurn,
-  extractStructuralMarkers,
   formatSkillsForPrompt,
   formatSkillsForPromptCompressed,
   compressSkillsInSystemPrompt,
-  MIN_STABLE_CANDIDATE_LENGTH,
   SKILL_COMPRESSION_MIN_COUNT,
   NO_PROMPT_REWRITE_ENV,
   isEnabledEnv,
@@ -10452,7 +10178,6 @@ export const __internals_for_tests = {
   TOOL_ORDER_ENV,
   isToolOrderEnabled,
   // Integrity diagnostics
-  getLastPromptIntegrityWarningAt,
   // Diagnostic command helpers
   buildDoctorDiagnosis,
   buildCompatDiagnosis,
@@ -10654,7 +10379,6 @@ export default function (pi: ExtensionAPI) {
   const modelNameByKey = new Map<string, string>();
   const modelEpochByKey = new Map<string, string>();
   let currentGlobalEpoch = initialEpoch("global");
-  let integrityNotificationShown = false;
   let currentSessionId = "";
   let currentSessionHash = "";
   let currentSessionHashSet = false;
@@ -11064,8 +10788,6 @@ export default function (pi: ExtensionAPI) {
     modelNameByKey.clear();
     currentGlobalEpoch = await readGlobalStatsEpoch();
     if (reason === "reload") {
-      lastPromptIntegrityWarningAt = 0;
-      integrityNotificationShown = false;
       clearRecentSamples();
     }
     await removeLegacyStatsFiles();
@@ -11129,30 +10851,6 @@ export default function (pi: ExtensionAPI) {
         : undefined;
       const statsText = formatCacheStats(adapter, stats ?? emptyCacheStats());
       statusText = runtimeOptimizerEnabled ? statsText : `Cache Optimizer disabled · ${statsText}`;
-    }
-
-    // If optimizeSystemPrompt detected structural truncation on this or
-    // a recent turn, flag it once in the footer so the user knows to
-    // /reload before continuing. The flag resets after emission so a
-    // single-turn glitch does not permanently taint the footer.
-    if (promptTruncationDetected && statusText !== undefined) {
-      statusText = statusText + " ⚠️ integrity";
-      promptTruncationDetected = false;
-      lastPromptIntegrityWarningAt = Date.now();
-
-      // One-time notification with recovery steps (per session).
-      if (!integrityNotificationShown) {
-        integrityNotificationShown = true;
-        ctx.ui.notify(
-          `⚠️ ${LOG_PREFIX}: A prompt structural marker was lost during reorder on this turn. ` +
-          `The original prompt was used instead to preserve integrity.\n\n` +
-          `Recovery steps:\n` +
-          `1. Run /reload to reset (may clear transient issues).\n` +
-          `2. Set PI_CACHE_OPTIMIZER_NO_PROMPT_REWRITE=1 and /reload to disable reorder.\n` +
-          `3. If persistent, run /cache-optimizer doctor and file an issue (no API keys/prompts).`,
-          "warning",
-        );
-      }
     }
 
     // ⚠️ compat footer marker: if the active model has adapter-specific
@@ -11280,39 +10978,15 @@ export default function (pi: ExtensionAPI) {
       ? findModelInRegistry(_ctx.modelRegistry, routeSnapshot.provider, routeSnapshot.modelId) ?? routeSnapshotToPiModel(routeSnapshot, _ctx.model)
       : undefined;
 
-    // ────────────────────────────────────────────────────────────────
-    // OpenAI Responses-family: no reordering (codex-responses + responses + azure responses)
-    //
-    // OpenAI's Responses API endpoints — both the Codex backend
-    // (openai-codex-responses, chatgpt.com) and the public
-    // Responses API (openai-responses, api.openai.com / Copilot) —
-    // have two properties that make client-side prompt *reordering*
-    // unnecessary and potentially harmful:
-    //
-    //  1. Server-managed caching: both APIs send `prompt_cache_key`
-    //     (= Pi session id) in every request body, so the server
-    //     already maintains a stable cache without prefix ordering.
-    //
-    //  2. Stricter content-safety filtering: the Codex backend in
-    //     particular has a product-level safety filter that flags
-    //     reordered prompts (tool snippets / guidelines lifted above
-    //     the assistant role) as potential prompt-injection, returning
-    //     `content_filter` and blocking tool calls (notably
-    //     `subagent`). The public Responses API shares the same
-    //     filter framework and could behave similarly.
-    //
-    // Only the reorder step is skipped for these APIs. The in-place edits
-    // (session-overview churn strip, skill-list compression) keep every
-    // section where Pi put it, so they do not trigger that filter: a
-    // 32-trial skill-loading check on openai-codex/gpt-6-luna with the
-    // compressed list showed no content_filter and unchanged skill choice.
-    // ────────────────────────────────────────────────────────────────
+    // The edits below are in-place: Pi's section order is never changed. Pi >= 0.86
+    // already assembles sections from stable to variable (preamble, tools, rules,
+    // docs, project context, skills, cwd), so lifting content to the front would
+    // only produce empty section shells and move the identity text away from the
+    // start; measured prefix stability was identical with and without it.
     const model = routedModel ?? _ctx.model;
-    const reorderAllowed = !(model && isResponsesPromptRewriteBypassApi(model.api));
     // Pi 0.99+ native virtual selections pick the physical model per request,
-    // after this system prompt is built, so the API cannot be decided
-    // here. A route may reach the safety-filtered Codex backend; keep Pi's
-    // prompt byte-for-byte instead of reordering it.
+    // after this system prompt is built, so the API cannot be decided here.
+    // Keep Pi's prompt byte-for-byte unless the route is explicitly known safe.
     if (isNativeVirtualModel(_ctx.model) && !canRewriteNativeVirtualPrompt(_ctx.model, _ctx)) {
       return {};
     }
@@ -11320,9 +10994,9 @@ export default function (pi: ExtensionAPI) {
     if (!runtimeOptimizerEnabled) return {};
 
     // Global opt-out: PI_CACHE_OPTIMIZER_NO_PROMPT_REWRITE=1 bypasses all
-    // prompt mutations below (session-overview churn strip, skill compression,
-    // and stable-prefix reordering). Footer stats and the OpenAI
-    // prompt_cache_key fallback remain active.
+    // prompt mutations below (session-overview churn strip and skill
+    // compression). Footer stats and the OpenAI prompt_cache_key fallback
+    // remain active.
     if (!featureEnabled("promptRewrite", NO_PROMPT_REWRITE_ENV, true)) return {};
 
     // Step 1: strip per-turn churn from <session-overview>.
@@ -11340,64 +11014,36 @@ export default function (pi: ExtensionAPI) {
       strippedPrompt,
       event.systemPromptOptions,
     );
+    const changed = compressedPrompt !== event.systemPrompt && compressedPrompt.trim().length > 0;
+    const finalPrompt = changed ? compressedPrompt : event.systemPrompt;
 
-    if (!reorderAllowed) {
-      // Responses family: in-place edits only. No cache hint is published,
-      // matching the previous full bypass for router-protocol consumers.
-      return compressedPrompt !== event.systemPrompt && compressedPrompt.trim().length > 0
-        ? { systemPrompt: compressedPrompt }
-        : {};
+    // Responses family (codex-responses, responses, azure-responses): Pi owns the
+    // prompt_cache_key there and no cache hint is published for router consumers.
+    if (model && isResponsesPromptRewriteBypassApi(model.api)) {
+      return changed ? { systemPrompt: finalPrompt } : {};
     }
-
-    // Step 3: lift stable content above dynamic content for cache
-    // stability. Operates on the (stripped + compressed) prompt so the
-    // cache key derived from `stablePrefix` reflects what actually
-    // ships to the provider.
-    const optimized = optimizeSystemPrompt(compressedPrompt, event.systemPromptOptions);
 
     const promptCacheKey = getSessionPromptCacheKey(_ctx);
     const cacheRetention = process.env[PI_CACHE_RETENTION_ENV] === LONG_CACHE_RETENTION_VALUE ? LONG_CACHE_RETENTION_VALUE : undefined;
-    const publishHint = (systemPrompt: string): void => {
-      latestCacheHint = {
-        sessionIdHash: currentSessionHashSet ? currentSessionHash : sessionHashFromContext(_ctx),
-        virtualProvider: routeSnapshot?.virtualProvider ?? _ctx.model?.provider,
-        virtualModelId: routeSnapshot?.virtualModelId ?? _ctx.model?.id,
-        upstreamProvider: routeSnapshot?.provider ?? model?.provider,
-        upstreamModelId: routeSnapshot?.modelId ?? model?.id,
-        api: model?.api,
-        systemPrompt,
-        promptCacheKey,
-        cacheRetention,
-        timestamp: Date.now(),
-      };
-      const globals = getProtocolGlobal();
-      if (promptCacheKey) {
-        globals.__piCacheOptimizerCacheKey__ = promptCacheKey;
-      } else {
-        delete globals.__piCacheOptimizerCacheKey__;
-      }
+    latestCacheHint = {
+      sessionIdHash: currentSessionHashSet ? currentSessionHash : sessionHashFromContext(_ctx),
+      virtualProvider: routeSnapshot?.virtualProvider ?? _ctx.model?.provider,
+      virtualModelId: routeSnapshot?.virtualModelId ?? _ctx.model?.id,
+      upstreamProvider: routeSnapshot?.provider ?? model?.provider,
+      upstreamModelId: routeSnapshot?.modelId ?? model?.id,
+      api: model?.api,
+      systemPrompt: finalPrompt,
+      promptCacheKey,
+      cacheRetention,
+      timestamp: Date.now(),
     };
-
-    if (optimized.changed && optimized.systemPrompt.trim().length > 0) {
-      publishHint(optimized.systemPrompt);
-      return { systemPrompt: optimized.systemPrompt };
+    const globals = getProtocolGlobal();
+    if (promptCacheKey) {
+      globals.__piCacheOptimizerCacheKey__ = promptCacheKey;
+    } else {
+      delete globals.__piCacheOptimizerCacheKey__;
     }
-
-    // Reorder didn't apply but compression might have. Return the
-    // compressed (or stripped) prompt directly so we still benefit from
-    // the volume cut even when reorder is a no-op (e.g., short sessions
-    // where no stable candidate is long enough).
-    if (compressedPrompt !== strippedPrompt && compressedPrompt.trim().length > 0) {
-      publishHint(compressedPrompt);
-      return { systemPrompt: compressedPrompt };
-    }
-    if (strippedPrompt !== event.systemPrompt && strippedPrompt.trim().length > 0) {
-      publishHint(strippedPrompt);
-      return { systemPrompt: strippedPrompt };
-    }
-
-    publishHint(event.systemPrompt);
-    return {};
+    return changed ? { systemPrompt: finalPrompt } : {};
   });
 
   pi.on("before_provider_headers", (event, ctx) => {

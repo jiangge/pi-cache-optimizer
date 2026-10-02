@@ -33,8 +33,7 @@
 
 ## 功能
 
-- 将能唯一定位的稳定 system prompt 内容移动到动态上下文之前。如果同一候选出现多次（例如动态上下文引用了它），则保持原样，避免删除错误的那一处。
-- 将 Pi 的 skill 列表压缩为按目录分组的 Markdown 列表，保留每个 skill 的名称和完整描述（只去掉 XML 外壳和重复路径），并移除 session-overview 中的易变字段。这两项都是原位修改，对 OpenAI Responses/Codex 模型同样生效；只有稳定前缀重排会在这些模型上跳过。
+- 将 Pi 的 skill 列表压缩为按目录分组的 Markdown 列表，保留每个 skill 的名称和完整描述（只去掉 XML 外壳和重复路径），并移除 session-overview 中的易变字段。这两项都是原位修改，不会在 Pi 的提示段之间搬移内容，对 OpenAI Responses/Codex 模型同样生效。（早期版本还会把“稳定”内容提到提示最前面；Pi 0.86 起已按从稳定到易变的顺序拼段，实测前缀稳定性没有差别，因此移除了这一步。）
 - 在 Pi / provider compat 支持时请求长缓存保留。
 - 仅对 `openai-completions` 代理请求，在没有有效 key 时使用 Pi session id 保守补 `prompt_cache_key`；Pi 1.0+ 已负责 Responses/Codex transport 的 key。
 - 对缺少缓存 / session-affinity compat 的第三方 OpenAI-compatible 代理给出一次性提醒。
@@ -381,7 +380,7 @@ Pi 0.99 允许扩展通过 `pi.registerVirtualModel()` 注册虚拟模型。选�
 - 请求 hook 从 provider payload 中读取实际派发的模型 id，并在已配置凭证的物理模型中匹配。`prompt_cache_key` fallback、`prompt_cache_retention` 安全规则、Anthropic TTL 修复以及按模型关闭 `prompt_cache_key` 的规则都按该物理模型生效。如果多个已配置凭证的 provider 共用同一个 id 且处理方式不同，扩展不会猜测，而是跳过依赖模型身份的请求修改。
 - Footer 统计以及 `/cache-optimizer doctor`、`compat`、`stats`、`reset`、`fix` 使用当前会话分支上最近一次应答的物理模型，与 Pi 自身显示的路由模型和 context 上限一致。doctor 与 compat 会同时标出虚拟选择和该物理模型。
 - 在 Pi 路由第一个请求之前，footer 保持为空，诊断会提示先发送一个 prompt。
-- 虚拟选择默认不做 prompt 改写：Pi 在构建 system prompt 之后才决定物理模型，重排后的 prompt 不应被送到有安全过滤的 Codex 路由。只有设置 `PI_CACHE_OPTIMIZER_VIRTUAL_REWRITE=1` 且 routing registry 暴露完整候选链、所有候选都是已知的非 Responses / 非 Codex transport 时，才允许改写；路由未知或信息不完整时仍保持原 prompt。
+- 虚拟选择默认不做 prompt 改写：Pi 在构建 system prompt 之后才决定物理模型，改写后的 prompt 不应被送到后端未知的路由。只有设置 `PI_CACHE_OPTIMIZER_VIRTUAL_REWRITE=1` 且 routing registry 暴露完整候选链、所有候选都是已知的非 Responses / 非 Codex transport 时，才允许改写；路由未知或信息不完整时仍保持原 prompt。
 - Session-affinity header 桥接同样跳过，因为 Pi 在 payload 生成之前就构造请求 header。Pi 仍会发送物理模型自身配置的 affinity header。
 
 ## Router / Virtual-channel 扩展作者指南

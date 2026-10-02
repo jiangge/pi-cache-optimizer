@@ -96,7 +96,7 @@ adapter token.
 | RWKV | `rwkv` | `RWKV cache` |
 | Cohere Aya | `aya-expanse`, or safe-boundary pattern `aya` (avoid `maya`/`payara`) | `Aya cache` |
 
-If no adapter matches, the footer status MUST be cleared (set to `undefined`). Every non-empty status published by this extension MUST begin with the ownership separator `· `. This prefix is applied at the final footer-status assembly boundary, so it also covers disabled-mode, router-restored, integrity-warning, and compat-warning variants without changing `/cache-optimizer stats` output or the internal separators.
+If no adapter matches, the footer status MUST be cleared (set to `undefined`). Every non-empty status published by this extension MUST begin with the ownership separator `· `. This prefix is applied at the final footer-status assembly boundary, so it also covers disabled-mode, router-restored, and compat-warning variants without changing `/cache-optimizer stats` output or the internal separators.
 
 ### Provider transport caveats (do not paper over)
 
@@ -213,7 +213,7 @@ core's own cache transport.
   key already supplied by Pi. Do not add `supportsPromptCacheKey` to Pi's
   `models.json`, because Pi 0.99.2 does not define that compat field.
 * All `before_agent_start` prompt mutations (session-overview churn strip,
-  skill compression, stable-prefix reorder) can be disabled persistently with:
+  skill compression) can be disabled persistently with:
   `PI_CACHE_OPTIMIZER_NO_PROMPT_REWRITE=1` (truthy: `1`, `true`, `yes`, `on`).
   Footer stats and the OpenAI `prompt_cache_key` fallback remain active.
 * Runtime `/cache-optimizer disable` is broader but process-local: it disables prompt
@@ -606,125 +606,41 @@ per six hours. A lease older than one hour is recoverable.
 * Old shard/temp retention, active-PID conservatism, lease recovery, malformed files,
   and symlink safety are covered.
 * `fs.watch` is TUI-only and no permanent fallback poll is installed.
-* Existing adapter, routing, request-hook, compat-fix, TTL, prompt-integrity, typecheck,
+* Existing adapter, routing, request-hook, compat-fix, TTL, typecheck,
   pack, and diff checks remain green.
 
 ---
 
-## System prompt reordering invariants
+## System prompt rewrite invariants
 
-`index.ts` exposes `optimizeSystemPrompt(original, opts)` which is invoked
-from the `before_agent_start` hook to lift stable content above dynamic
-content. Candidate extraction MUST use a verified source offset. Before any
-candidate is removed, occurrence counts for all normalized/deduplicated candidates
-MUST be computed against the same immutable initial remainder. A candidate is
-eligible only when that initial count is exactly one; if a second occurrence
-exists (including an overlapping occurrence), the candidate is ambiguous and
-MUST be skipped. This also covers nested candidates such as a full context-file
-block plus its bare content: removing the full block must not make the dynamic
-copy of its bare content appear newly unique.
+The `before_agent_start` hook edits Pi's rendered system prompt **in place**
+and never moves content between Pi's prompt sections. Two edits exist:
+`stripSessionOverviewChurn` and `compressSkillsInSystemPrompt`.
+
+An earlier version also lifted "stable" content (AGENTS.md, guidelines, the
+skills block) to the front of the prompt (`optimizeSystemPrompt`). It was
+removed because Pi >= 0.86 already assembles sections from stable to
+variable (preamble, tools, rules, docs, project context, skills, cwd), a
+4-turn real Pi 1.0 workload measured identical prefix stability with and
+without the lift (97.45 % both), and the lift left empty `<skills>` /
+`<project_instructions>` shells and pushed the identity text ~18 KB down.
 
 ### Hard contracts
 
-* The candidate filter MUST drop any trimmed candidate shorter than
-  `MIN_STABLE_CANDIDATE_LENGTH` (currently `8`). That threshold is
-  intentionally larger than every short bullet form pi may emit (`- X` is
-  3 chars, `- ab` is 4, etc.) so single-character or two-character noise
-  cannot become a `replace()` target.
-* The threshold is a CACHE-CORRECTNESS contract, not a UX preference.
-  Lowering it must be paired with a different mangle-resistant strategy
-  (e.g. structural lift instead of `replace`-based extraction). Do not
-  weaken the threshold without that.
-* The reorder MUST remain idempotent: identical `(original, opts)` MUST
-  produce byte-identical `(systemPrompt, stablePrefix)`. No timestamps,
-  random salts, or iteration order that depends on `Map`/`Set` insertion
-  order driven by external data.
-* `buildStableCandidates` MAY return strings that the optimizer then
-  rejects (it is a pure shaper). The defensive filter MUST live inside
-  `optimizeSystemPrompt`, not inside `buildStableCandidates`, so that the
-  rejection rationale stays close to the source-offset extraction.
-* Ambiguous candidates MUST leave the entire prompt byte-for-byte unchanged for
-  that candidate. Do not select the first or last occurrence heuristically.
-
-### Wrong vs Correct: candidate occurrence timing
-
-#### Wrong
-
-```ts
-// `rest` shrinks after each accepted candidate, so a nested candidate can
-// become falsely unique and delete its dynamic copy.
-if (rest.indexOf(part, rest.indexOf(part) + 1) < 0) {
-  rest = rest.replace(part, "");
-}
-```
-
-#### Correct
-
-```ts
-// Classify every candidate against one immutable snapshot before any removal.
-const initialRemainder = original;
-const counts = countOverlappingOccurrences(candidates, initialRemainder);
-for (const part of candidates) {
-  if (counts.get(part) !== 1) continue;
-  rest = removeAtVerifiedOffset(rest, part);
-}
-```
-
-### Common mistake: upstream string-vs-array regression in tool registrations
-
-**Symptom**: Pi's emitted system prompt contains long runs of single-character
-bullets such as:
-
-```
-- S
-- u
-- b
-- -
-- a
-- g
-- e
-- n
-- t
-```
-
-**Cause**: A pi extension registers a tool with `promptGuidelines` set to a
-*string* instead of `string[]`. Pi's `_normalizePromptGuidelines`
-(`@earendil-works/pi-coding-agent/dist/core/agent-session.js`) does
-`for (const g of guidelines) { ... }`, which iterates a string
-character-by-character. Each unique character becomes its own guideline.
-
-**Observed at**: `@mindfoldhq/trellis` 0.5.16 (latest stable as of 2026-05-17)
-and 0.6.0-beta.17 — file `src/templates/pi/extensions/trellis/index.ts`,
-`subagent` tool registration. Tracked locally in
-`.pi/extensions/trellis/index.ts` with a `LOCAL PATCH` comment until
-upstream ships the fix.
-
-**Fix at the source** (in the offending tool registration):
-
-```ts
-// Wrong
-pi.registerTool?.({
-  name: "subagent",
-  promptGuidelines: SUBAGENT_DISPATCH_PROTOCOL, // string — iterated char by char
-});
-
-// Correct
-pi.registerTool?.({
-  name: "subagent",
-  promptGuidelines: [SUBAGENT_DISPATCH_PROTOCOL], // string[]
-});
-```
-
-**Defense in this extension**: even when pi feeds us such a polluted
-`promptGuidelines` array, `optimizeSystemPrompt` MUST NOT lift the
-resulting `- X` bullets into the stable prefix or use them as `replace()`
-targets. The `MIN_STABLE_CANDIDATE_LENGTH = 8` filter handles this; the
-verification harness in any task that touches this code path SHOULD
-include a test that mirrors the regression (build candidates that include
-single-character entries, assert the dynamic remainder is byte-equivalent
-to a control run with the noise pre-filtered).
-
----
+* The hook MUST NOT reorder, lift, or relocate any part of Pi's prompt.
+  Every edit replaces text where Pi put it.
+* Edits MUST be idempotent and deterministic: identical `(prompt, options)`
+  MUST produce byte-identical output. No timestamps, random salts, or
+  iteration order that depends on external data.
+* Any edit anchored on Pi's own text MUST compare against Pi's real
+  `buildSystemPrompt` output (see the contract tests), not only against a
+  re-implementation of Pi's formatter; if the anchor is not found the edit
+  MUST no-op.
+* Replacement strings passed to `String.replace` MUST use a function, so
+  `$&`-style patterns in user text (skill descriptions) are never interpreted.
+* Responses-family APIs (`openai-codex-responses`, `openai-responses`,
+  `azure-openai-responses`) receive the same in-place edits but no cache hint
+  is published for router consumers.
 
 ## Native virtual models (Pi 0.99+)
 
@@ -990,94 +906,72 @@ const statsKey = `${responseModel.provider}/${responseModel.id}`;
 
 ### What counts as cacheable-and-stable vs cacheable-and-volatile
 
-Pi's system prompt combines several layers. From most-to-least
-cacheable:
+Pi >= 0.86 renders sections in a fixed order. A change in any section
+invalidates the cache from that section onward, **including the whole
+conversation history** that follows the system prompt, so volatile content
+belongs at the end (where Pi already puts it).
 
-| Layer | Stability | Cache impact |
+| Layer (in Pi's order) | Stability | Cache impact |
 | ----- | --------- | ------------ |
-| Pi base preamble (tools + guidelines + doc paths) | Stable across sessions unless tools change | Always in stable prefix; 100 % cacheable |
-| `AGENTS.md` / project context files | Stable per repo; changes only on commit | Lifted to stable prefix by `optimizeSystemPrompt`; 100 % cacheable |
-| Skills XML `<available_skills>` block | Deterministic from `opts.skills` (stable unless you install/remove a skill) | Lifted to stable prefix; now **compressed by default** (see below) |
-| Trellis `<session-overview>` | Mostly stable; tail (commits, journal line count) churns per turn | Currently in dynamic remainder (tail churn). Do not lift in this extension — that's trellis's own ordering decision. |
-| Trellis `<workflow-state>` per-turn breadcrumb | Changes per task activation, per turn | Always in dynamic remainder. Small (~1 KB). |
-| Date + cwd footer | Date changes once/day; cwd stable | In dynamic remainder; ~100 bytes, not worth lifting. |
+| preamble, tools, rules, docs | Stable unless the tool set changes | Stable prefix |
+| `AGENTS.md` / project context files | Stable per repo | Stable prefix |
+| Skills `<skills>` section | Deterministic from `opts.skills` | Stable; **compressed by default** (see below) |
+| cwd | Stable within a session | Stable |
+| Extension-appended text (Trellis `<session-overview>`, `<workflow-state>`) | Churns per turn | Dynamic tail; churn fields are stripped |
 
 ### Skills compression contract
 
-`formatSkillsForPromptCompressed` replaces pi's per-skill four-line XML
-block (`<name>`, `<description>`, `<location>`) with a **single text
-block** grouped by skill-root directory:
+`formatSkillsForPromptCompressed` replaces pi's per-skill XML elements
+(`<skill>`, `<name>`, `<description>`, `<location>`) with a Markdown list
+grouped by skills-root directory. **Every skill's name and full description
+are kept**; only the XML envelope and the repeated per-skill path are removed:
 
 ```
 The following skills provide specialized instructions for specific tasks.
-When a skill name matches the task you are doing, read the SKILL.md at
-the listed location to load the full instructions. When a SKILL.md
-references a relative path, resolve it against the skill directory
-(parent of SKILL.md / dirname of the path) and use that absolute path in
-tool commands.
+Use the read tool to load a skill's file when the task matches its description.
+When a skill file references a relative path, ...
 
-Skills under /home/jiang/.agents/skills/<name>/SKILL.md:
-  adapt, animate, arrange, audit, ...
+## Skills in /home/u/.agents/skills/
+Each skill file is at /home/u/.agents/skills/<name>/SKILL.md
 
-Skills under /home/jiang/jiang/source/.../pi-cache-optimizer/.pi/skills/<name>/SKILL.md:
-  trellis-before-dev, trellis-brainstorm, ...
+- adapt: Adapt designs to work across different screen sizes, ...
+- animate: ...
 ```
 
 Key properties:
 
-* **Deterministic**: same `skills` array → byte-identical output,
-  independent of input order. Groups sort by root path; names within
-  each group sort alphabetically.
-* **Idempotent**: running `compressSkillsInSystemPrompt` twice is a
-  no-op (the verbose form is already gone after the first pass).
-* **Opt-out**: `PI_CACHE_OPTIMIZER_NO_SKILL_COMPRESSION=1` disables.
-* **Threshold**: compression fires only when the visible skill count
-  is ≥ `SKILL_COMPRESSION_MIN_COUNT` (currently 4). Below that, the
-  verbose XML block is ≤ ~1 KB and the loss of description hints is
-  not worth the micro-savings.
-* **Anchored substitution**: compression only fires when the verbose
-  output of `formatSkillsForPrompt(opts.skills)` is found verbatim in
-  the prompt (substring match, not regex). If pi changes its emitter
-  format, the substitution no-ops rather than mangling.
-* **Cache-preserving**: the compressed skills block remains
-  deterministic from `opts.skills` and is lifted to the stable prefix
-  by `optimizeSystemPrompt`. No new cache-churn is introduced.
-* **Size cut**: measured at ~93 % reduction of the skills section
-  (13.3 KB → ~0.9 KB on the 31-skill snapshot) and ~55 % of total
-  system prompt (22 KB → ~9 KB).
-
-### What MUST NOT be lifted into the stable prefix
-
-* `<workflow-state>` per-turn breadcrumb — dynamic, small, safe in
-  the tail.
-* `<session-overview>` tail fields (recent commits, journal line
-  count) — change per-turn when the user commits or writes journal.
-  **These are now proactively stripped by `stripSessionOverviewChurn`**
-  before reorder, so the remaining session-overview (branch, active
-  tasks, paths) becomes stable and cacheable.
-* Date / cwd footer — 100 bytes, not worth lifting.
-* Any extension-appended block that contains a timestamp, random
-  salt, insertion-order-dependent iteration, or env-var-derived
-  string. The `before_agent_start` reorder MUST remain idempotent
-  (identical inputs → byte-identical output).
+* **Descriptions are never dropped.** The model chooses a skill from its
+  description (agentskills.io: "a description is essential for disclosure").
+  Whitespace runs collapse to one space so each skill is one bullet.
+* **Paths are never guessed.** A skill that does not follow
+  `<root>/<name>/SKILL.md` (different directory or file name, Windows-style
+  path) is listed under "Skills with explicit file paths" with its full path.
+* **Deterministic and order-independent**: roots and names are sorted.
+* **Idempotent**: a second pass finds no verbose block and no-ops.
+* **Opt-out**: `PI_CACHE_OPTIMIZER_NO_SKILL_COMPRESSION=1` (or
+  `/cache-optimizer config skill-compression off`).
+* **Threshold**: fires only with >= `SKILL_COMPRESSION_MIN_COUNT` (4) visible skills.
+* **Anchored on the trimmed block**: since Pi 0.86 the block is trimmed and
+  wrapped in `<skills>`; older Pi appended it with leading newlines. Matching
+  the untrimmed text silently disabled compression on every Pi >= 0.86
+  (regression fixed; guarded by tests built on Pi's real `buildSystemPrompt`).
+* **Measured**: ~30 % smaller skills block (54 skills, real paths), about
+  1.8k tokens per uncached request. Skill choice and read paths were
+  identical to Pi's XML list on `openai-codex/gpt-6-luna` (32 trials).
 
 ### Session-overview churn strip
 
-`stripSessionOverviewChurn(prompt)` surgically removes three fields
-from inside `<session-overview>`:
+`stripSessionOverviewChurn(prompt)` removes three fields from inside
+`<session-overview>`:
 * `## RECENT COMMITS` block (from heading through next `##` heading
   or end of block).
 * `Working directory: ...` line.
 * `Line count: N / NNNN` line.
 
-The remaining fields (DEVELOPER, Branch, CURRENT TASK, ACTIVE
-TASKS, MY TASKS, JOURNAL FILE active-file-only, PACKAGES, PATHS)
-are stable within a session and survive the strip intact.
-
-Called in `before_agent_start` BEFORE skills compression and reorder.
-No opt-out; the stripped fields carry zero task-execution information
-that the model cannot obtain from `git log` / `git status` / `wc -l`
-in the rare case it actually needs them.
+The remaining fields are stable within a session. Called in
+`before_agent_start` before skills compression. This strip accounts for the
+whole measured prefix-stability gain of the prompt rewrite. No opt-out
+besides `PI_CACHE_OPTIMIZER_NO_PROMPT_REWRITE=1`.
 
 ## Opt-in deterministic tool ordering
 
@@ -1086,63 +980,6 @@ in the rare case it actually needs them.
 Sorting is stable by exact tool name with original index as a tie-breaker. Unknown/custom transports, unsupported wrappers, malformed tools, missing/blank names, and other unverified shapes are no-ops. A top-level tool `cache_control` field on any supported shape is a deliberate no-op because native Anthropic and OpenAI-compatible Anthropic cache formatting attach breakpoints to a specific tool. Anthropic `defer_loading` tools are also no-ops because array order encodes immediate/deferred groups.
 
 The helper MUST retain tool-object and unrelated-field identity (including Google/Vertex `AbortSignal`) by shallow-cloning only root/container/tool arrays. The request hook MUST compose a changed payload with existing Anthropic TTL repair, retention safety, prompt-cache-key fallback, routing, and adapter behavior; it MUST NOT add trailing Anthropic breakpoints. The feature has no durable state. Unset the variable (or set a non-truthy value) and run `/reload` to roll back.
-
-### Truncation guard (structural marker integrity)
-
-`optimizeSystemPrompt` uses `String.replace(part, "")` to extract
-stable candidates from the dynamic remainder. If an upstream extension
-(e.g. trellis, or any future extension) injects text that shares a
-substring with a candidate, `replace()` removes the **first** occurrence
-— the one in the stable block. This is usually safe because the copy
-inside the dynamic injection stays.
-
-When it is **not** safe: if a candidate substring appears ONLY inside
-an injected block (not in any stable block), the first (and only)
-occurrence IS inside the injection — `replace()` eats dynamic content.
-
-Guard:
-* Before reorder, scan `original` for **all** structural markers. Three
-  marker categories are recognized:
-  - XML opening tags `<tagname>` (lowercase, alphanumeric + `-`/`_`)
-  - XML closing tags `</tagname>`
-  - HTML comment START/END pairs `<!-- NAME:START --> ... <!-- NAME:END -->`
-* After reorder, scan the result for the same markers.
-* If any marker present in `original` is missing from the result →
-  **fall back to the original prompt** (no reorder), flip
-  `promptTruncationDetected` flag. The model receives a complete
-  prompt; cache stability is sacrificed for integrity.
-* `publishStatus` reads the flag once, appends ` ⚠️ integrity` to
-  the footer status line, and resets the flag — the warning is
-  visible for exactly one status update.
-* The guard is **extension-agnostic**: trellis `<workflow-state>`,
-  hypothetical `<task-tracker>`, AGENTS.md `<!-- TRELLIS:START -->`,
-  or any future extension's structural markers are all protected
-  without code changes when new extensions ship.
-* Tags with attributes (`<task id="42">`) are deliberately not picked
-  up: the pi extension ecosystem currently does not emit them, and
-  including them would require a more permissive regex that risks
-  false positives on prose like `<3` or `<= x`.
-* Markdown headers, horizontal rules, and timestamp patterns are not
-  used as guards: they have no closing form and cannot reliably
-  signal "missing in result".
-
-When the user sees ` ⚠️ integrity` in the footer:
-1. The prompt sent to the model is the **original** (extension-injected)
-   prompt — no reorder was applied on that turn.
-2. The cause is almost always an upstream format change (e.g. trellis
-   update, or a new extension introducing a substring collision).
-3. `/reload` may help if the collision depends on per-turn state;
-   otherwise, degrades gracefully (cache miss, no prompt corruption).
-
-### Integrity diagnostics
-
-When `⚠️ integrity` first triggers in a session, a one-time notification
-with recovery steps is shown. The `lastPromptIntegrityWarningAt` timestamp
-is updated on every integrity event and preserved for the session. The
-`/cache-optimizer doctor` command shows integrity diagnosis (with recovery
-steps) if an event was detected within the last 5 minutes, helping users
-diagnose without prompt content or API key exposure. On `/reload` the
-timestamp is reset to 0 and the one-time notification is re-armed.
 
 ---
 
@@ -1172,8 +1009,6 @@ Rules:
 * The marker is one-shot per model key (provider/id). It shows once and persists
   while that model remains active and compat is still missing.
 * When the model is switched or its compat is fixed, the marker clears.
-* The marker coexists with `⚠️ integrity` — both can appear:
-  `· OpenAI cache 0/0·0M/0M 0.0% ⚠️ integrity ⚠️ compat`
 * The marker uses adapter-aware `describeMissingCacheCompatForModel` internally.
   For generic OpenAI-compatible proxies this delegates to
   `describeMissingOpenAICompatibleProxyCompat`; for DeepSeek-like models it
@@ -1592,7 +1427,7 @@ compat). It does NOT read or expose:
 | `/cache-optimizer` (no args) with UI supports select | Shows interactive selection menu (Enable / Disable / Doctor / Stats / Compat / Fix / Rollback / Reset / Cancel); choosing Fix or Rollback executes the same confirmed transaction handler as direct invocation |
 | `/cache-optimizer` (no args) without UI | Text help lists `enable`, `disable`, `doctor`, `stats`, `compat`, `fix`, `rollback`, and `reset` subcommands plus runtime state |
 | Footer status for generic proxy after `/cache-optimizer fix` added `sendSessionAffinityHeaders` but `supportsLongCacheRetention` remains absent | No `⚠️ compat`; doctor/compat may still show optional long-retention guidance, but the model is considered safely configured |
-| Every non-empty extension footer status | Begins with `· `, including disabled-mode, router-restored, integrity-warning, and compat-warning variants; other extension statuses remain visibly separated |
+| Every non-empty extension footer status | Begins with `· `, including disabled-mode, router-restored, and compat-warning variants; other extension statuses remain visibly separated |
 | `/cache-optimizer` argument completion | Native `getArgumentCompletions` offers top-level commands including `rollback`, `config`, `config footer-mode`, and `total`/`session`/`process`, filters by prefix, tolerates surrounding whitespace, and returns `null` for unknown prefixes |
 | Footer status when compat is fixed or model changes | `⚠️ compat` marker clears |
 | `/cache-optimizer fix` with API-logged-in model not in models.json (interactive UI) | For an existing provider and affinity-only missing value, previews one provider-level compat edit when no explicit/runtime override shadows it; otherwise previews a compat-only `modelOverrides[modelId]` entry. Both paths confirm, write atomically with backup/receipt, and validate the effective precedence result. |

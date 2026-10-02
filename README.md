@@ -33,8 +33,7 @@ Pi extension for improving provider-side KV / prompt cache hit rates. It keeps s
 
 ## What it does
 
-- Reorders uniquely identifiable stable system-prompt content before dynamic context. If the same candidate appears more than once (for example, quoted inside dynamic context), it is left unchanged to avoid removing the wrong occurrence.
-- Compresses Pi's skill list into a grouped Markdown list that keeps every skill name and description (only the XML envelope and repeated paths are removed), and strips session-overview churn. Both are in-place edits and also apply to OpenAI Responses/Codex models; only the stable-prefix reordering is skipped there.
+- Compresses Pi's skill list into a grouped Markdown list that keeps every skill name and description (only the XML envelope and repeated paths are removed), and strips session-overview churn. Both are in-place edits that never move content between Pi's prompt sections, and they also apply to OpenAI Responses/Codex models. (Earlier versions also lifted "stable" content to the front of the prompt; Pi >= 0.86 already orders its sections from stable to variable, and measured prefix stability was identical, so that step was removed.)
 - Requests long cache retention when Pi/provider compat supports it.
 - Adds a conservative session-id `prompt_cache_key` fallback for `openai-completions` proxy payloads when no effective key exists. Pi 1.0+ owns this field for Responses/Codex transports.
 - Warns once for third-party OpenAI-compatible proxies missing cache/session-affinity compat flags.
@@ -382,7 +381,7 @@ Pi 0.99 lets extensions register virtual models with `pi.registerVirtualModel()`
 - Request hooks read the dispatched model id from the provider payload and match it against physical models with configured credentials. The `prompt_cache_key` fallback, `prompt_cache_retention` safety, Anthropic TTL repair, and per-model `prompt_cache_key` omit rules then apply to that physical model. If several credentialed providers share the id and would be treated differently, the extension does not guess; identity-dependent request changes are skipped.
 - Footer stats and `/cache-optimizer doctor`, `compat`, `stats`, `reset`, and `fix` use the physical model that answered last on the current session branch, matching Pi's own routed-model display and context limits. Doctor and compat name both the virtual selection and that physical model.
 - Before Pi routes the first request, the footer stays empty and diagnostics ask you to send a prompt first.
-- Prompt rewriting is skipped for virtual selections by default: Pi picks the physical model after the system prompt is built, and a reordered prompt must not reach a safety-filtered Codex route. `PI_CACHE_OPTIMIZER_VIRTUAL_REWRITE=1` is an explicit opt-in only when the routing registry exposes a complete candidate chain and every candidate is a known non-Responses, non-Codex transport; unknown or incomplete routes remain unchanged.
+- Prompt rewriting is skipped for virtual selections by default: Pi picks the physical model after the system prompt is built, and the rewritten prompt is not sent to a route whose backend is unknown. `PI_CACHE_OPTIMIZER_VIRTUAL_REWRITE=1` is an explicit opt-in only when the routing registry exposes a complete candidate chain and every candidate is a known non-Responses, non-Codex transport; unknown or incomplete routes remain unchanged.
 - The session-affinity header bridge is skipped as well, because Pi builds request headers before the payload exists. Pi still sends the physical model's own configured affinity headers.
 
 ## For router / virtual-channel extension authors

@@ -558,7 +558,7 @@ describe("native virtual model hooks", () => {
   });
 
 
-  test("Responses-family models get in-place edits but never reordering", async () => {
+  test("every API gets in-place edits only and Pi's section order is never changed", async () => {
     const { hooks } = setup();
     const sourceInfo = { path: "", source: "local", scope: "user", origin: "top-level" };
     const skills = ["alpha", "beta", "gamma", "delta"].map((name) => ({
@@ -595,9 +595,14 @@ describe("native virtual model hooks", () => {
       assert.ok(!out.includes("RECENT COMMITS"), `${codex.api}: churn stripped`);
     }
 
-    // The same prompt on a Chat Completions model is still reordered.
+    // Chat Completions models get the identical in-place treatment: nothing is lifted out of its section.
     const completions = await hooks.get("before_agent_start")!(event, context(physical("proxy", "kimi-k3"))) as { systemPrompt?: string };
-    assert.ok(!completions.systemPrompt?.startsWith("You are a coding assistant."));
+    const out = completions.systemPrompt ?? "";
+    assert.ok(out.startsWith("You are a coding assistant.\n<project_context>"), "completions: section order kept");
+    assert.ok(out.includes(`<project_instructions path="/repo/AGENTS.md">\n${agents}`), "completions: AGENTS.md stays in its section");
+    assert.ok(!out.includes("<available_skills>") && out.includes("- alpha: alpha skill description"), "completions: skills compressed");
+    assert.ok(!out.includes("RECENT COMMITS"), "completions: churn stripped");
+    assert.ok(!/<skills>\n\s*\n<\/skills>/.test(out), "completions: no empty section shells");
   });
 
   test("nested codemode tool calls do not refresh the footer on their own", async () => {
