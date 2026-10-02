@@ -54,6 +54,7 @@ for (const group of WORKLOAD_GROUPS) {
 }
 await proxy.close();
 upstream.close();
+rmSync(process.env.BENCH_AGENTS_DIR!, { recursive: true, force: true });
 
 const rows: RecordedRequest[] = readFileSync(proxy.logFile, "utf8").trim().split("\n").filter(Boolean).map((l) => JSON.parse(l));
 console.log("group  reqs  promptChars  stability(LCP/prompt, turns>=2)  key  retentionParam  tools  systemChars");
