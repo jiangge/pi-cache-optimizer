@@ -1,9 +1,10 @@
-import { type ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { createHash } from "node:crypto";
 import { LOG_PREFIX, type PiModel, asRecord, getNumber, isNonEmptyString, lower } from "./common.ts";
 import { findLastExactModelDefinition } from "./compat-config.ts";
 import { featureEnabled } from "./config.ts";
 import { ROUTED_FALLBACK_MODEL_SYMBOL, getAssistantRecord, isNativeVirtualModel, isResponsesPromptRewriteBypassApi, modelKey, readEffectiveCompatConfig } from "./model-identity.ts";
+import { clampPromptCacheKey } from "./request-payload.ts";
+import { type ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { createHash } from "node:crypto";
 
 export const VIRTUAL_REWRITE_ENV = "PI_CACHE_OPTIMIZER_VIRTUAL_REWRITE";
 
@@ -518,4 +519,34 @@ export function installCacheHintsService(
 
 export function isRouterModel(model: PiModel | undefined): boolean {
   return lower(model?.provider) === "router";
+}
+
+export const PI_CACHE_HINTS_OWNER_SYMBOL = Symbol.for("pi.cache.optimizer.hints-owner.v1");
+
+export type PiCacheHintSnapshot = PiCacheHintsInput & PiCacheHintsOutput & {
+  timestamp: number;
+};
+
+export function getSessionPromptCacheKey(ctx: ExtensionContext): string | undefined {
+  return clampPromptCacheKey(ctx.sessionManager.getSessionId());
+}
+
+export function isCacheHintsServiceV1(value: unknown): value is PiCacheHintsV1 {
+  const record = asRecord(value);
+  return !!record && record.version === 1 && typeof record.getHints === "function";
+}
+
+export function getCacheHintsService(): PiCacheHintsV1 | undefined {
+  const candidate = getProtocolGlobal()[PI_CACHE_HINTS_SYMBOL];
+  return isCacheHintsServiceV1(candidate) ? candidate : undefined;
+}
+
+export function markOptimizerOwnedCacheHintsService(service: PiCacheHintsV1): PiCacheHintsV1 {
+  (service as PiCacheHintsV1 & Record<symbol, unknown>)[PI_CACHE_HINTS_OWNER_SYMBOL] = true;
+  return service;
+}
+
+export function isOptimizerOwnedCacheHintsService(value: unknown): boolean {
+  return typeof value === "object" && value !== null &&
+    (value as Record<symbol, unknown>)[PI_CACHE_HINTS_OWNER_SYMBOL] === true;
 }

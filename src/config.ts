@@ -1,7 +1,9 @@
 import { atomicCreateTextFileNoReplace, atomicReplaceTextFilePreservingMode, hashText, withModelsJsonTransactionLock } from "./atomic-fs.ts";
 import { LOG_PREFIX, asRecord, getErrorCode, isNonEmptyString } from "./common.ts";
 import { STATE_DIR } from "./paths.ts";
-import { STARTUP_CACHE_RETENTION_ENV, requestLongCacheRetention, restoreCacheRetentionEnv } from "./retention.ts";
+import { NO_SKILL_COMPRESSION_ENV } from "./prompt-rewrite.ts";
+import { PI_CACHE_RETENTION_ENV, STARTUP_CACHE_RETENTION_ENV, requestLongCacheRetention, restoreCacheRetentionEnv } from "./retention.ts";
+import { VIRTUAL_REWRITE_ENV } from "./routing.ts";
 import { readFileSync } from "node:fs";
 import { lstat, mkdir, readFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
@@ -273,3 +275,51 @@ export function setRuntimeOptimizerEnabled(enabled: boolean, env: MutableEnv = p
 export function isRuntimeOptimizerEnabled(): boolean {
   return runtimeOptimizerEnabled;
 }
+
+export function readPersistedFooterMode(configPath: string = CONFIG_FILE_PATH): FooterStatsMode | undefined {
+  return readPersistedCacheOptimizerConfig(configPath).footerMode;
+}
+
+export function getOptimizerRuntimeModeLines(): string[] {
+  const state = runtimeOptimizerEnabled ? "enabled" : "disabled";
+  const lines: string[] = [];
+  lines.push(`Runtime state: ${state}`);
+  lines.push(`• Prompt rewrite: ${runtimeOptimizerEnabled && featureEnabled("promptRewrite", NO_PROMPT_REWRITE_ENV, true) ? "on" : "off"}`);
+  lines.push(`• Native virtual rewrite: ${featureEnabled("virtualRewrite", VIRTUAL_REWRITE_ENV, false) ? "opt-in" : "off"}`);
+  lines.push(`• Skill compression: ${featureEnabled("skillCompression", NO_SKILL_COMPRESSION_ENV, true) ? "on" : "off"}`);
+  lines.push(`• Deterministic tool ordering: ${isToolOrderEnabled() ? "on (verified built-in payloads, opt-in)" : "off"}`);
+  lines.push(`• OpenAI prompt_cache_key fallback: ${shouldInjectOpenAIPromptCacheKey() ? "on" : "off"}`);
+  lines.push(`• Footer cache stats: on${runtimeOptimizerEnabled ? "" : " (comparison mode)"}`);
+  lines.push(`• Compat warnings: ${runtimeOptimizerEnabled ? "on" : "off"}`);
+  lines.push(`• ${PI_CACHE_RETENTION_ENV}: ${process.env[PI_CACHE_RETENTION_ENV] ?? "(unset)"}`);
+  lines.push(`• Persistent feature overrides: ${Object.keys(persistedCacheOptimizerConfig.features ?? {}).length > 0 ? "configured" : "none"}`);
+  if (!runtimeOptimizerEnabled) {
+    lines.push("This is a current-process switch. Run /reload or restart Pi to return to startup behavior.");
+  } else if (!featureEnabled("promptRewrite", NO_PROMPT_REWRITE_ENV, true) || !shouldInjectOpenAIPromptCacheKey()) {
+    lines.push("Some features are still disabled by environment variables.");
+  }
+  return lines;
+}
+
+export function formatPersistentFeatureConfig(): string {
+  const features = persistedCacheOptimizerConfig.features ?? {};
+  const lines = ["Persistent feature configuration:"];
+  const entries: Array<[string, PersistedCacheOptimizerFeature, string, boolean]> = [
+    ["Prompt rewrite", "promptRewrite", NO_PROMPT_REWRITE_ENV, true],
+    ["Native virtual rewrite", "virtualRewrite", VIRTUAL_REWRITE_ENV, false],
+    ["Skill compression", "skillCompression", NO_SKILL_COMPRESSION_ENV, true],
+    ["OpenAI cache key", "openAICacheKey", NO_OPENAI_CACHE_KEY_ENV, true],
+    ["Tool ordering", "toolOrder", TOOL_ORDER_ENV, false],
+  ];
+  for (const [label, feature, envName, defaultValue] of entries) {
+    const source = features[feature] !== undefined ? "config" : process.env[envName] !== undefined ? "env" : "default";
+    lines.push(`• ${label}: ${featureEnabled(feature, envName, defaultValue) ? "on" : "off"} (${source})`);
+  }
+  return lines.join("\n");
+}
+
+export function formatOptimizerRuntimeMode(): string {
+  return getOptimizerRuntimeModeLines().join("\n");
+}
+
+export const NO_PROMPT_REWRITE_ENV = "PI_CACHE_OPTIMIZER_NO_PROMPT_REWRITE";

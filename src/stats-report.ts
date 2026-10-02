@@ -1,12 +1,13 @@
-import { mkdir, readFile, rename, unlink, writeFile } from "node:fs/promises";
-import { join } from "node:path";
-import { type CacheProviderAdapter, selectAdapterForModel } from "./adapters.ts";
+import { type CacheProviderAdapter, isVirtualRoutingModel, selectAdapterForModel } from "./adapters.ts";
 import { LOG_PREFIX, type PiModel, asRecord, getErrorCode, getNonNegativeNumber } from "./common.ts";
 import { type FooterStatsMode } from "./config.ts";
 import { modelKey } from "./model-identity.ts";
 import { STATE_DIR } from "./paths.ts";
 import { CACHE_PROVIDER_IDS, type CacheProviderId, type CacheStats, LEGACY_STATE_FILE_PATH, type PersistedRoutedModelRef, STATE_FILE_PATH, type ShardAggregate, currentLocalDay, emptyCacheStats, mergeCacheStatsForTotal, parseCacheStats, parsePersistedRoutedModelRef } from "./stats-store.ts";
 import { usageRecordFromAssistant } from "./usage.ts";
+import { type ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { mkdir, readFile, rename, unlink, writeFile } from "node:fs/promises";
+import { join } from "node:path";
 
 export type CacheStatsState = {
   statsByModel: Record<string, CacheStats>;
@@ -659,4 +660,121 @@ export async function writePersistedCacheStats(
 
   await writeFile(tempPath, JSON.stringify(payload, null, 2) + "\n", "utf8");
   await rename(tempPath, STATE_FILE_PATH);
+}
+
+/** Maximum number of recent samples kept per model key (in-memory only, not persisted). */
+export const MAX_RECENT_SAMPLES = 50;
+
+export function keyForModelExt(model: { provider: string; id: string }): string {
+  return `${model.provider}/${model.id}`;
+}
+
+/**
+ * For direct (non-virtual-routing) providers, the upstream API may normalize or
+ * rename the model id echoed in its response (e.g. a request to
+ * `zai-org/GLM-5.2-FP8` returns a message whose `model` field is
+ * `GLM5.2-FP8`). Writing stats under the echoed name fragments the bucket
+ * away from the active-model key the footer reads (`totalsByModel[ctx.model]`),
+ * so the footer shows 0% even when the backend is hitting cache.
+ *
+ * When the response-derived statsModel differs from the active context model
+ * only in name (same provider + same cache adapter), consolidate stats back to
+ * the active model identity. Virtual routing providers are excluded — their
+ * message-local metadata is authoritative for router correctness (spec:
+ * `message_end` MUST prefer assistant message metadata).
+ *
+ * Never merges across providers or across adapters, so genuinely different
+ * models are never combined.
+ */
+export function consolidateDirectProviderStatsModel(
+  statsModel: PiModel | undefined,
+  ctxModel: PiModel | undefined,
+  ctx?: Pick<ExtensionContext, "sessionManager">,
+): PiModel | undefined {
+  if (!statsModel || !ctxModel) return statsModel;
+  // Virtual routing providers keep message-local stats identity.
+  if (isVirtualRoutingModel(ctxModel, ctx)) return statsModel;
+  // Only consolidate within the same provider.
+  if (statsModel.provider !== ctxModel.provider) return statsModel;
+  // Only consolidate when both resolve to the same cache adapter object, so
+  // genuinely different models sharing a provider (or sharing the same adapter
+  // family id, e.g. GPT and GLM both report family id "openai") are never
+  // merged. `selectAdapterForModel` returns the precise adapter object, so
+  // object identity is the correct criterion.
+  const statsAdapter = selectAdapterForModel(statsModel);
+  const ctxAdapter = selectAdapterForModel(ctxModel);
+  if (!statsAdapter || !ctxAdapter || statsAdapter !== ctxAdapter) return statsModel;
+  // No drift — nothing to consolidate.
+  if (statsModel.id === ctxModel.id) return statsModel;
+  // Consolidate: pin stats to the active-model identity the footer reads.
+  return {
+    ...statsModel,
+    id: ctxModel.id,
+    name: ctxModel.name || ctxModel.id,
+  };
+}
+
+export function buildExactRouterStatusEntry(
+  sessionHash: string | undefined,
+  statsByModel: Record<string, CacheStats>,
+  lastRoutedModel: PersistedRoutedModelRef | undefined,
+  totalsByModel: Record<string, CacheStats> = {},
+  mode: FooterStatsMode = "total",
+  processByModel: Record<string, CacheStats> = {},
+): { model: PiModel; adapter: CacheProviderAdapter; stats: CacheStats } | undefined {
+  if (!sessionHash || !lastRoutedModel) return undefined;
+
+  const model = routedModelRefToPiModel(lastRoutedModel);
+  const adapter = selectAdapterForModel(model);
+  if (!adapter) return undefined;
+
+  return {
+    model,
+    adapter,
+    stats: selectFooterStatsForModel(mode, sessionHash, statsByModel, totalsByModel, model, processByModel) ?? emptyCacheStats(),
+  };
+}
+
+export function findBestRouterModelStats(
+  mode: FooterStatsMode,
+  sessionHash: string | undefined,
+  statsByModel: Record<string, CacheStats>,
+  totalsByModel: Record<string, CacheStats>,
+  processByModel: Record<string, CacheStats> = {},
+): { model: PiModel; adapter: CacheProviderAdapter; stats: CacheStats } | undefined {
+  const entries = mode === "total"
+    ? Object.entries(totalsByModel)
+    : mode === "process"
+      ? Object.entries(processByModel)
+    : sessionHash
+      ? Object.entries(statsByModel)
+        .filter(([key]) => key.startsWith(`${sessionHash}:`))
+        .map(([key, stats]) => [key.slice(sessionHash.length + 1), stats] as const)
+      : [];
+  let best: { model: PiModel; adapter: CacheProviderAdapter; stats: CacheStats; total: number } | undefined;
+
+  for (const [modelKeyPart, stats] of entries) {
+    const slashIdx = modelKeyPart.indexOf("/");
+    if (slashIdx < 1 || slashIdx >= modelKeyPart.length - 1) continue;
+    const model = routedModelRefToPiModel({
+      provider: modelKeyPart.slice(0, slashIdx),
+      id: modelKeyPart.slice(slashIdx + 1),
+    });
+    const adapter = selectAdapterForModel(model);
+    if (!adapter) continue;
+    if (!best || stats.totalRequests > best.total) {
+      best = { model, adapter, stats, total: stats.totalRequests };
+    }
+  }
+
+  return best ? { model: best.model, adapter: best.adapter, stats: best.stats } : undefined;
+}
+
+export function createSerializedAsyncRunner(): <T>(operation: () => Promise<T>) => Promise<T> {
+  let tail: Promise<unknown> = Promise.resolve();
+  return <T>(operation: () => Promise<T>): Promise<T> => {
+    const result = tail.then(operation);
+    tail = result.catch(() => undefined);
+    return result;
+  };
 }
