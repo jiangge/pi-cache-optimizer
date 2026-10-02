@@ -14,6 +14,7 @@ const OPTIMIZER_ENV = [
   "PI_CACHE_OPTIMIZER_NO_OPENAI_CACHE_KEY",
   "PI_CACHE_OPTIMIZER_OPENAI_CACHE_KEY",
   "PI_CACHE_OPTIMIZER_NO_PROMPT_REWRITE",
+  "PI_CACHE_OPTIMIZER_VIRTUAL_REWRITE",
   "PI_CACHE_OPTIMIZER_NO_SKILL_COMPRESSION",
   "PI_CACHE_OPTIMIZER_TOOL_ORDER",
   "PI_CACHE_OPTIMIZER_FOOTER_MODE",
@@ -517,6 +518,7 @@ describe("native virtual model hooks", () => {
     const routed = await hooks.get("before_agent_start")!(event, context(virtualModel(), { branch: [assistantEntry("proxy", "kimi-k3", "openai-completions")], all: [proxy] }));
     assert.deepEqual(routed, {});
   });
+
 
   test("nested codemode tool calls do not refresh the footer on their own", async () => {
     const { hooks } = setup();
