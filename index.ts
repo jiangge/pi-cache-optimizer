@@ -23,121 +23,18 @@ import { CACHE_PROVIDER_IDS, type CacheProviderId, type CacheStats, LEGACY_STATE
 import { ALEPH_MODEL_PATTERN, ARCTIC_MODEL_PATTERN, AYA_MODEL_PATTERN, DOUBAO_SEED_PATTERN, MIMO_MODEL_PATTERN, MPT_MODEL_PATTERN, NOVA_MODEL_PATTERN, ORION_MODEL_PATTERN, PHI_MODEL_PATTERN, PI_VIRTUAL_MODEL_API, PPLX_MODEL_PATTERN, ROUTED_FALLBACK_MODEL_SYMBOL, XAI_MODEL_PATTERN, YI_MODEL_PATTERN, getAssistantRecord, getCompat, isAnthropicMessagesApi, isAssistantMessage, isClaudeLikeAssistantMessage, isClaudeLikeModel, isDeepSeekLikeAssistantMessage, isDeepSeekLikeModel, isGeminiLikeAssistantMessage, isGeminiLikeModel, isKimiCodingEmptySignatureModel, isKnownThirdPartyOpenAIEndpoint, isMistralConversationsApi, isNativeVirtualModel, isOfficialOpenAIBaseUrl, isOpenAICompatibleApi, isOpenAICompatibleProxyApi, isOpenAIFamilyAssistantMessage, isOpenAIFamilyModel, isOpenAIFamilyToken, isPiBuiltInLlamaCppModel, isResponsesPromptRewriteBypassApi, isRoutedFallbackModel, isValidModelsConfigForEffectiveCompat, modelKey, readEffectiveCompatConfig } from "./src/model-identity.ts";
 import { invalidateModelsConfigCache } from "./src/model-identity.ts";
 import { getAnthropicRawUsage, getDeepSeekRawUsage, getGeminiRawUsage, getOpenAIRawUsage, normalizeWithFallback, usageRecordFromAssistant } from "./src/usage.ts";
-
-type MutableEnv = Record<string, string | undefined>;
-
-type CacheRetentionEnvSnapshot = {
-  wasSet: boolean;
-  value?: string;
-};
-
-const PI_CACHE_RETENTION_ENV = "PI_CACHE_RETENTION";
-const LONG_CACHE_RETENTION_VALUE = "long";
-const PI_CACHE_RETENTION_BASELINE_SYMBOL = Symbol.for("pi.cache.optimizer.retention-baseline.v1");
-type CacheRetentionBaselineV1 = {
-  version: 1;
-  snapshot: CacheRetentionEnvSnapshot;
-};
-
-function captureCacheRetentionEnv(env: MutableEnv = process.env): CacheRetentionEnvSnapshot {
-  return {
-    wasSet: Object.prototype.hasOwnProperty.call(env, PI_CACHE_RETENTION_ENV),
-    value: env[PI_CACHE_RETENTION_ENV],
-  };
-}
-
-function requestLongCacheRetention(env: MutableEnv = process.env): void {
-  if (!env[PI_CACHE_RETENTION_ENV] || env[PI_CACHE_RETENTION_ENV] !== LONG_CACHE_RETENTION_VALUE) {
-    env[PI_CACHE_RETENTION_ENV] = LONG_CACHE_RETENTION_VALUE;
-  }
-}
-
-function restoreCacheRetentionEnv(snapshot: CacheRetentionEnvSnapshot, env: MutableEnv = process.env): void {
-  if (snapshot.wasSet) {
-    env[PI_CACHE_RETENTION_ENV] = snapshot.value;
-  } else {
-    delete env[PI_CACHE_RETENTION_ENV];
-  }
-}
-
-function isCacheRetentionBaselineV1(value: unknown): value is CacheRetentionBaselineV1 {
-  if (typeof value !== "object" || value === null) return false;
-  const record = value as { version?: unknown; snapshot?: unknown };
-  if (record.version !== 1 || typeof record.snapshot !== "object" || record.snapshot === null) return false;
-  const snapshot = record.snapshot as { wasSet?: unknown; value?: unknown };
-  return typeof snapshot.wasSet === "boolean" &&
-    (snapshot.value === undefined || typeof snapshot.value === "string");
-}
-
-function getOrCaptureCacheRetentionBaseline(
-  env: MutableEnv = process.env,
-  globals: Record<symbol, unknown> = globalThis as Record<symbol, unknown>,
-): CacheRetentionEnvSnapshot {
-  const existing = globals[PI_CACHE_RETENTION_BASELINE_SYMBOL];
-  if (isCacheRetentionBaselineV1(existing)) return { ...existing.snapshot };
-
-  const snapshot = captureCacheRetentionEnv(env);
-  globals[PI_CACHE_RETENTION_BASELINE_SYMBOL] = { version: 1, snapshot: { ...snapshot } };
-  return snapshot;
-}
-
-const STARTUP_CACHE_RETENTION_ENV = getOrCaptureCacheRetentionBaseline();
-
-/**
- * Pi Cache Optimizer (formerly pi-deepseek-cache-optimizer)
- *
- * What it does:
- * 1. Reorders Pi's system prompt so stable content is sent before dynamic context.
- * 2. Sets PI_CACHE_RETENTION=long at extension load time.
- * 3. Warns once for provider/model cache compat gaps where the signal is conservative.
- * 4. Shows lightweight persisted provider-specific cache stats in Pi's footer.
- * 5. Offers disabled-by-default deterministic built-in tool ordering when
- *    explicitly opted in.
- *
- * Provider prompt/KV caches are provider-side and best-effort. This extension improves
- * the odds of cache hits; it cannot guarantee hits, especially through proxies.
- */
-
-// ============================================================
-// Automatically request long prompt-cache retention when Pi supports it.
-// /cache-optimizer disable restores the startup value for this Pi process.
-// ============================================================
-requestLongCacheRetention();
+import { CONFIG_FILE_PATH, FOOTER_MODE_ENV, type FooterStatsMode, type MutableEnv, NO_OPENAI_CACHE_KEY_ENV, type PersistedCacheOptimizerConfig, type PersistedCacheOptimizerConfigV2, type PersistedCacheOptimizerConfigV3, type PersistedCacheOptimizerFeature, TOOL_ORDER_ENV, featureEnabled, footerStatsMode, isEnabledEnv, isToolOrderEnabled, normalizePersistedCacheOptimizerConfig, parseFooterStatsMode, parsePersistedCacheOptimizerConfig, persistedCacheOptimizerConfig, persistedFooterStatsMode, readPersistedCacheOptimizerConfig, resolveFooterStatsMode, runtimeOptimizerEnabled, setPersistedCacheOptimizerConfig, shouldInjectOpenAIPromptCacheKey, writePersistedCacheOptimizerConfig, writePersistedFeature, writePersistedFooterMode } from "./src/config.ts";
+import { LONG_CACHE_RETENTION_VALUE, PI_CACHE_RETENTION_BASELINE_SYMBOL, PI_CACHE_RETENTION_ENV, STARTUP_CACHE_RETENTION_ENV, captureCacheRetentionEnv, getOrCaptureCacheRetentionBaseline, requestLongCacheRetention, restoreCacheRetentionEnv } from "./src/retention.ts";
+import { isRuntimeOptimizerEnabled, setRuntimeOptimizerEnabled } from "./src/config.ts";
 
 const STATUS_KEY = "pi-cache-stats";
 
-const CONFIG_FILE_PATH = join(STATE_DIR, "pi-cache-optimizer-config.json");
 const CONFIG_RECEIPT_FILE_NAME = "pi-cache-optimizer-config-receipt.json";
 const CONFIG_RECEIPT_PATH = join(STATE_DIR, CONFIG_RECEIPT_FILE_NAME);
-const OPENAI_CACHE_KEY_ENV = "PI_CACHE_OPTIMIZER_OPENAI_CACHE_KEY";
-const NO_OPENAI_CACHE_KEY_ENV = "PI_CACHE_OPTIMIZER_NO_OPENAI_CACHE_KEY";
 const OPENAI_PROMPT_CACHE_KEY_MAX_LENGTH = 64;
 const NO_SKILL_COMPRESSION_ENV = "PI_CACHE_OPTIMIZER_NO_SKILL_COMPRESSION";
 const NO_PROMPT_REWRITE_ENV = "PI_CACHE_OPTIMIZER_NO_PROMPT_REWRITE";
 const VIRTUAL_REWRITE_ENV = "PI_CACHE_OPTIMIZER_VIRTUAL_REWRITE";
-const TOOL_ORDER_ENV = "PI_CACHE_OPTIMIZER_TOOL_ORDER";
-const FOOTER_MODE_ENV = "PI_CACHE_OPTIMIZER_FOOTER_MODE";
-type FooterStatsMode = "session" | "total" | "process";
-type FooterStatsModeSource = "config" | "env" | "default";
-type PersistedCacheOptimizerConfigV1 = {
-  version: 1;
-  footerMode?: FooterStatsMode;
-};
-type PersistedCacheOptimizerFeature = "promptRewrite" | "virtualRewrite" | "skillCompression" | "openAICacheKey" | "toolOrder";
-type PersistedCacheOptimizerConfigV2 = {
-  version: 2;
-  footerMode?: FooterStatsMode;
-  promptCacheKey?: {
-    omit?: string[];
-  };
-};
-type PersistedCacheOptimizerConfigV3 = {
-  version: 2 | 3;
-  footerMode?: FooterStatsMode;
-  promptCacheKey?: { omit?: string[] };
-  features?: Partial<Record<PersistedCacheOptimizerFeature, boolean>>;
-};
-type PersistedCacheOptimizerConfig = PersistedCacheOptimizerConfigV1 | PersistedCacheOptimizerConfigV2 | PersistedCacheOptimizerConfigV3;
 type PromptCacheKeyConfigReceipt = {
   version: 2;
   kind: "pi-cache-optimizer-config-receipt";
@@ -216,8 +113,6 @@ function getAnthropicTtlFallbackState(): AnthropicTtlFallbackStateV1 {
   globals[ANTHROPIC_TTL_FALLBACK_SYMBOL] = state;
   return state;
 }
-
-let runtimeOptimizerEnabled = true;
 
 // Minimum count of skills before compression is worth applying.
 // Below this, pi's verbose XML block is small enough that the overhead of
@@ -1403,38 +1298,6 @@ function getModelsJsonDisplayPath(
   return joinDisplayPath(getAgentDirDisplayPath(platform, agentDir, homeDir), "models.json", platform);
 }
 
-function isEnabledEnv(value: string | undefined): boolean {
-  if (!value) return false;
-  const normalized = value.trim().toLowerCase();
-  return normalized === "1" || normalized === "true" || normalized === "yes" || normalized === "on";
-}
-
-function featureEnabled(
-  feature: PersistedCacheOptimizerFeature,
-  envName: string,
-  defaultValue: boolean,
-  env: MutableEnv = process.env,
-  config: PersistedCacheOptimizerConfigV3 = persistedCacheOptimizerConfig,
-): boolean {
-  const configured = config.features?.[feature];
-  if (configured !== undefined) return configured;
-  if (feature === "virtualRewrite") return isEnabledEnv(env[envName]);
-  if (feature === "promptRewrite" || feature === "skillCompression" || feature === "openAICacheKey") {
-    return !isEnabledEnv(env[envName]);
-  }
-  return isEnabledEnv(env[envName]) || defaultValue;
-}
-
-function isToolOrderEnabled(env: MutableEnv = process.env): boolean {
-  return runtimeOptimizerEnabled && featureEnabled("toolOrder", TOOL_ORDER_ENV, false);
-}
-
-function parseFooterStatsMode(value: unknown): FooterStatsMode | undefined {
-  if (typeof value !== "string") return undefined;
-  const normalized = value.trim().toLowerCase();
-  return normalized === "session" || normalized === "total" || normalized === "process" ? normalized : undefined;
-}
-
 type CommandCompletionItem = {
   value: string;
   label: string;
@@ -1541,151 +1404,8 @@ function getCacheOptimizerArgumentCompletions(argumentPrefix: string): CommandCo
   return null;
 }
 
-function parsePersistedCacheOptimizerConfig(value: unknown): PersistedCacheOptimizerConfig | undefined {
-  const record = asRecord(value);
-  if (!record || (record.version !== 1 && record.version !== 2 && record.version !== 3)) return undefined;
-  const allowedTopLevel = new Set(record.version === 1 ? ["version", "footerMode"] : record.version === 2 ? ["version", "footerMode", "promptCacheKey"] : ["version", "footerMode", "promptCacheKey", "features"]);
-  if (Object.keys(record).some((key) => !allowedTopLevel.has(key))) return undefined;
-  const footerMode = parseFooterStatsMode(record.footerMode);
-  if (record.footerMode !== undefined && !footerMode) return undefined;
-  if (record.version === 1) return { version: 1, ...(footerMode ? { footerMode } : {}) };
-
-  const rawFeatures = record.version === 3 ? record.features : undefined;
-  if (rawFeatures !== undefined && !asRecord(rawFeatures)) return undefined;
-  const featuresRecord = asRecord(rawFeatures);
-  const featureNames = new Set<PersistedCacheOptimizerFeature>(["promptRewrite", "virtualRewrite", "skillCompression", "openAICacheKey", "toolOrder"]);
-  if (featuresRecord && Object.keys(featuresRecord).some((key) => !featureNames.has(key as PersistedCacheOptimizerFeature) || typeof featuresRecord[key] !== "boolean")) return undefined;
-
-  const rawPromptCacheKey = record.promptCacheKey;
-  if (rawPromptCacheKey !== undefined && !asRecord(rawPromptCacheKey)) return undefined;
-  const promptCacheKey = asRecord(rawPromptCacheKey);
-  if (promptCacheKey && Object.keys(promptCacheKey).some((key) => key !== "omit")) return undefined;
-  const omit = promptCacheKey?.omit;
-  if (omit !== undefined && (!Array.isArray(omit) || omit.some((value): value is string => !isNonEmptyString(value)))) return undefined;
-  const stringOmit = omit as string[] | undefined;
-  const uniqueOmit = stringOmit ? [...new Set(stringOmit.map((value) => value.trim()))].sort() : undefined;
-  return {
-    version: record.version === 3 ? 3 : 2,
-    ...(footerMode ? { footerMode } : {}),
-    ...(uniqueOmit && uniqueOmit.length > 0 ? { promptCacheKey: { omit: uniqueOmit } } : {}),
-    ...(featuresRecord ? { features: Object.fromEntries(Object.entries(featuresRecord)) as Partial<Record<PersistedCacheOptimizerFeature, boolean>> } : {}),
-  } as PersistedCacheOptimizerConfigV3;
-}
-
-function normalizePersistedCacheOptimizerConfig(value: PersistedCacheOptimizerConfig | undefined): PersistedCacheOptimizerConfigV3 {
-  if (!value) return { version: 2 };
-  const features = value.version === 3 ? value.features : undefined;
-  return {
-    version: features ? 3 : 2,
-    ...(value.footerMode ? { footerMode: value.footerMode } : {}),
-    ...(value.version !== 1 && value.promptCacheKey ? { promptCacheKey: value.promptCacheKey } : {}),
-    ...(features ? { features } : {}),
-  };
-}
-
-function readPersistedCacheOptimizerConfig(configPath: string = CONFIG_FILE_PATH): PersistedCacheOptimizerConfigV3 {
-  try {
-    return normalizePersistedCacheOptimizerConfig(parsePersistedCacheOptimizerConfig(JSON.parse(readFileSync(configPath, "utf8"))));
-  } catch (error) {
-    if (getErrorCode(error) !== "ENOENT") console.warn(`${LOG_PREFIX}: failed to read optimizer config; using defaults`, error);
-    return { version: 2 };
-  }
-}
-
 function readPersistedFooterMode(configPath: string = CONFIG_FILE_PATH): FooterStatsMode | undefined {
   return readPersistedCacheOptimizerConfig(configPath).footerMode;
-}
-
-async function writePersistedCacheOptimizerConfigUnlocked(
-  config: PersistedCacheOptimizerConfig | PersistedCacheOptimizerConfigV3,
-  configPath: string,
-): Promise<void> {
-  await mkdir(dirname(configPath), { recursive: true });
-  const payloadText = JSON.stringify(normalizePersistedCacheOptimizerConfig(config), null, 2) + "\n";
-  let targetInfo: Awaited<ReturnType<typeof lstat>> | undefined;
-  let targetMode = 0o600;
-  let targetHash: string | undefined;
-  try {
-    targetInfo = await lstat(configPath);
-    if (targetInfo.isSymbolicLink() || !targetInfo.isFile()) throw new Error("optimizer config is not a regular file; no changes were made");
-    const targetText = await readFile(configPath, "utf8");
-    targetMode = targetInfo.mode & 0o7777;
-    targetHash = hashText(targetText);
-  } catch (error) {
-    if (getErrorCode(error) !== "ENOENT") throw error;
-  }
-  if (targetInfo) {
-    await atomicReplaceTextFilePreservingMode(configPath, payloadText, targetMode, "config", {
-      identity: targetInfo,
-      hash: targetHash,
-      mode: targetMode,
-    });
-    return;
-  }
-
-  await atomicCreateTextFileNoReplace(configPath, payloadText, targetMode, "config");
-}
-
-async function writePersistedCacheOptimizerConfig(
-  config: PersistedCacheOptimizerConfig | PersistedCacheOptimizerConfigV3,
-  configPath: string = CONFIG_FILE_PATH,
-): Promise<void> {
-  await withModelsJsonTransactionLock(() => writePersistedCacheOptimizerConfigUnlocked(config, configPath));
-}
-
-async function writePersistedFooterModeUnlocked(
-  mode: FooterStatsMode,
-  configPath: string,
-): Promise<void> {
-  let version: 1 | 2 | 3 = 1;
-  let raw: PersistedCacheOptimizerConfig | undefined;
-  let targetExists = false;
-  try {
-    raw = parsePersistedCacheOptimizerConfig(JSON.parse(readFileSync(configPath, "utf8")));
-    targetExists = true;
-    if (!raw) throw new Error("invalid footer config schema");
-    version = raw.version === 3 ? 3 : raw.version === 2 ? 2 : 1;
-  } catch (error) {
-    if (getErrorCode(error) !== "ENOENT") throw new Error("invalid footer config schema");
-  }
-  const current = normalizePersistedCacheOptimizerConfig(raw);
-  if (version === 1 && !current.promptCacheKey) {
-    await mkdir(dirname(configPath), { recursive: true });
-    const targetInfo = targetExists ? await lstat(configPath) : undefined;
-    if (targetInfo && (targetInfo.isSymbolicLink() || !targetInfo.isFile())) throw new Error("optimizer config is not a regular file; no changes were made");
-    const targetText = targetInfo ? await readFile(configPath, "utf8") : undefined;
-    const targetMode = targetInfo ? targetInfo.mode & 0o7777 : 0o600;
-    const footerText = JSON.stringify({ version: 1, footerMode: mode }, null, 2) + "\n";
-    if (targetInfo && targetText !== undefined) {
-      await atomicReplaceTextFilePreservingMode(configPath, footerText, targetMode, "config-footer", {
-        identity: targetInfo,
-        hash: hashText(targetText),
-        mode: targetMode,
-      });
-    } else {
-      await atomicCreateTextFileNoReplace(configPath, footerText, targetMode, "config-footer");
-    }
-    return;
-  }
-  await writePersistedCacheOptimizerConfigUnlocked({ ...current, version: 3, footerMode: mode } as PersistedCacheOptimizerConfigV3, configPath);
-}
-
-async function writePersistedFooterMode(
-  mode: FooterStatsMode,
-  configPath: string = CONFIG_FILE_PATH,
-): Promise<void> {
-  await withModelsJsonTransactionLock(() => writePersistedFooterModeUnlocked(mode, configPath));
-}
-
-async function writePersistedFeature(feature: PersistedCacheOptimizerFeature, enabled: boolean): Promise<void> {
-  const current = readPersistedCacheOptimizerConfig();
-  const next: PersistedCacheOptimizerConfigV3 = {
-    ...current,
-    version: 3,
-    features: { ...(current.features ?? {}), [feature]: enabled },
-  };
-  await writePersistedCacheOptimizerConfig(next);
-  setPersistedCacheOptimizerConfig(readPersistedCacheOptimizerConfig());
 }
 
 function configReceiptBackupPath(receipt: PromptCacheKeyConfigReceipt, receiptPath: string = CONFIG_RECEIPT_PATH): string {
@@ -2053,51 +1773,6 @@ async function rollbackPromptCacheKeyConfig(
   return withModelsJsonTransactionLock(() => rollbackPromptCacheKeyConfigUnderLock(snapshot, configPath, receiptPath, options));
 }
 
-function resolveFooterStatsMode(
-  configuredMode: FooterStatsMode | undefined,
-  env: MutableEnv = process.env,
-): { mode: FooterStatsMode; source: FooterStatsModeSource } {
-  if (configuredMode) return { mode: configuredMode, source: "config" };
-  const envMode = parseFooterStatsMode(env[FOOTER_MODE_ENV]);
-  return envMode ? { mode: envMode, source: "env" } : { mode: "session", source: "default" };
-}
-
-function footerStatsMode(
-  env: MutableEnv = process.env,
-  configuredMode: FooterStatsMode | undefined = persistedFooterStatsMode,
-): FooterStatsMode {
-  return resolveFooterStatsMode(configuredMode, env).mode;
-}
-
-let persistedCacheOptimizerConfig = readPersistedCacheOptimizerConfig();
-let persistedFooterStatsMode = persistedCacheOptimizerConfig.footerMode;
-
-function isDisabledEnv(value: string | undefined): boolean {
-  if (!value) return false;
-  const normalized = value.trim().toLowerCase();
-  return normalized === "0" || normalized === "false" || normalized === "no" || normalized === "off";
-}
-
-function shouldInjectOpenAIPromptCacheKey(): boolean {
-  if (!runtimeOptimizerEnabled) return false;
-  if (!featureEnabled("openAICacheKey", NO_OPENAI_CACHE_KEY_ENV, true)) return false;
-  if (isDisabledEnv(process.env[OPENAI_CACHE_KEY_ENV])) return false;
-  return true;
-}
-
-function setRuntimeOptimizerEnabled(enabled: boolean, env: MutableEnv = process.env): void {
-  runtimeOptimizerEnabled = enabled;
-  if (enabled) {
-    requestLongCacheRetention(env);
-  } else {
-    restoreCacheRetentionEnv(STARTUP_CACHE_RETENTION_ENV, env);
-  }
-}
-
-function isRuntimeOptimizerEnabled(): boolean {
-  return runtimeOptimizerEnabled;
-}
-
 function getOptimizerRuntimeModeLines(): string[] {
   const state = runtimeOptimizerEnabled ? "enabled" : "disabled";
   const lines: string[] = [];
@@ -2150,11 +1825,6 @@ function shouldInjectOpenAIPromptCacheKeyForModel(model: PiModel | undefined): b
 function isPromptCacheKeyOmittedForModel(model: PiModel | undefined, config: PersistedCacheOptimizerConfig | PersistedCacheOptimizerConfigV3 = persistedCacheOptimizerConfig): boolean {
   if (!model || !isOpenAICompatibleProxyApi(model.api)) return false;
   return "promptCacheKey" in config && config.promptCacheKey?.omit?.includes(modelKey(model)) === true;
-}
-
-function setPersistedCacheOptimizerConfig(config: PersistedCacheOptimizerConfig | PersistedCacheOptimizerConfigV3): void {
-  persistedCacheOptimizerConfig = normalizePersistedCacheOptimizerConfig(config);
-  persistedFooterStatsMode = persistedCacheOptimizerConfig.footerMode;
 }
 
 function omitOpenAIPromptCacheKeys(payload: unknown): unknown | undefined {
