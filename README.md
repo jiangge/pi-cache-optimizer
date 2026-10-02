@@ -517,6 +517,37 @@ Do not delete `models.json` during cleanup; it contains your Pi model/provider c
 3. Watch the footer or run `/cache-optimizer stats`.
 4. For third-party proxies, also run `/cache-optimizer doctor` and confirm sticky routing / session affinity on the proxy side.
 
+### Provider usage comparison
+
+For a real, offline comparison with a provider such as `xiaojimao/gpt-6-sol`, first capture two separate windows in the same model and session. Do not treat an existing aggregate shard as a baseline: it does not record which optimizer features were enabled.
+
+Capture the current optimized/default window:
+
+```bash
+node --import jiti/register benchmarks/snapshot-provider-usage.ts \\
+  optimized xiaojimao gpt-6-sol YYYY-MM-DD > optimized.jsonl
+```
+
+For a baseline window, start a fresh Pi session with prompt mutations disabled, then send the same kind of repeated turns:
+
+```bash
+PI_CACHE_OPTIMIZER_NO_PROMPT_REWRITE=1 \\
+PI_CACHE_OPTIMIZER_NO_SKILL_COMPRESSION=1 \\
+PI_CACHE_OPTIMIZER_TOOL_ORDER=0 \\
+pi
+```
+
+After the baseline window, take a dated snapshot using the same model and agent directory:
+
+```bash
+node --import jiti/register benchmarks/snapshot-provider-usage.ts \\
+  baseline xiaojimao gpt-6-sol YYYY-MM-DD > baseline.jsonl
+cat baseline.jsonl optimized.jsonl > provider-usage.jsonl
+npm run benchmark:provider -- provider-usage.jsonl
+```
+
+This compares real provider-reported `cacheRead`, `cacheWrite`, request hit rate, and input-token ratios. It is still observational: snapshots are aggregate counters, so they cannot prove feature-level causality. For feature isolation, repeat the window with only one of prompt rewrite, skill compression, or tool ordering enabled. The scripts never send provider requests and never claim cache hits when usage fields are absent.
+
 ## License
 
 MIT

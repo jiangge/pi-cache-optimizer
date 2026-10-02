@@ -516,6 +516,37 @@ pi remove npm:pi-cache-optimizer
 3. 观察 footer，或运行 `/cache-optimizer stats`。
 4. 对第三方代理，再运行 `/cache-optimizer doctor`，并在代理侧确认 sticky routing / session affinity。
 
+### Provider usage 对照
+
+如果要对 `xiaojimao/gpt-6-sol` 这类真实 provider 做离线对照，先在同一个模型、同一个 session 中采集两个独立窗口。不要把已有聚合 shard 直接当作 baseline：shard 不记录采样时启用了哪些优化功能。
+
+先采集当前默认/optimized 窗口：
+
+```bash
+node --import jiti/register benchmarks/snapshot-provider-usage.ts \\
+  optimized xiaojimao gpt-6-sol YYYY-MM-DD > optimized.jsonl
+```
+
+采集 baseline 时，启动一个新的 Pi session，关闭 prompt 改写相关功能，然后发送同类的重复请求：
+
+```bash
+PI_CACHE_OPTIMIZER_NO_PROMPT_REWRITE=1 \\
+PI_CACHE_OPTIMIZER_NO_SKILL_COMPRESSION=1 \\
+PI_CACHE_OPTIMIZER_TOOL_ORDER=0 \\
+pi
+```
+
+baseline 窗口结束后，在同一个 Pi agent 目录下对同一模型做日期快照：
+
+```bash
+node --import jiti/register benchmarks/snapshot-provider-usage.ts \\
+  baseline xiaojimao gpt-6-sol YYYY-MM-DD > baseline.jsonl
+cat baseline.jsonl optimized.jsonl > provider-usage.jsonl
+npm run benchmark:provider -- provider-usage.jsonl
+```
+
+该流程比较 provider 实际返回的 `cacheRead`、`cacheWrite`、请求命中率和 input token 比例。它仍然是观察性比较：快照是聚合计数，不能证明某个功能的因果收益。要隔离功能，请分别只开启 prompt rewrite、skill compression 或 tool ordering 中的一项。脚本不会发送 provider 请求，也不会在 usage 缺失时声称发生缓存命中。
+
 ## License
 
 MIT
