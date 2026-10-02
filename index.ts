@@ -2089,14 +2089,20 @@ function isEnabledEnv(value: string | undefined): boolean {
   return normalized === "1" || normalized === "true" || normalized === "yes" || normalized === "on";
 }
 
-function featureEnabled(feature: PersistedCacheOptimizerFeature, envName: string, defaultValue: boolean): boolean {
-  const configured = (persistedCacheOptimizerConfig as PersistedCacheOptimizerConfigV3).features?.[feature];
+function featureEnabled(
+  feature: PersistedCacheOptimizerFeature,
+  envName: string,
+  defaultValue: boolean,
+  env: MutableEnv = process.env,
+  config: PersistedCacheOptimizerConfigV3 = persistedCacheOptimizerConfig,
+): boolean {
+  const configured = config.features?.[feature];
   if (configured !== undefined) return configured;
-  if (feature === "virtualRewrite") return isEnabledEnv(process.env[envName]);
+  if (feature === "virtualRewrite") return isEnabledEnv(env[envName]);
   if (feature === "promptRewrite" || feature === "skillCompression" || feature === "openAICacheKey") {
-    return !isEnabledEnv(process.env[envName]);
+    return !isEnabledEnv(env[envName]);
   }
-  return isEnabledEnv(process.env[envName]) || defaultValue;
+  return isEnabledEnv(env[envName]) || defaultValue;
 }
 
 function isToolOrderEnabled(env: MutableEnv = process.env): boolean {
@@ -2784,12 +2790,30 @@ function getOptimizerRuntimeModeLines(): string[] {
   lines.push(`• Footer cache stats: on${runtimeOptimizerEnabled ? "" : " (comparison mode)"}`);
   lines.push(`• Compat warnings: ${runtimeOptimizerEnabled ? "on" : "off"}`);
   lines.push(`• ${PI_CACHE_RETENTION_ENV}: ${process.env[PI_CACHE_RETENTION_ENV] ?? "(unset)"}`);
+  lines.push(`• Persistent feature overrides: ${Object.keys(persistedCacheOptimizerConfig.features ?? {}).length > 0 ? "configured" : "none"}`);
   if (!runtimeOptimizerEnabled) {
     lines.push("This is a current-process switch. Run /reload or restart Pi to return to startup behavior.");
   } else if (!featureEnabled("promptRewrite", NO_PROMPT_REWRITE_ENV, true) || !shouldInjectOpenAIPromptCacheKey()) {
     lines.push("Some features are still disabled by environment variables.");
   }
   return lines;
+}
+
+function formatPersistentFeatureConfig(): string {
+  const features = persistedCacheOptimizerConfig.features ?? {};
+  const lines = ["Persistent feature configuration:"];
+  const entries: Array<[string, PersistedCacheOptimizerFeature, string, boolean]> = [
+    ["Prompt rewrite", "promptRewrite", NO_PROMPT_REWRITE_ENV, true],
+    ["Native virtual rewrite", "virtualRewrite", VIRTUAL_REWRITE_ENV, false],
+    ["Skill compression", "skillCompression", NO_SKILL_COMPRESSION_ENV, true],
+    ["OpenAI cache key", "openAICacheKey", NO_OPENAI_CACHE_KEY_ENV, true],
+    ["Tool ordering", "toolOrder", TOOL_ORDER_ENV, false],
+  ];
+  for (const [label, feature, envName, defaultValue] of entries) {
+    const source = features[feature] !== undefined ? "config" : process.env[envName] !== undefined ? "env" : "default";
+    lines.push(`• ${label}: ${featureEnabled(feature, envName, defaultValue) ? "on" : "off"} (${source})`);
+  }
+  return lines.join("\n");
 }
 
 function formatOptimizerRuntimeMode(): string {
@@ -10233,6 +10257,8 @@ export const __internals_for_tests = {
   SKILL_COMPRESSION_MIN_COUNT,
   NO_PROMPT_REWRITE_ENV,
   isEnabledEnv,
+  featureEnabled,
+  writePersistedFeature,
   // OpenAI-family cache-key helpers
   addOpenAIPromptCacheKey,
   clampPromptCacheKey,
@@ -11894,6 +11920,11 @@ export default function (pi: ExtensionAPI) {
           } catch (error) {
             cmdCtx.ui.notify(`❌ Could not reset feature configuration: ${error instanceof Error ? error.message : String(error)}`, "error");
           }
+          return;
+        }
+        if (!configKey) {
+          cmdCtx.ui.notify(formatPersistentFeatureConfig() + `\n• Footer mode: ${resolveFooterStatsMode(persistedFooterStatsMode).mode}` + "\n\n" +
+            "Usage: /cache-optimizer config <feature> on|off | footer-mode total|session|process | reset", "info");
           return;
         }
         if (configKey !== "footer-mode" || !requestedMode || !["session", "total", "process"].includes(requestedMode)) {

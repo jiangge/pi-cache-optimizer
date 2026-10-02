@@ -407,6 +407,43 @@ describe("footer stats modes", () => {
     }
   });
 
+  test("feature settings persist, override env values, and reset without losing unrelated config", async () => {
+    const tempDir = await mkdtemp(join(tmpdir(), "pi-cache-feature-command-test-"));
+    const previousAgentDir = process.env.PI_CODING_AGENT_DIR;
+    const previousVirtualRewrite = process.env.PI_CACHE_OPTIMIZER_VIRTUAL_REWRITE;
+    try {
+      process.env.PI_CODING_AGENT_DIR = tempDir;
+      process.env.PI_CACHE_OPTIMIZER_VIRTUAL_REWRITE = "0";
+      const jiti = createJiti(join(process.cwd(), "tests", "review-findings.test.ts"), { interopDefault: false, moduleCache: false });
+      const freshModule = await jiti.import<typeof import("../index.ts")>(join(process.cwd(), "index.ts"));
+      const commands = new Map<string, any>();
+      freshModule.default({ on() {}, registerCommand(name: string, command: any) { commands.set(name, command); } } as any);
+      const command = commands.get("cache-optimizer");
+      const notifications: string[] = [];
+      const context = { model: undefined, hasUI: false, sessionManager: { getSessionId: () => "feature-session" }, modelRegistry: { find: () => undefined, getAvailable: () => [], getAll: () => [] }, ui: { notify: (message: string) => notifications.push(message), setStatus() {} } };
+      const configPath = join(tempDir, "pi-cache-optimizer-config.json");
+
+      assert.equal(freshModule.__internals_for_tests.featureEnabled("virtualRewrite", "PI_CACHE_OPTIMIZER_VIRTUAL_REWRITE", false), false);
+      await command.handler("config virtual-rewrite on", context);
+      assert.equal(freshModule.__internals_for_tests.featureEnabled("virtualRewrite", "PI_CACHE_OPTIMIZER_VIRTUAL_REWRITE", false), true);
+      const persisted = JSON.parse(await readFile(configPath, "utf8"));
+      assert.equal(persisted.version, 3);
+      assert.equal(persisted.features.virtualRewrite, true);
+      assert.match(notifications.at(-1) ?? "", /virtual-rewrite set to on/);
+
+      await command.handler("config", context);
+      assert.match(notifications.at(-1) ?? "", /Persistent feature configuration/);
+      await command.handler("config reset", context);
+      const reset = JSON.parse(await readFile(configPath, "utf8"));
+      assert.equal(reset.features, undefined);
+      assert.equal(freshModule.__internals_for_tests.featureEnabled("virtualRewrite", "PI_CACHE_OPTIMIZER_VIRTUAL_REWRITE", false), false);
+    } finally {
+      if (previousAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR; else process.env.PI_CODING_AGENT_DIR = previousAgentDir;
+      if (previousVirtualRewrite === undefined) delete process.env.PI_CACHE_OPTIMIZER_VIRTUAL_REWRITE; else process.env.PI_CACHE_OPTIMIZER_VIRTUAL_REWRITE = previousVirtualRewrite;
+      await rm(tempDir, { recursive: true, force: true });
+    }
+  });
+
   test("config command overrides the environment mode", async () => {
     const tempAgentDir = await mkdtemp(join(tmpdir(), "pi-cache-footer-command-test-"));
     const previousAgentDir = process.env.PI_CODING_AGENT_DIR;

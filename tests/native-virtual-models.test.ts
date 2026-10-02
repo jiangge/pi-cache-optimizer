@@ -288,6 +288,44 @@ describe("native virtual model hooks", () => {
     }
   });
 
+  test("native virtual prompt rewrite fails closed for unsafe or malformed candidate chains", async () => {
+    const { hooks } = setup();
+    const selected = virtualModel("router", "auto");
+    const registry = Symbol.for("pi.routing.registry.v1");
+    const previous = (globalThis as any)[registry];
+    const event = { systemPrompt: "stable project instructions", systemPromptOptions: { cwd: "/tmp", contextFiles: [], skills: [] } };
+    const proxy = physical("proxy", "kimi-k3", { api: "openai-completions" });
+    const variants = [
+      () => undefined,
+      () => [{ provider: "proxy", modelId: "kimi-k3", timestamp: 1 }],
+      () => [{ provider: "proxy", modelId: "kimi-k3", api: "openai-completions", timestamp: 1 }, { provider: "proxy", modelId: "fallback", api: "openai-codex-responses", timestamp: 2 }],
+    ];
+    try {
+      process.env.PI_CACHE_OPTIMIZER_VIRTUAL_REWRITE = "1";
+      for (const resolveCandidateRoutes of variants) {
+        (globalThis as any)[registry] = {
+          version: 1,
+          getRouter() {
+            return { virtualProvider: "router", resolveCandidateRoutes };
+          },
+        };
+        const result = await hooks.get("before_agent_start")!(event, context(selected, { all: [proxy] }));
+        assert.deepEqual(result, {});
+      }
+      (globalThis as any)[registry] = {
+        version: 1,
+        getRouter() {
+          return { virtualProvider: "router", resolveCandidateRoutes() { throw new Error("route unavailable"); } };
+        },
+      };
+      assert.deepEqual(await hooks.get("before_agent_start")!(event, context(selected, { all: [proxy] })), {});
+    } finally {
+      delete process.env.PI_CACHE_OPTIMIZER_VIRTUAL_REWRITE;
+      if (previous === undefined) delete (globalThis as any)[registry];
+      else (globalThis as any)[registry] = previous;
+    }
+  });
+
   test("native virtual prompt rewrite fails closed without candidate route metadata", async () => {
     const { hooks } = setup();
     const selected = virtualModel("unregistered", "auto");
