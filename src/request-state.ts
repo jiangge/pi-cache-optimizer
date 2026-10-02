@@ -87,3 +87,11 @@ export function pruneProviderRequestStates<T extends { responseReceived: boolean
     states.splice(completed >= 0 ? completed : 0, 1);
   }
 }
+
+export type ProviderRequestState = {
+  model: PiModel;
+  responseReceived: boolean;
+  correlationAmbiguous: boolean;
+  // A native virtual request whose dispatched id matched several providers.
+  identityAmbiguous?: boolean;
+};
