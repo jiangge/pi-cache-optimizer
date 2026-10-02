@@ -558,6 +558,48 @@ describe("native virtual model hooks", () => {
   });
 
 
+  test("Responses-family models get in-place edits but never reordering", async () => {
+    const { hooks } = setup();
+    const sourceInfo = { path: "", source: "local", scope: "user", origin: "top-level" };
+    const skills = ["alpha", "beta", "gamma", "delta"].map((name) => ({
+      name, description: `${name} skill description`, filePath: `/skills/${name}/SKILL.md`, baseDir: `/skills/${name}`, sourceInfo, disableModelInvocation: false,
+    }));
+    const agents = "Project rules that are long enough to be lifted as a stable prefix candidate by the reorder step.";
+    const systemPrompt = [
+      "You are a coding assistant.",
+      "<project_context>",
+      `<project_instructions path="/repo/AGENTS.md">\n${agents}\n</project_instructions>`,
+      "</project_context>",
+      "",
+      `<skills>\n${t.formatSkillsForPrompt(skills as any).trim()}\n</skills>`,
+      "",
+      "<session-overview>",
+      "Branch: main",
+      "## RECENT COMMITS",
+      "abc123 changed something",
+      "## PATHS",
+      "Tasks: .trellis/tasks/",
+      "</session-overview>",
+    ].join("\n");
+    const event = { systemPrompt, systemPromptOptions: { cwd: "/repo", contextFiles: [{ path: "/repo/AGENTS.md", content: agents }], skills } };
+
+    for (const codex of [
+      physical("openai-codex", "gpt-6-luna", { api: "openai-codex-responses", baseUrl: "https://chatgpt.com/backend-api" }),
+      physical("openai", "gpt-6", { api: "openai-responses", baseUrl: "https://api.openai.com/v1" }),
+    ]) {
+      const result = await hooks.get("before_agent_start")!(event, context(codex)) as { systemPrompt?: string };
+      const out = result.systemPrompt ?? "";
+      assert.ok(out.startsWith("You are a coding assistant.\n<project_context>"), `${codex.api}: section order kept`);
+      assert.ok(out.includes(`<project_instructions path="/repo/AGENTS.md">\n${agents}`), `${codex.api}: AGENTS.md stays in its section`);
+      assert.ok(!out.includes("<available_skills>") && out.includes("- alpha: alpha skill description"), `${codex.api}: skills compressed`);
+      assert.ok(!out.includes("RECENT COMMITS"), `${codex.api}: churn stripped`);
+    }
+
+    // The same prompt on a Chat Completions model is still reordered.
+    const completions = await hooks.get("before_agent_start")!(event, context(physical("proxy", "kimi-k3"))) as { systemPrompt?: string };
+    assert.ok(!completions.systemPrompt?.startsWith("You are a coding assistant."));
+  });
+
   test("nested codemode tool calls do not refresh the footer on their own", async () => {
     const { hooks } = setup();
     const statuses: Array<string | undefined> = [];

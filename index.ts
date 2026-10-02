@@ -11281,18 +11281,17 @@ export default function (pi: ExtensionAPI) {
       : undefined;
 
     // ────────────────────────────────────────────────────────────────
-    // OpenAI Responses-family bypass (codex-responses + responses + azure responses)
+    // OpenAI Responses-family: no reordering (codex-responses + responses + azure responses)
     //
     // OpenAI's Responses API endpoints — both the Codex backend
     // (openai-codex-responses, chatgpt.com) and the public
     // Responses API (openai-responses, api.openai.com / Copilot) —
-    // have two properties that make client-side prompt reordering
+    // have two properties that make client-side prompt *reordering*
     // unnecessary and potentially harmful:
     //
     //  1. Server-managed caching: both APIs send `prompt_cache_key`
     //     (= Pi session id) in every request body, so the server
     //     already maintains a stable cache without prefix ordering.
-    //     Client-side reordering adds no cache benefit.
     //
     //  2. Stricter content-safety filtering: the Codex backend in
     //     particular has a product-level safety filter that flags
@@ -11302,16 +11301,16 @@ export default function (pi: ExtensionAPI) {
     //     `subagent`). The public Responses API shares the same
     //     filter framework and could behave similarly.
     //
-    // We therefore skip ALL prompt modifications (churn strip, skill
-    // compression, reorder) for these APIs. Third-party providers
-    // that use openai-completions are unaffected.
+    // Only the reorder step is skipped for these APIs. The in-place edits
+    // (session-overview churn strip, skill-list compression) keep every
+    // section where Pi put it, so they do not trigger that filter: a
+    // 32-trial skill-loading check on openai-codex/gpt-6-luna with the
+    // compressed list showed no content_filter and unchanged skill choice.
     // ────────────────────────────────────────────────────────────────
     const model = routedModel ?? _ctx.model;
-    if (model && isResponsesPromptRewriteBypassApi(model.api)) {
-      return {};
-    }
+    const reorderAllowed = !(model && isResponsesPromptRewriteBypassApi(model.api));
     // Pi 0.99+ native virtual selections pick the physical model per request,
-    // after this system prompt is built, so the bypass above cannot be decided
+    // after this system prompt is built, so the API cannot be decided
     // here. A route may reach the safety-filtered Codex backend; keep Pi's
     // prompt byte-for-byte instead of reordering it.
     if (isNativeVirtualModel(_ctx.model) && !canRewriteNativeVirtualPrompt(_ctx.model, _ctx)) {
@@ -11332,16 +11331,23 @@ export default function (pi: ExtensionAPI) {
     // across turns, which DeepSeek's prefix cache can then retain.
     const strippedPrompt = stripSessionOverviewChurn(event.systemPrompt);
 
-    // Step 2: compress skills XML → one-line index.
-    // The compressed form is identical-string-equivalent to the
-    // verbose one as far as cache-stability is concerned because both
-    // are deterministic from the same `event.systemPromptOptions.skills`.
+    // Step 2: replace Pi's verbose skills XML with the grouped list that
+    // keeps every name and description. Deterministic from the same
+    // `event.systemPromptOptions.skills`, so cache stability is unchanged.
     // No-op if opted out, below SKILL_COMPRESSION_MIN_COUNT, or if pi
     // emitted a format we don't recognize.
     const compressedPrompt = compressSkillsInSystemPrompt(
       strippedPrompt,
       event.systemPromptOptions,
     );
+
+    if (!reorderAllowed) {
+      // Responses family: in-place edits only. No cache hint is published,
+      // matching the previous full bypass for router-protocol consumers.
+      return compressedPrompt !== event.systemPrompt && compressedPrompt.trim().length > 0
+        ? { systemPrompt: compressedPrompt }
+        : {};
+    }
 
     // Step 3: lift stable content above dynamic content for cache
     // stability. Operates on the (stripped + compressed) prompt so the

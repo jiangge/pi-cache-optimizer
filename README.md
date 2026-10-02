@@ -34,7 +34,7 @@ Pi extension for improving provider-side KV / prompt cache hit rates. It keeps s
 ## What it does
 
 - Reorders uniquely identifiable stable system-prompt content before dynamic context. If the same candidate appears more than once (for example, quoted inside dynamic context), it is left unchanged to avoid removing the wrong occurrence.
-- Compresses Pi skill listings and strips session-overview churn.
+- Compresses Pi's skill list into a grouped Markdown list that keeps every skill name and description (only the XML envelope and repeated paths are removed), and strips session-overview churn. Both are in-place edits and also apply to OpenAI Responses/Codex models; only the stable-prefix reordering is skipped there.
 - Requests long cache retention when Pi/provider compat supports it.
 - Adds a conservative session-id `prompt_cache_key` fallback for `openai-completions` proxy payloads when no effective key exists. Pi 1.0+ owns this field for Responses/Codex transports.
 - Warns once for third-party OpenAI-compatible proxies missing cache/session-affinity compat flags.

@@ -34,7 +34,7 @@
 ## 功能
 
 - 将能唯一定位的稳定 system prompt 内容移动到动态上下文之前。如果同一候选出现多次（例如动态上下文引用了它），则保持原样，避免删除错误的那一处。
-- 压缩 Pi skill 列表，并移除 session-overview 中的易变字段。
+- 将 Pi 的 skill 列表压缩为按目录分组的 Markdown 列表，保留每个 skill 的名称和完整描述（只去掉 XML 外壳和重复路径），并移除 session-overview 中的易变字段。这两项都是原位修改，对 OpenAI Responses/Codex 模型同样生效；只有稳定前缀重排会在这些模型上跳过。
 - 在 Pi / provider compat 支持时请求长缓存保留。
 - 仅对 `openai-completions` 代理请求，在没有有效 key 时使用 Pi session id 保守补 `prompt_cache_key`；Pi 1.0+ 已负责 Responses/Codex transport 的 key。
 - 对缺少缓存 / session-affinity compat 的第三方 OpenAI-compatible 代理给出一次性提醒。
