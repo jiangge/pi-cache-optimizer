@@ -2891,7 +2891,7 @@ function isPiBuiltInLlamaCppModel(model: PiModel | undefined): boolean {
 }
 
 function shouldInjectOpenAIPromptCacheKeyForModel(model: PiModel | undefined): boolean {
-  // Pi 0.99.2 has no native supportsPromptCacheKey compat field. Per-model
+  // Pi 1.0.0 has no native supportsPromptCacheKey compat field. Per-model
   // opt-out is owned by this extension's promptCacheKey.omit configuration;
   // this helper only exposes the transport API gate for fixture consumers.
   return isOpenAICompatibleApi(model?.api);
