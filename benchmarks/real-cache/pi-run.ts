@@ -29,7 +29,7 @@ export function prepareAgentDir(config: ProviderConfig, group: PiGroup, label: s
     ...config.providerEntry,
     compat: { ...((config.providerEntry.compat as Record<string, unknown> | undefined) ?? {}), ...group.compat },
     baseUrl: `http://127.0.0.1:${port}/${encodeURIComponent(label)}${new URL(config.baseUrl).pathname.replace(/\/+$/, "")}`,
-    models: [config.modelEntry],
+    models: config.modelEntry ? [config.modelEntry] : undefined,
   };
   writeFileSync(join(dir, "models.json"), JSON.stringify({ providers: { [config.provider]: provider } }, null, 2), { mode: 0o600 });
   return dir;

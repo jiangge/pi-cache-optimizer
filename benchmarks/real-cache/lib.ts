@@ -12,7 +12,8 @@ export type ProviderConfig = {
   baseUrl: string;
   apiKey: string;
   providerEntry: Record<string, unknown>;
-  modelEntry: Record<string, unknown>;
+  /** Undefined when the model is one of Pi's built-in catalog entries (not listed in models.json). */
+  modelEntry: Record<string, unknown> | undefined;
 };
 
 /** Reads the real provider entry from the user's Pi models.json. The key never leaves this process except in the Authorization header. */
@@ -22,11 +23,23 @@ export function loadProviderConfig(provider: string, modelId: string): ProviderC
   const entry = parsed.providers?.[provider];
   if (!entry) throw new Error(`provider ${provider} not found in models.json`);
   const modelEntry = (entry.models || []).find((m: any) => m.id === modelId);
-  if (!modelEntry) throw new Error(`model ${provider}/${modelId} not found in models.json`);
-  if (typeof entry.apiKey !== "string" || entry.apiKey.startsWith("!") || /^[A-Z][A-Z0-9_]*$/.test(entry.apiKey)) {
-    throw new Error("only literal apiKey values are supported by this harness");
+  // A model missing from models.json may still be a built-in one; Pi resolves it from its own catalog, with this
+  // provider entry (base URL, compat, key) layered on top, so the isolated models.json then carries no `models` list.
+  if (!modelEntry && !process.env.BENCH_BUILTIN_MODEL) {
+    throw new Error(`model ${provider}/${modelId} not in models.json; set BENCH_BUILTIN_MODEL=1 if it is a built-in Pi model`);
   }
-  return { provider, modelId, baseUrl: String(entry.baseUrl).replace(/\/+$/, ""), apiKey: entry.apiKey, providerEntry: entry, modelEntry };
+  let apiKey: unknown = entry.apiKey;
+  if (apiKey === undefined) {
+    // Keys stored with `pi auth` live in auth.json instead of models.json.
+    try {
+      const auth = JSON.parse(readFileSync(join(agentDir, "auth.json"), "utf8"))[provider];
+      if (auth?.type === "api_key") apiKey = auth.key;
+    } catch { /* no auth.json entry */ }
+  }
+  if (typeof apiKey !== "string" || apiKey.startsWith("!") || /^[A-Z][A-Z0-9_]*$/.test(apiKey)) {
+    throw new Error("only literal API keys (models.json apiKey or auth.json api_key) are supported by this harness");
+  }
+  return { provider, modelId, baseUrl: String(entry.baseUrl).replace(/\/+$/, ""), apiKey, providerEntry: { ...entry, apiKey, ...(modelEntry ? {} : { models: undefined }) }, modelEntry };
 }
 
 export function sha1(value: string): string {
