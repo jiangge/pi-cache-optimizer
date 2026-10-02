@@ -2891,14 +2891,14 @@ function isPiBuiltInLlamaCppModel(model: PiModel | undefined): boolean {
 }
 
 function shouldInjectOpenAIPromptCacheKeyForModel(model: PiModel | undefined): boolean {
-  // Pi 1.0.0 has no native supportsPromptCacheKey compat field. Per-model
-  // opt-out is owned by this extension's promptCacheKey.omit configuration;
-  // this helper only exposes the transport API gate for fixture consumers.
-  return isOpenAICompatibleApi(model?.api);
+  // Pi 1.0+ owns prompt_cache_key for Responses/Codex transports. Keep this
+  // extension's fallback limited to openai-completions proxies, where Pi's
+  // provider extensions may not supply the session key.
+  return isOpenAICompatibleProxyApi(model?.api);
 }
 
 function isPromptCacheKeyOmittedForModel(model: PiModel | undefined, config: PersistedCacheOptimizerConfig | PersistedCacheOptimizerConfigV3 = persistedCacheOptimizerConfig): boolean {
-  if (!model || !isOpenAICompatibleApi(model.api)) return false;
+  if (!model || !isOpenAICompatibleProxyApi(model.api)) return false;
   return "promptCacheKey" in config && config.promptCacheKey?.omit?.includes(modelKey(model)) === true;
 }
 

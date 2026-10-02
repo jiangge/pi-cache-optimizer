@@ -185,7 +185,8 @@ The extension MAY add a top-level `prompt_cache_key` in the
 core's own cache transport.
 
 * Scope gate: the active model's `api` MUST be an OpenAI-compatible Pi adapter
-  (`openai-completions` or `openai-responses`). Unlike the initial implementation,
+  (`openai-completions`). Pi 1.0+ owns the key for `openai-responses` and
+  Codex transports. Unlike the initial implementation,
   the model `id`/`name` no longer needs to match GPT-family tokens — remote models
   using an OpenAI-shaped API (including Kimi, Qwen, GLM, MiniMax, Mimo, Hunyuan,
   Qwen Token Plan, Pi's built-in `llama.cpp`, and any future OpenAI-compatible
@@ -1554,7 +1555,7 @@ This function is **advisory only**. It does NOT participate in:
 
 #### Limitations
 
-- Only applies when `api` is `openai-completions` or `openai-responses`.
+- Only applies when `api` is `openai-completions`; Pi 1.0+ owns the key for Responses/Codex transports.
 - Official `api.openai.com` bypasses all profiles.
 - Custom transports (`kiro-api`, `anthropic-messages`, `bedrock-converse-stream`)
   are excluded.

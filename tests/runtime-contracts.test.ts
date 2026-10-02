@@ -573,9 +573,17 @@ describe("OpenAI-compatible request contracts", () => {
         providers: { "cache-key-proxy": { compat: { supportsPromptCacheKey: false } } },
       }));
       assert.equal(fresh.__internals_for_tests.shouldInjectOpenAIPromptCacheKeyForModel(runtimeModel), true);
+      assert.equal(
+        fresh.__internals_for_tests.shouldInjectOpenAIPromptCacheKeyForModel({ ...runtimeModel, api: "openai-responses" } as any),
+        false,
+      );
       assert.deepEqual(
         request({ payload: { messages: [] } }, context),
         { messages: [], prompt_cache_key: "cache-key-session" },
+      );
+      assert.equal(
+        request({ payload: { input: [] } }, { ...context, model: { ...runtimeModel, api: "openai-responses" } }),
+        undefined,
       );
 
       // The extension-owned config is the only per-model opt-out. It removes
