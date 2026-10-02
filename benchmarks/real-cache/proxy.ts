@@ -193,8 +193,11 @@ export function startProxy(options: ProxyOptions): Promise<{ server: Server; por
           error,
         };
         appendFileSync(logFile, `${JSON.stringify(entry)}\n`);
-        earlier.push(promptText);
-        priorByLabel.set(label, earlier);
+        // Failed attempts may never have written a cache entry, so they must not count as prefix donors.
+        if (status === 200) {
+          earlier.push(promptText);
+          priorByLabel.set(label, earlier);
+        }
       }
       await sleep(minGapMs);
     });

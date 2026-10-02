@@ -14,6 +14,8 @@ export type PiGroup = {
 };
 
 const EXTENSION_PATH = join(BENCH_DIR, "..", "..", "index.ts");
+// Pinned to the repo's devDependency copy of Pi: the global `pi` shim resolves per working directory and fails inside workspace clones.
+const PI_CLI = join(BENCH_DIR, "..", "..", "node_modules", "@earendil-works", "pi-coding-agent", "dist", "bundle", "cli.js");
 
 /**
  * Creates an isolated agent dir for one run: only the benchmarked provider/model, with its base URL pointed at the
@@ -44,12 +46,15 @@ export function runPi(options: {
   thinking?: string;
   appendSystemPromptFile?: string;
   noTools?: boolean;
+  /** Extra extension files loaded with -e (e.g. the workspace's own Trellis extension). */
+  extensions?: string[];
   timeoutMs?: number;
 }): Promise<{ code: number | null; stdout: string; stderr: string }> {
   const agentDir = prepareAgentDir(options.config, options.group, options.label, options.port);
   const args = [
     "-p",
     "--no-extensions",
+    ...(options.extensions ?? []).flatMap((path) => ["-e", path]),
     ...(options.group.extension ? ["-e", EXTENSION_PATH] : []),
     "--provider", options.config.provider,
     "--model", options.config.modelId,
@@ -60,10 +65,13 @@ export function runPi(options: {
     ...(options.appendSystemPromptFile ? ["--append-system-prompt", options.appendSystemPromptFile] : []),
     options.prompt,
   ];
-  const env: Record<string, string | undefined> = { ...process.env, PI_CODING_AGENT_DIR: agentDir, ...options.group.env };
+  const env: Record<string, string | undefined> = { ...process.env, PI_CODING_AGENT_DIR: agentDir };
+  // Clear inherited retention first; a group may request it explicitly below.
   delete env.PI_CACHE_RETENTION;
+  Object.assign(env, options.group.env);
+  if (process.env.BENCH_HOME) env.HOME = process.env.BENCH_HOME;
   return new Promise((resolve) => {
-    const child = spawn("pi", args, { cwd: options.cwd, env: env as NodeJS.ProcessEnv, stdio: ["ignore", "pipe", "pipe"] });
+    const child = spawn(process.execPath, [PI_CLI, ...args], { cwd: options.cwd, env: env as NodeJS.ProcessEnv, stdio: ["ignore", "pipe", "pipe"] });
     let stdout = "";
     let stderr = "";
     child.stdout.on("data", (d) => { stdout += d; });
