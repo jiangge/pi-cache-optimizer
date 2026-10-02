@@ -45,7 +45,8 @@ const cwd = mkdtempSync(join(tmpdir(), "bench-skill-cwd-"));
 function runPi(group: "X0" | "X1", prompt: string): Promise<{ code: number | null; stdout: string; stderr: string }> {
   const args = [
     "-p", "--mode", "json", "--no-extensions", "--no-session",
-    ...(group === "X1" ? ["-e", join(BENCH_DIR, "bench-compress-ext.ts")] : []),
+    // BENCH_X1=extension loads the shipped extension instead of the bench helper (end-to-end check).
+    ...(group === "X1" ? ["-e", process.env.BENCH_X1 === "extension" ? join(BENCH_DIR, "..", "..", "index.ts") : join(BENCH_DIR, "bench-compress-ext.ts")] : []),
     "--provider", "openai-codex", "--model", MODEL, "--thinking", "low", prompt,
   ];
   const env = { ...process.env, PI_CODING_AGENT_DIR: agentDir, HOME: benchHome } as NodeJS.ProcessEnv;
@@ -97,7 +98,7 @@ for (const [i, { group, t, rep }] of queue.entries()) {
   const failed = result.code !== 0 || (!seen.sawToolCall && seen.inputTokens === undefined);
   outcomes.push({ group, id: t.id, reads: seen.reads, pickedOk: names.some((n) => t.accept.includes(n)), pathOk: seen.reads.length > 0 && seen.reads.every((p) => existsSync(p)), inputTokens: seen.inputTokens, failed });
   consecutiveFailures = failed ? consecutiveFailures + 1 : 0;
-  if (process.env.BENCH_DEBUG) console.log(result.stdout.slice(0, 6000), result.stderr.slice(0, 500));
+  if (process.env.BENCH_DEBUG) console.log(result.stdout.slice(-3000), result.stderr.slice(0, 500));
   console.log(`${i + 1}/${queue.length} ${group}.${t.id}.r${rep} exit=${result.code} reads=${names.join("+") || "NONE"} inputTokens=${seen.inputTokens ?? "?"}${failed ? ` stderr=${JSON.stringify(result.stderr.slice(0, 160))}` : ""}`);
   if (consecutiveFailures >= 4) { console.error("aborting: 4 consecutive failures"); break; }
   await sleep(GAP_MS);
