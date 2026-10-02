@@ -16,7 +16,8 @@
   "author": "freescheme",
   "license": "MIT",
   "files": [
-    "index.ts"
+    "index.ts",
+    "src"
   ],
   "pi": {
     "extensions": [

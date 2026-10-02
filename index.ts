@@ -10,6 +10,8 @@ import {
   type ExtensionCommandContext,
   type ExtensionContext,
 } from "@earendil-works/pi-coding-agent";
+import { LOG_PREFIX, type ModelIdentity, type PiModel, type UnknownRecord, asRecord, getErrorCode, isNonEmptyString, isProcessAlive, lower } from "./src/common.ts";
+import { FIX_RECEIPT_FILE_NAME, FIX_RECEIPT_PATH, MODELS_JSON_PATH, MODELS_TRANSACTION_LOCK_PATH, MODELS_TRANSACTION_LOCK_STALE_MS, MODELS_TRANSACTION_LOCK_WAIT_MS, STATE_DIR } from "./src/paths.ts";
 
 type MutableEnv = Record<string, string | undefined>;
 
@@ -93,16 +95,10 @@ const STARTUP_CACHE_RETENTION_ENV = getOrCaptureCacheRetentionBaseline();
 // ============================================================
 requestLongCacheRetention();
 
-type PiModel = NonNullable<ExtensionContext["model"]>;
-type ModelIdentity = Pick<PiModel, "provider" | "id">;
-type UnknownRecord = Record<string, unknown>;
 type CacheProviderId = "deepseek" | "openai" | "claude" | "gemini";
 
-const LOG_PREFIX = "pi-cache-optimizer";
 const STATUS_KEY = "pi-cache-stats";
 
-/** Use Pi core's resolver so rebranded config names and env semantics stay aligned. */
-const STATE_DIR = getAgentDir();
 const STATE_FILE_PATH = join(STATE_DIR, "pi-cache-optimizer-stats.json");
 const LEGACY_STATE_FILE_PATH = join(STATE_DIR, "deepseek-cache-optimizer-stats.json");
 const SHARD_STATE_DIR = join(STATE_DIR, "pi-cache-optimizer-stats.d");
@@ -116,11 +112,6 @@ const SHARD_CLEANUP_MARKER_PATH = join(SHARD_MAINTENANCE_DIR, "last-cleanup");
 const CONFIG_FILE_PATH = join(STATE_DIR, "pi-cache-optimizer-config.json");
 const CONFIG_RECEIPT_FILE_NAME = "pi-cache-optimizer-config-receipt.json";
 const CONFIG_RECEIPT_PATH = join(STATE_DIR, CONFIG_RECEIPT_FILE_NAME);
-const FIX_RECEIPT_FILE_NAME = "pi-cache-optimizer-fix-receipt.json";
-const FIX_RECEIPT_PATH = join(STATE_DIR, FIX_RECEIPT_FILE_NAME);
-const MODELS_TRANSACTION_LOCK_PATH = join(STATE_DIR, "pi-cache-optimizer-models-transaction.lock");
-const MODELS_TRANSACTION_LOCK_STALE_MS = 60_000;
-const MODELS_TRANSACTION_LOCK_WAIT_MS = 5_000;
 const SHARD_RETENTION_MS = 48 * 60 * 60 * 1000;
 const SHARD_TEMP_RETENTION_MS = 24 * 60 * 60 * 1000;
 const SHARD_CLEANUP_INTERVAL_MS = 6 * 60 * 60 * 1000;
@@ -1455,15 +1446,6 @@ function makeSessionModelKey(sessionHash: string, provider: string, id: string):
 function modelKeyFromSessionKey(sessionModelKey: string): string {
   const idx = sessionModelKey.indexOf(":");
   return idx >= 0 ? sessionModelKey.slice(idx + 1) : sessionModelKey;
-}
-
-function asRecord(value: unknown): UnknownRecord | undefined {
-  if (typeof value !== "object" || value === null || Array.isArray(value)) return undefined;
-  return value as UnknownRecord;
-}
-
-function lower(value: unknown): string {
-  return typeof value === "string" ? value.toLowerCase() : "";
 }
 
 function getNumber(value: unknown): number | undefined {
@@ -3304,10 +3286,6 @@ function hasEffectivePromptCacheKey(record: UnknownRecord): boolean {
   return isNonEmptyString(record.prompt_cache_key) || isNonEmptyString(record.promptCacheKey);
 }
 
-function isNonEmptyString(value: unknown): value is string {
-  return typeof value === "string" && value.trim().length > 0;
-}
-
 function isOfficialOpenAIBaseUrl(model: PiModel): boolean {
   const value = lower(model.baseUrl).trim();
   if (!value) {
@@ -4410,12 +4388,6 @@ function buildStatsOutput(model: PiModel | undefined, adapter: CacheProviderAdap
   return lines.join("\n");
 }
 
-function getErrorCode(error: unknown): string | undefined {
-  return typeof error === "object" && error !== null && "code" in error
-    ? String((error as { code?: unknown }).code)
-    : undefined;
-}
-
 function parseCacheStats(value: unknown): CacheStats | undefined {
   const stats = asRecord(value);
   if (!stats || typeof stats.day !== "string" || !/^\d{4}-\d{2}-\d{2}$/.test(stats.day)) {
@@ -5155,16 +5127,6 @@ async function loadStatsShardAggregateV7(directory: string = SHARD_FILES_DIR): P
   return aggregateStatsShardsV7(await readValidStatsShardsV7(directory));
 }
 
-function isProcessAlive(pid: number): boolean {
-  if (!Number.isInteger(pid) || pid <= 0) return false;
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch (error) {
-    return getErrorCode(error) === "EPERM";
-  }
-}
-
 async function removeLegacyStatsFiles(): Promise<void> {
   for (const path of [STATE_FILE_PATH, LEGACY_STATE_FILE_PATH]) {
     try {
@@ -5831,9 +5793,6 @@ function buildCompatDiagnosis(model: PiModel): string | undefined {
 // ============================================================
 // JSONC comment-preserving surgical edit helpers for /cache-optimizer fix
 // ============================================================
-
-/** The real models.json path used for I/O. */
-const MODELS_JSON_PATH = join(STATE_DIR, "models.json");
 
 // ── String-aware JSONC scanning primitives ─────────────────────────
 //
