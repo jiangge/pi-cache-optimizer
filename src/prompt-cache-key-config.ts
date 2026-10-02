@@ -1,6 +1,6 @@
 import { type FileIdentity, atomicCreateTextFileNoReplace, atomicReplaceTextFilePreservingMode, atomicRestoreFileFromBackup, backupTimestamp, hashText, sameFileIdentity, uniqueTempPath, validateAtomicTarget, withModelsJsonTransactionLock } from "./atomic-fs.ts";
 import { LOG_PREFIX, type PiModel, asRecord, getErrorCode } from "./common.ts";
-import { CONFIG_FILE_PATH, type PersistedCacheOptimizerConfigV2, normalizePersistedCacheOptimizerConfig, parsePersistedCacheOptimizerConfig } from "./config.ts";
+import { CONFIG_FILE_PATH, type PersistedCacheOptimizerConfigV2, type PersistedCacheOptimizerConfigV3, normalizePersistedCacheOptimizerConfig, parsePersistedCacheOptimizerConfig } from "./config.ts";
 import { isReceiptTimestamp, isSafeReceiptText, isSha256 } from "./fix-types.ts";
 import { modelKey } from "./model-identity.ts";
 import { STATE_DIR } from "./paths.ts";
@@ -183,7 +183,9 @@ export async function applyPromptCacheKeyConfigFixUnderLock(
   const targetHadModelKey = existingOmit.includes(key);
   if (targetHadModelKey) throw new Error("prompt-cache-key is already configured; no changes were made");
   const omit = [...new Set([...existingOmit, key])].sort();
-  const next: PersistedCacheOptimizerConfigV2 = { ...current, version: 2, promptCacheKey: { omit } };
+  // Serialize through the normalizer so a v3 config (with feature overrides) stays v3; writing
+  // `version: 2` next to `features` would make the whole file unreadable.
+  const next = normalizePersistedCacheOptimizerConfig({ ...current, promptCacheKey: { omit } });
   const modifiedText = JSON.stringify(next, null, 2) + "\n";
   const beforeHash = hashText(originalText);
   const afterHash = hashText(modifiedText);
@@ -290,7 +292,7 @@ export async function rollbackPromptCacheKeyConfigUnderLock(
   const key = `${receipt.provider}/${receipt.modelId}`;
   if (receipt.addedModelKey !== key) throw new Error("prompt-cache-key receipt identity does not match; refusing to change user config");
   if (receipt.targetHadModelKey) throw new Error("prompt-cache-key was already configured before this fix; refusing to remove user configuration");
-  const omit = current.version === 2 ? current.promptCacheKey?.omit ?? [] : [];
+  const omit = current.version !== 1 ? current.promptCacheKey?.omit ?? [] : [];
   if (!omit.includes(receipt.addedModelKey)) throw new Error("prompt-cache-key opt-out is no longer present; refusing to change user config");
 
   let rollbackResultText: string | undefined;
@@ -311,12 +313,12 @@ export async function rollbackPromptCacheKeyConfigUnderLock(
       { backupHash: receipt.beforeHash, identity: currentInfo, hash: currentHash, mode: currentMode },
     );
     rollbackResultInfo = await lstat(configPath);
-  } else if (current.footerMode || omit.length > 1) {
-    const restored: PersistedCacheOptimizerConfigV2 = {
-      version: 2,
-      ...(current.footerMode ? { footerMode: current.footerMode } : {}),
-      ...(omit.length > 1 ? { promptCacheKey: { omit: omit.filter((item) => item !== receipt.addedModelKey) } } : {}),
-    };
+  } else if (current.footerMode || omit.length > 1 || (current.version === 3 && current.features)) {
+    const remaining = omit.filter((item) => item !== receipt.addedModelKey);
+    const restored = normalizePersistedCacheOptimizerConfig({
+      ...current,
+      promptCacheKey: remaining.length > 0 ? { omit: remaining } : undefined,
+    } as PersistedCacheOptimizerConfigV3);
     rollbackResultText = JSON.stringify(restored, null, 2) + "\n";
     rollbackResultMode = currentMode;
     await atomicReplaceTextFilePreservingMode(

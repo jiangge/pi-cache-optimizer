@@ -278,6 +278,7 @@ describe("OpenAI-compatible request contracts", () => {
       { name: "hidden", description: "Hidden", filePath: "/skills/hidden/SKILL.md", baseDir: "/skills/hidden", sourceInfo, disableModelInvocation: true },
     ] as any;
     assert.equal(internals.formatSkillsForPrompt(skills), piSkills.formatSkillsForPrompt(skills));
+    assert.equal(internals.formatSkillsForPrompt(skills, "bash"), piSkills.formatSkillsForPrompt(skills, "bash"));
   });
 
   describe("skill compression on Pi's real system prompt", () => {
@@ -351,9 +352,11 @@ describe("OpenAI-compatible request contracts", () => {
       const build = await loadPiPrompt();
       const prompt = build(["read"]);
       assert.equal(internals.compressSkillsInSystemPrompt(prompt, { skills: skills.slice(0, 2) } as any), prompt);
-      // `bash`-only tool sets make Pi word the preamble differently, so the anchor does not match: fail closed.
+      // `bash`-only tool sets make Pi say "Use bash to load…"; compression must recognise that wording too.
       const bashOnly = build(["bash"]);
-      assert.equal(internals.compressSkillsInSystemPrompt(bashOnly, { skills } as any), bashOnly);
+      const bashOut = internals.compressSkillsInSystemPrompt(bashOnly, { skills, selectedTools: ["bash"] } as any);
+      assert.ok(!bashOut.includes("<available_skills>"), "bash-only prompt is compressed");
+      assert.ok(bashOut.includes("Use bash to load a skill's file when the task matches its description."), "Pi's bash wording is kept");
       const previous = process.env.PI_CACHE_OPTIMIZER_NO_SKILL_COMPRESSION;
       process.env.PI_CACHE_OPTIMIZER_NO_SKILL_COMPRESSION = "1";
       try {

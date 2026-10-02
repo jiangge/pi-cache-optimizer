@@ -19,13 +19,24 @@ export function escapeXml(value: string): string {
     .replace(/'/g, "&apos;");
 }
 
-export function formatSkillsForPrompt(skills: NonNullable<BuildSystemPromptOptions["skills"]>): string {
+/** The tool Pi tells the model to load skill files with: `read` when selected, otherwise `bash`; undefined when neither. */
+export type SkillFileReadTool = "read" | "bash";
+
+export function skillFileReadTool(opts: Pick<BuildSystemPromptOptions, "selectedTools">): SkillFileReadTool | undefined {
+  const tools = opts.selectedTools ?? ["read", "bash", "edit", "write"];
+  return (["read", "bash"] as const).find((tool) => tools.includes(tool));
+}
+
+/** Byte-for-byte copy of Pi's formatter (contract-tested against the installed Pi for both tool wordings). */
+export function formatSkillsForPrompt(skills: NonNullable<BuildSystemPromptOptions["skills"]>, fileReadTool: SkillFileReadTool = "read"): string {
   const visibleSkills = skills.filter((skill) => !skill.disableModelInvocation);
   if (visibleSkills.length === 0) return "";
 
   const lines = [
     "\n\nThe following skills provide specialized instructions for specific tasks.",
-    "Use the read tool to load a skill's file when the task matches its description.",
+    fileReadTool === "read"
+      ? "Use the read tool to load a skill's file when the task matches its description."
+      : "Use bash to load a skill's file when the task matches its description.",
     "When a skill file references a relative path, resolve it against the skill directory (parent of SKILL.md / dirname of the path) and use that absolute path in tool commands.",
     "",
     "<available_skills>",
@@ -68,6 +79,7 @@ export function formatSkillsForPrompt(skills: NonNullable<BuildSystemPromptOptio
  */
 export function formatSkillsForPromptCompressed(
   skills: NonNullable<BuildSystemPromptOptions["skills"]>,
+  fileReadTool: SkillFileReadTool = "read",
 ): string {
   const visibleSkills = skills.filter((skill) => !skill.disableModelInvocation);
   if (visibleSkills.length === 0) return "";
@@ -92,7 +104,7 @@ export function formatSkillsForPromptCompressed(
   }
 
   const compare = (a: string, b: string): number => (a < b ? -1 : a > b ? 1 : 0);
-  const header = formatSkillsForPrompt(skills);
+  const header = formatSkillsForPrompt(skills, fileReadTool);
   const preamble = header.slice(0, header.indexOf("<available_skills>")).trim();
 
   const lines: string[] = [preamble];
@@ -142,10 +154,10 @@ export function compressSkillsInSystemPrompt(
   const visible = opts.skills.filter((skill) => !skill.disableModelInvocation);
   if (visible.length < SKILL_COMPRESSION_MIN_COUNT) return prompt;
 
-  const verbose = formatSkillsForPrompt(opts.skills).trim();
+  const verbose = formatSkillsForPrompt(opts.skills, skillFileReadTool(opts) ?? "read").trim();
   if (!verbose || !prompt.includes(verbose)) return prompt;
 
-  const compressed = formatSkillsForPromptCompressed(opts.skills).trim();
+  const compressed = formatSkillsForPromptCompressed(opts.skills, skillFileReadTool(opts) ?? "read").trim();
   if (!compressed || compressed.length >= verbose.length) return prompt;
 
   return prompt.replace(verbose, () => compressed);
@@ -174,9 +186,9 @@ export function compressSkillsViaSection(event: {
   if (!sections || typeof sections !== "object" || options.forceSystemPrompt !== undefined) return false;
   if (!options.skills || options.skills.filter((skill) => !skill.disableModelInvocation).length < SKILL_COMPRESSION_MIN_COUNT) return false;
 
-  const verbose = formatSkillsForPrompt(options.skills).trim();
+  const verbose = formatSkillsForPrompt(options.skills, skillFileReadTool(options) ?? "read").trim();
   if (!verbose || !event.systemPrompt.includes(verbose)) return false;
-  const compressed = formatSkillsForPromptCompressed(options.skills).trim();
+  const compressed = formatSkillsForPromptCompressed(options.skills, skillFileReadTool(options) ?? "read").trim();
   if (!compressed || compressed.length >= verbose.length) return false;
 
   const previous = sections.skills;
@@ -267,7 +279,7 @@ export function explainSkillCompressionSkip(prompt: string, opts: BuildSystemPro
   if (!prompt.includes("<available_skills>")) {
     return "the prompt has no skill list (no read tool selected, or another extension replaced it)";
   }
-  if (!prompt.includes(formatSkillsForPrompt(opts.skills ?? []).trim())) {
+  if (!prompt.includes(formatSkillsForPrompt(opts.skills ?? [], skillFileReadTool(opts) ?? "read").trim())) {
     return "Pi's skill list format was not recognised; Pi may have changed it (please report this)";
   }
   return "the compressed list would not be shorter";

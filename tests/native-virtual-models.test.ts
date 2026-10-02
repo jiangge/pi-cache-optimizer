@@ -744,6 +744,27 @@ describe("native virtual model hooks", () => {
     });
   });
 
+  test("cache hints follow the effective prompt-rewrite setting, not only the environment", async () => {
+    const { hooks } = setup();
+    const previousEnv = process.env.PI_CACHE_OPTIMIZER_NO_PROMPT_REWRITE;
+    const previousConfig = t.readPersistedCacheOptimizerConfig();
+    process.env.PI_CACHE_OPTIMIZER_NO_PROMPT_REWRITE = "1";
+    // Persisted config overrides the environment variable and turns prompt rewrite back on.
+    t.setPersistedCacheOptimizerConfig({ ...previousConfig, version: 3, features: { promptRewrite: true } });
+    try {
+      const systemPrompt = ["You are a coding assistant.", "<session-overview>", "Branch: main", "## RECENT COMMITS", "abc123 x", "## PATHS", "p", "</session-overview>"].join("\n");
+      const result = await hooks.get("before_agent_start")!({ systemPrompt, systemPromptOptions: { cwd: "/tmp", contextFiles: [], skills: [] } }, context(physical("proxy", "kimi-k3"))) as { systemPrompt?: string };
+      assert.ok(result.systemPrompt && !result.systemPrompt.includes("RECENT COMMITS"), "prompt was rewritten");
+      const service = (globalThis as any)[Symbol.for("pi.cache.hints.v1")];
+      const hint = service?.getHints({ upstreamProvider: "proxy", upstreamModelId: "kimi-k3" });
+      assert.equal(hint?.systemPrompt, result.systemPrompt, "router consumers receive the prompt that was actually sent");
+    } finally {
+      if (previousEnv === undefined) delete process.env.PI_CACHE_OPTIMIZER_NO_PROMPT_REWRITE;
+      else process.env.PI_CACHE_OPTIMIZER_NO_PROMPT_REWRITE = previousEnv;
+      t.setPersistedCacheOptimizerConfig(previousConfig);
+    }
+  });
+
   test("nested codemode tool calls do not refresh the footer on their own", async () => {
     const { hooks } = setup();
     const statuses: Array<string | undefined> = [];

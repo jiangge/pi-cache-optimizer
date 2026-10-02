@@ -2921,6 +2921,52 @@ describe("prompt_cache_key model opt-out", () => {
     }
   });
 
+  test("fix and rollback keep v3 feature settings intact", async () => {
+    const tempDir = await mkdtemp(join(tmpdir(), "pi-cache-key-config-v3-test-"));
+    const configPath = join(tempDir, "pi-cache-optimizer-config.json");
+    const receiptPath = join(tempDir, "pi-cache-optimizer-config-receipt.json");
+    const original = JSON.stringify({ version: 3, footerMode: "total", features: { promptRewrite: false, toolOrder: true } }, null, 2) + "\n";
+    try {
+      await writeFile(configPath, original, { encoding: "utf8", mode: 0o600 });
+      await internals.applyPromptCacheKeyConfigFix(model, configPath, receiptPath);
+      // The fixed file must still parse: every persisted setting survives next to the new opt-out.
+      assert.deepEqual(internals.readPersistedCacheOptimizerConfig(configPath), {
+        version: 3,
+        footerMode: "total",
+        promptCacheKey: { omit: ["proxy/gpt-5.5"] },
+        features: { promptRewrite: false, toolOrder: true },
+      });
+      const snapshot = await internals.readPromptCacheKeyConfigReceiptSnapshot(receiptPath);
+      assert.ok(snapshot);
+      await internals.rollbackPromptCacheKeyConfig(snapshot, configPath, receiptPath);
+      assert.equal(await readFile(configPath, "utf8"), original);
+    } finally {
+      await rm(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  test("feature toggles refuse to overwrite an unreadable config", async () => {
+    const tempDir = await mkdtemp(join(tmpdir(), "pi-cache-feature-config-test-"));
+    const configPath = join(tempDir, "pi-cache-optimizer-config.json");
+    const unreadable = "{\"version\": 9, \"footerMode\": \"total\", \"promptCacheKey\": {\"omit\": [\"proxy/gpt-5.5\"]}}\n";
+    try {
+      await writeFile(configPath, unreadable, "utf8");
+      await assert.rejects(internals.writePersistedFeature("toolOrder", true, configPath), /invalid|refus/i);
+      assert.equal(await readFile(configPath, "utf8"), unreadable, "user config left untouched");
+      await writeFile(configPath, "{ not json", "utf8");
+      await assert.rejects(internals.writePersistedFeature("toolOrder", true, configPath), /invalid|refus/i);
+      assert.equal(await readFile(configPath, "utf8"), "{ not json");
+      // A valid config is updated in place, keeping unrelated settings.
+      await writeFile(configPath, JSON.stringify({ version: 2, footerMode: "total", promptCacheKey: { omit: ["proxy/gpt-5.5"] } }), "utf8");
+      await internals.writePersistedFeature("toolOrder", true, configPath);
+      assert.deepEqual(internals.readPersistedCacheOptimizerConfig(configPath), {
+        version: 3, footerMode: "total", promptCacheKey: { omit: ["proxy/gpt-5.5"] }, features: { toolOrder: true },
+      });
+    } finally {
+      await rm(tempDir, { recursive: true, force: true });
+    }
+  });
+
   test("fix receipt failure restores both existing and absent config targets", async () => {
     for (const targetExists of [true, false]) {
       const tempDir = await mkdtemp(join(tmpdir(), `pi-cache-key-config-fix-receipt-failure-${targetExists}-`));

@@ -542,7 +542,7 @@ export default function (pi: ExtensionAPI) {
   const uninstallCacheHintsService = installCacheHintsService(markOptimizerOwnedCacheHintsService({
     version: 1,
     getHints(input: PiCacheHintsInput): PiCacheHintsOutput | undefined {
-      if (!runtimeOptimizerEnabled || isEnabledEnv(process.env[NO_PROMPT_REWRITE_ENV])) return undefined;
+      if (!runtimeOptimizerEnabled || !featureEnabled("promptRewrite", NO_PROMPT_REWRITE_ENV, true)) return undefined;
       const hint = latestCacheHint;
       if (!hint) return undefined;
       if (input.sessionIdHash && hint.sessionIdHash && input.sessionIdHash !== hint.sessionIdHash) return undefined;

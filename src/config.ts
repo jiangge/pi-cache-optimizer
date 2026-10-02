@@ -211,15 +211,32 @@ export async function writePersistedFooterMode(
   await withModelsJsonTransactionLock(() => writePersistedFooterModeUnlocked(mode, configPath));
 }
 
-export async function writePersistedFeature(feature: PersistedCacheOptimizerFeature, enabled: boolean): Promise<void> {
-  const current = readPersistedCacheOptimizerConfig();
-  const next: PersistedCacheOptimizerConfigV3 = {
-    ...current,
-    version: 3,
-    features: { ...(current.features ?? {}), [feature]: enabled },
-  };
-  await writePersistedCacheOptimizerConfig(next);
-  setPersistedCacheOptimizerConfig(readPersistedCacheOptimizerConfig());
+export async function writePersistedFeature(
+  feature: PersistedCacheOptimizerFeature,
+  enabled: boolean,
+  configPath: string = CONFIG_FILE_PATH,
+): Promise<void> {
+  await withModelsJsonTransactionLock(async () => {
+    // Read under the same lock as the write, and never replace a file we cannot parse:
+    // readPersistedCacheOptimizerConfig() falls back to defaults, which would erase the
+    // user's footer mode and prompt-cache-key opt-outs.
+    let raw: PersistedCacheOptimizerConfig | undefined;
+    try {
+      raw = parsePersistedCacheOptimizerConfig(JSON.parse(await readFile(configPath, "utf8")));
+      if (!raw) throw new Error("optimizer config is invalid; refusing to overwrite user changes");
+    } catch (error) {
+      if (getErrorCode(error) !== "ENOENT") {
+        throw new Error(`optimizer config ${configPath} is invalid or unreadable; refusing to overwrite user changes. Fix or remove it, then retry.`);
+      }
+    }
+    const current = normalizePersistedCacheOptimizerConfig(raw);
+    await writePersistedCacheOptimizerConfigUnlocked({
+      ...current,
+      version: 3,
+      features: { ...(current.features ?? {}), [feature]: enabled },
+    }, configPath);
+  });
+  if (configPath === CONFIG_FILE_PATH) setPersistedCacheOptimizerConfig(readPersistedCacheOptimizerConfig());
 }
 
 export function resolveFooterStatsMode(
