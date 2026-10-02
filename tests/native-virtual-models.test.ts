@@ -605,6 +605,83 @@ describe("native virtual model hooks", () => {
     assert.ok(!/<skills>\n\s*\n<\/skills>/.test(out), "completions: no empty section shells");
   });
 
+  describe("skill compression as a section edit", () => {
+    const sourceInfo = { path: "", source: "local", scope: "user", origin: "top-level" };
+    const skills = ["alpha", "beta", "gamma", "delta", "epsilon"].map((name) => ({
+      name, description: `${name} skill\n description`, filePath: `/skills/${name}/SKILL.md`, baseDir: `/skills/${name}`, sourceInfo, disableModelInvocation: false,
+    }));
+    const loadPi = async () => createJiti(join(process.cwd(), "tests", "pi-system-prompt-test.ts"), { interopDefault: false, moduleCache: false }).import<typeof import("../node_modules/@earendil-works/pi-coding-agent/dist/core/system-prompt.js")>(
+      join(process.cwd(), "node_modules", "@earendil-works", "pi-coding-agent", "dist", "core", "system-prompt.js"),
+    );
+    /** Mimics ExtensionRunner.emitBeforeAgentStart: options are mutable and `systemPrompt` re-renders from them. */
+    const piEvent = (pi: Awaited<ReturnType<typeof loadPi>>, extra: Record<string, unknown> = {}) => {
+      const options = pi.normalizeBuildSystemPromptOptions({ cwd: "/repo", skills, selectedTools: ["read", "bash"], ...extra } as any);
+      return { options, event: { type: "before_agent_start", prompt: "hi", get systemPrompt() { return pi.buildSystemPrompt(options); }, systemPromptOptions: options } };
+    };
+
+    test("edits sections.skills, keeps Pi's order and wrapper, and returns no forced prompt", async () => {
+      const pi = await loadPi();
+      const { hooks } = setup();
+      const { options, event } = piEvent(pi);
+      const before = event.systemPrompt;
+      const result = await hooks.get("before_agent_start")!(event, context(physical("proxy", "kimi-k3")));
+      assert.deepEqual(result, {}, "no forced prompt: Pi renders the edited section itself");
+      assert.equal(typeof options.sections.skills, "string");
+      const after = event.systemPrompt;
+      assert.ok(!after.includes("<available_skills>") && after.length < before.length);
+      assert.match(after, /<skills>\nThe following skills provide[\s\S]*- alpha: alpha skill description[\s\S]*<\/skills>/);
+      // Section order is Pi's: skills still sits between the docs and the cwd.
+      assert.ok(after.indexOf("<docs>") < after.indexOf("<skills>") && after.indexOf("<skills>") < after.indexOf("<cwd>"));
+      assert.equal(pi.buildSystemPromptSections(options as any).skills, `<skills>\n${options.sections.skills}\n</skills>`);
+    });
+
+    test("a handler that runs later still sees, and can edit, the sections", async () => {
+      const pi = await loadPi();
+      const { hooks } = setup();
+      const { options, event } = piEvent(pi);
+      await hooks.get("before_agent_start")!(event, context(physical("proxy", "kimi-k3")));
+      options.sections.extra = "from a later extension";
+      assert.match(event.systemPrompt, /<extra>\nfrom a later extension\n<\/extra>/);
+      assert.ok(event.systemPrompt.includes("- alpha: alpha skill description"), "earlier compression survives later section edits");
+    });
+
+    test("falls back to the string substitution after a forced prompt or without sections support", async () => {
+      const pi = await loadPi();
+      const { hooks } = setup();
+
+      const forced = piEvent(pi);
+      forced.options.forceSystemPrompt = pi.buildSystemPrompt(forced.options); // an earlier handler already forced the prompt
+      const forcedResult = await hooks.get("before_agent_start")!(forced.event, context(physical("proxy", "kimi-k3"))) as { systemPrompt?: string };
+      assert.equal(forced.options.sections.skills, undefined, "sections are ignored once forced");
+      assert.ok(forcedResult.systemPrompt && !forcedResult.systemPrompt.includes("<available_skills>"));
+      assert.ok(forcedResult.systemPrompt.includes("- alpha: alpha skill description"));
+
+      // Pre-0.86 shape: no `sections`, prompt supplied as a string.
+      const legacyPrompt = `base${t.formatSkillsForPrompt(skills as any)}\n\nCurrent working directory: /repo`;
+      const legacy = { systemPrompt: legacyPrompt, systemPromptOptions: { cwd: "/repo", contextFiles: [], skills } };
+      const legacyResult = await hooks.get("before_agent_start")!(legacy, context(physical("proxy", "kimi-k3"))) as { systemPrompt?: string };
+      assert.ok(legacyResult.systemPrompt?.includes("- alpha: alpha skill description"));
+      assert.ok(!legacyResult.systemPrompt?.includes("<available_skills>"));
+    });
+
+    test("an opt-out leaves sections untouched", async () => {
+      const pi = await loadPi();
+      const { hooks } = setup();
+      const previous = process.env.PI_CACHE_OPTIMIZER_NO_SKILL_COMPRESSION;
+      process.env.PI_CACHE_OPTIMIZER_NO_SKILL_COMPRESSION = "1";
+      try {
+        const { options, event } = piEvent(pi);
+        const before = event.systemPrompt;
+        assert.deepEqual(await hooks.get("before_agent_start")!(event, context(physical("proxy", "kimi-k3"))), {});
+        assert.equal(options.sections.skills, undefined);
+        assert.equal(event.systemPrompt, before);
+      } finally {
+        if (previous === undefined) delete process.env.PI_CACHE_OPTIMIZER_NO_SKILL_COMPRESSION;
+        else process.env.PI_CACHE_OPTIMIZER_NO_SKILL_COMPRESSION = previous;
+      }
+    });
+  });
+
   test("nested codemode tool calls do not refresh the footer on their own", async () => {
     const { hooks } = setup();
     const statuses: Array<string | undefined> = [];

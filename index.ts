@@ -879,6 +879,42 @@ function compressSkillsInSystemPrompt(
 }
 
 /**
+ * Preferred way to apply skill compression on Pi >= 0.86: set the structured
+ * `skills` prompt section instead of returning a whole replacement prompt.
+ *
+ * Returning `systemPrompt` makes Pi treat it as a forced prompt that replaces the
+ * entire leading system message, which silently discards section edits made by
+ * handlers that run later and stops Pi from recording/sending only the changed
+ * sections. A custom section named `skills` overrides Pi's own and keeps its
+ * position and `<skills>` wrapper. Returns true only when Pi's re-rendered prompt
+ * really contains the compressed list; otherwise the section is restored and the
+ * caller falls back to the string substitution.
+ */
+function compressSkillsViaSection(event: {
+  readonly systemPrompt: string;
+  systemPromptOptions: BuildSystemPromptOptions;
+}): boolean {
+  if (!featureEnabled("skillCompression", NO_SKILL_COMPRESSION_ENV, true)) return false;
+  const options = event.systemPromptOptions;
+  const sections = options?.sections;
+  // Pi < 0.86 has no sections; a forced prompt (set by an earlier handler) ignores them.
+  if (!sections || typeof sections !== "object" || options.forceSystemPrompt !== undefined) return false;
+  if (!options.skills || options.skills.filter((skill) => !skill.disableModelInvocation).length < SKILL_COMPRESSION_MIN_COUNT) return false;
+
+  const verbose = formatSkillsForPrompt(options.skills).trim();
+  if (!verbose || !event.systemPrompt.includes(verbose)) return false;
+  const compressed = formatSkillsForPromptCompressed(options.skills).trim();
+  if (!compressed || compressed.length >= verbose.length) return false;
+
+  const previous = sections.skills;
+  sections.skills = compressed;
+  if (event.systemPrompt.includes(compressed) && !event.systemPrompt.includes(verbose)) return true;
+  if (previous === undefined) delete sections.skills;
+  else sections.skills = previous;
+  return false;
+}
+
+/**
  * Strip per-turn churn from trellis `<session-overview>` block.
  *
  * Trellis injects a session-overview that includes `RECENT COMMITS`
@@ -10999,21 +11035,28 @@ export default function (pi: ExtensionAPI) {
     // remain active.
     if (!featureEnabled("promptRewrite", NO_PROMPT_REWRITE_ENV, true)) return {};
 
-    // Step 1: strip per-turn churn from <session-overview>.
+    // Skill compression first, as a section edit when Pi supports it (see
+    // compressSkillsViaSection); the string path below is the fallback.
+    compressSkillsViaSection(event);
+
+    // Strip per-turn churn from <session-overview>.
     // Removing RECENT COMMITS, Working directory status, and
     // Journal line count makes more of the session-overview stable
     // across turns, which DeepSeek's prefix cache can then retain.
+    // This edit has no section to target, so a changed prompt is returned
+    // as a forced prompt.
     const strippedPrompt = stripSessionOverviewChurn(event.systemPrompt);
 
-    // Step 2: replace Pi's verbose skills XML with the grouped list that
-    // keeps every name and description. Deterministic from the same
-    // `event.systemPromptOptions.skills`, so cache stability is unchanged.
-    // No-op if opted out, below SKILL_COMPRESSION_MIN_COUNT, or if pi
-    // emitted a format we don't recognize.
+    // Fallback skill compression: substitute the verbose block in the string
+    // (Pi < 0.86, or a forced prompt from an earlier handler). Deterministic from the same `event.systemPromptOptions.skills`,
+    // so cache stability is unchanged. No-op if opted out, below
+    // SKILL_COMPRESSION_MIN_COUNT, or if pi emitted a format we don't recognize.
     const compressedPrompt = compressSkillsInSystemPrompt(
       strippedPrompt,
       event.systemPromptOptions,
     );
+    // With a section edit and nothing to strip, Pi renders the compressed prompt
+    // itself and no forced prompt is returned.
     const changed = compressedPrompt !== event.systemPrompt && compressedPrompt.trim().length > 0;
     const finalPrompt = changed ? compressedPrompt : event.systemPrompt;
 

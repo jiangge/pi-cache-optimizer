@@ -955,6 +955,16 @@ Key properties:
   wrapped in `<skills>`; older Pi appended it with leading newlines. Matching
   the untrimmed text silently disabled compression on every Pi >= 0.86
   (regression fixed; guarded by tests built on Pi's real `buildSystemPrompt`).
+* **Applied as a section edit when possible**: on Pi >= 0.86 the hook sets
+  `systemPromptOptions.sections.skills` (a custom section overrides Pi's own
+  and keeps its position and `<skills>` wrapper) and returns no prompt, so Pi
+  records and sends the changed section normally and later handlers' section
+  edits are not discarded. Returning `systemPrompt` would set Pi's
+  `forceSystemPrompt`, which replaces the whole leading system message and
+  ignores sections. The section edit is kept only if Pi's re-rendered prompt
+  contains the compressed list and no longer the verbose one; otherwise it is
+  reverted. The string substitution is the fallback for Pi < 0.86 and for a
+  prompt already forced by an earlier handler (e.g. Trellis).
 * **Measured**: ~30 % smaller skills block (54 skills, real paths), about
   1.8k tokens per uncached request. Skill choice and read paths were
   identical to Pi's XML list on `openai-codex/gpt-6-luna` (32 trials).
