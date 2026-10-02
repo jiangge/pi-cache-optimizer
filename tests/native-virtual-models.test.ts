@@ -682,6 +682,68 @@ describe("native virtual model hooks", () => {
     });
   });
 
+  describe("skill compression outcome is visible", () => {
+    const sourceInfo = { path: "", source: "local", scope: "user", origin: "top-level" };
+    const mkSkills = (n: number) => Array.from({ length: n }, (_, i) => ({
+      name: `s${i}`, description: `skill ${i}`, filePath: `/skills/s${i}/SKILL.md`, baseDir: `/skills/s${i}`, sourceInfo, disableModelInvocation: false,
+    }));
+    const loadPi = async () => createJiti(join(process.cwd(), "tests", "pi-outcome-test.ts"), { interopDefault: false, moduleCache: false }).import<typeof import("../node_modules/@earendil-works/pi-coding-agent/dist/core/system-prompt.js")>(
+      join(process.cwd(), "node_modules", "@earendil-works", "pi-coding-agent", "dist", "core", "system-prompt.js"),
+    );
+    const piEvent = (pi: Awaited<ReturnType<typeof loadPi>>, skills: unknown[]) => {
+      const options = pi.normalizeBuildSystemPromptOptions({ cwd: "/repo", skills, selectedTools: ["read"] } as any);
+      return { options, event: { type: "before_agent_start", prompt: "hi", get systemPrompt() { return pi.buildSystemPrompt(options); }, systemPromptOptions: options } };
+    };
+    const withEnv = async (name: string, value: string, fn: () => Promise<void>) => {
+      const previous = process.env[name];
+      process.env[name] = value;
+      try { await fn(); } finally { if (previous === undefined) delete process.env[name]; else process.env[name] = previous; }
+    };
+
+    test("records which path applied, and why it did not", async () => {
+      const pi = await loadPi();
+      const { hooks } = setup();
+      const run = async (event: unknown) => { await hooks.get("before_agent_start")!(event, context(physical("proxy", "kimi-k3"))); return t.getLastSkillCompressionOutcome(); };
+
+      assert.equal((await run(piEvent(pi, mkSkills(5)).event))?.applied, "section");
+
+      const forced = piEvent(pi, mkSkills(5));
+      forced.options.forceSystemPrompt = pi.buildSystemPrompt(forced.options);
+      assert.equal((await run(forced.event))?.applied, "string");
+
+      const few = await run(piEvent(pi, mkSkills(2)).event);
+      assert.equal(few?.applied, false);
+      assert.match(few?.reason ?? "", /only 2 visible skill/);
+
+      // A skill list Pi rendered differently (the 0.86 regression) must be reported, not silently skipped.
+      const changed = { systemPrompt: "base\n<skills>\n<available_skills>\n  <skill>something new</skill>\n</available_skills>\n</skills>", systemPromptOptions: { cwd: "/repo", contextFiles: [], skills: mkSkills(5) } };
+      const unrecognised = await run(changed);
+      assert.equal(unrecognised?.applied, false);
+      assert.match(unrecognised?.reason ?? "", /format was not recognised/);
+      assert.match(t.describeSkillCompressionOutcome(unrecognised), /^Skill compression: not applied — Pi's skill list format was not recognised/);
+
+      await withEnv("PI_CACHE_OPTIMIZER_NO_PROMPT_REWRITE", "1", async () => {
+        const off = await run(piEvent(pi, mkSkills(5)).event);
+        assert.match(off?.reason ?? "", /prompt rewrite is turned off/);
+      });
+      await withEnv("PI_CACHE_OPTIMIZER_NO_SKILL_COMPRESSION", "1", async () => {
+        const off = await run(piEvent(pi, mkSkills(5)).event);
+        assert.match(off?.reason ?? "", /skill compression is turned off/);
+      });
+    });
+
+    test("runtime status reports skill compression as inactive when prompt rewrite is off", async () => {
+      assert.ok(t.getOptimizerRuntimeModeLines().some((line: string) => /^• Skill compression: on$/.test(line)));
+      assert.ok(t.getOptimizerRuntimeModeLines().some((line: string) => /^• Prompt rewrite: on \(in-place: .*never reorders/.test(line)));
+      await withEnv("PI_CACHE_OPTIMIZER_NO_PROMPT_REWRITE", "1", async () => {
+        assert.ok(t.getOptimizerRuntimeModeLines().some((line: string) => line === "• Skill compression: on (inactive: prompt rewrite is off)"));
+      });
+      await withEnv("PI_CACHE_OPTIMIZER_NO_SKILL_COMPRESSION", "1", async () => {
+        assert.ok(t.getOptimizerRuntimeModeLines().some((line: string) => line === "• Skill compression: off"));
+      });
+    });
+  });
+
   test("nested codemode tool calls do not refresh the footer on their own", async () => {
     const { hooks } = setup();
     const statuses: Array<string | undefined> = [];

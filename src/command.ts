@@ -21,6 +21,7 @@ import { type FixSuggestion } from "./fix-types.ts";
 import { type ProviderRequestState } from "./request-state.ts";
 import { type CacheStats, type ShardAggregate } from "./stats-store.ts";
 import { type CacheUsageSample } from "./stats-report.ts";
+import { describeSkillCompressionOutcome } from "./prompt-rewrite.ts";
 
 /**
  * Everything the command needs from the extension instance. The extension keeps this state in closures
@@ -109,7 +110,7 @@ export function createCacheOptimizerCommandHandler(runtime: CommandRuntime) {
         const samples = sk ? getRecentSamples(sk) : [];
         const lowHitLines = buildLowHitDiagnosis(model, adapter, statsState, samples);
         const routeNote = describeNativeVirtualRouteNote(selectedModel, model);
-        const fullDiagnosis = [routeNote, diagnosis, ...lowHitLines].filter((line) => line !== undefined).join("\n");
+        const fullDiagnosis = [routeNote, diagnosis, describeSkillCompressionOutcome(), ...lowHitLines].filter((line) => line !== undefined).join("\n");
         cmdCtx.ui.notify(fullDiagnosis, "info");
       } else if (subcommand === "stats") {
         const aggregate = await refreshShardAggregate();

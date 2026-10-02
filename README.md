@@ -71,7 +71,7 @@ This extension requires Pi 0.82+ and is validated against Pi 1.0.0. It uses the 
 | `/cache-optimizer` | Interactive menu when UI supports it; otherwise prints help and current state. |
 | `/cache-optimizer enable` | Enables runtime optimizations for the current Pi process, resets local footer stats, and starts a fresh “enabled” measurement. |
 | `/cache-optimizer disable` | Disables optimization for the current Pi process, resets local footer stats, and keeps collecting footer stats in disabled comparison mode. Run `/reload` or restart Pi to return to startup behavior. |
-| `/cache-optimizer doctor` | Shows active model/provider/API/base URL/compat plus low-hit diagnosis. |
+| `/cache-optimizer doctor` | Shows active model/provider/API/base URL/compat, whether the skill list was compressed on the last prompt (and why not, e.g. an unrecognised Pi format), plus low-hit diagnosis. |
 | `/cache-optimizer compat` | Shows copyable compat advice for the active model, if applicable. |
 | `/cache-optimizer stats` | Shows detailed counters for every cache-adapter-matched model used by the current conversation session today. |
 | `/cache-optimizer stats all` | Shows detailed per-model totals across all valid local sessions/shards today, including request and token counts. |

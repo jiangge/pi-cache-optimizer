@@ -45,3 +45,5 @@ export function getNonNegativeNumber(record: UnknownRecord, key: string): number
   const value = getNumber(record[key]);
   return value !== undefined && value >= 0 ? value : undefined;
 }
+
+export type MutableEnv = Record<string, string | undefined>;

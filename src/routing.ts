@@ -1,12 +1,11 @@
 import { LOG_PREFIX, type PiModel, asRecord, getNumber, isNonEmptyString, lower } from "./common.ts";
 import { findLastExactModelDefinition } from "./compat-config.ts";
-import { featureEnabled } from "./config.ts";
+import { VIRTUAL_REWRITE_ENV, featureEnabled } from "./config.ts";
 import { ROUTED_FALLBACK_MODEL_SYMBOL, getAssistantRecord, isNativeVirtualModel, isResponsesPromptRewriteBypassApi, modelKey, readEffectiveCompatConfig } from "./model-identity.ts";
 import { clampPromptCacheKey } from "./request-payload.ts";
 import { type ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { createHash } from "node:crypto";
 
-export const VIRTUAL_REWRITE_ENV = "PI_CACHE_OPTIMIZER_VIRTUAL_REWRITE";
 
 export const PI_ROUTING_REGISTRY_SYMBOL = Symbol.for("pi.routing.registry.v1");
 

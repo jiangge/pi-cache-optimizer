@@ -1,8 +1,7 @@
 import { type BuildSystemPromptOptions } from "@earendil-works/pi-coding-agent";
 import { basename, dirname, join } from "node:path";
-import { featureEnabled } from "./config.ts";
+import { NO_SKILL_COMPRESSION_ENV, featureEnabled } from "./config.ts";
 
-export const NO_SKILL_COMPRESSION_ENV = "PI_CACHE_OPTIMIZER_NO_SKILL_COMPRESSION";
 
 // Minimum count of skills before compression is worth applying.
 // Below this, pi's verbose XML block is small enough that the overhead of
@@ -233,4 +232,51 @@ export function stripSessionOverviewChurn(prompt: string): string {
     .replace(/\nLine count:[^\n]*/g, "");
 
   return before + cleaned + after;
+}
+
+/**
+ * What happened to the skill list on the most recent prompt build. Compression no-ops silently by design when
+ * Pi's text is not recognised, which once hid a regression for two weeks (Pi 0.86 changed how the block is
+ * assembled); `/cache-optimizer doctor` shows this so that state is visible.
+ */
+export type SkillCompressionOutcome = {
+  applied: "section" | "string" | false;
+  /** Why compression did not apply, when it did not. */
+  reason?: string;
+  visibleSkills: number;
+  at: number;
+};
+
+let lastSkillCompressionOutcome: SkillCompressionOutcome | undefined;
+
+export function recordSkillCompressionOutcome(outcome: SkillCompressionOutcome): void {
+  lastSkillCompressionOutcome = outcome;
+}
+
+export function getLastSkillCompressionOutcome(): SkillCompressionOutcome | undefined {
+  return lastSkillCompressionOutcome;
+}
+
+/** The reason the skill list in `prompt` is left unchanged; call only when neither compression path applied. */
+export function explainSkillCompressionSkip(prompt: string, opts: BuildSystemPromptOptions): string {
+  if (!featureEnabled("skillCompression", NO_SKILL_COMPRESSION_ENV, true)) return "skill compression is turned off";
+  const visible = (opts.skills ?? []).filter((skill) => !skill.disableModelInvocation);
+  if (visible.length < SKILL_COMPRESSION_MIN_COUNT) {
+    return `only ${visible.length} visible skill(s); compression starts at ${SKILL_COMPRESSION_MIN_COUNT}`;
+  }
+  if (!prompt.includes("<available_skills>")) {
+    return "the prompt has no skill list (no read tool selected, or another extension replaced it)";
+  }
+  if (!prompt.includes(formatSkillsForPrompt(opts.skills ?? []).trim())) {
+    return "Pi's skill list format was not recognised; Pi may have changed it (please report this)";
+  }
+  return "the compressed list would not be shorter";
+}
+
+export function describeSkillCompressionOutcome(outcome: SkillCompressionOutcome | undefined = lastSkillCompressionOutcome): string {
+  if (!outcome) return "Skill compression: no prompt built yet in this process";
+  const skills = `${outcome.visibleSkills} visible skill(s)`;
+  if (outcome.applied === "section") return `Skill compression: applied (structured skills section, ${skills})`;
+  if (outcome.applied === "string") return `Skill compression: applied (prompt text substitution, ${skills})`;
+  return `Skill compression: not applied — ${outcome.reason ?? "unknown reason"}`;
 }

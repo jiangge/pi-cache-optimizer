@@ -1,4 +1,4 @@
-import { type MutableEnv } from "./config.ts";
+import { type MutableEnv } from "./common.ts";
 
 export type CacheRetentionEnvSnapshot = {
   wasSet: boolean;

@@ -10,7 +10,7 @@ import {
   type ExtensionCommandContext,
   type ExtensionContext,
 } from "@earendil-works/pi-coding-agent";
-import { LOG_PREFIX, type ModelIdentity, type PiModel, type UnknownRecord, asRecord, getErrorCode, isNonEmptyString, isProcessAlive, lower } from "./src/common.ts";
+import { LOG_PREFIX, type ModelIdentity, type PiModel, type UnknownRecord, asRecord, getErrorCode, isNonEmptyString, isProcessAlive, lower, type MutableEnv } from "./src/common.ts";
 import { FIX_RECEIPT_FILE_NAME, FIX_RECEIPT_PATH, MODELS_JSON_PATH, MODELS_TRANSACTION_LOCK_PATH, MODELS_TRANSACTION_LOCK_STALE_MS, MODELS_TRANSACTION_LOCK_WAIT_MS, STATE_DIR } from "./src/paths.ts";
 import { type FixReceiptCompatChange, type FixReceiptPlacement, type FixSuggestion, type ModelsJsonFixReceiptV1, RECEIPT_COMPAT_KEYS, type ReceiptScalar, type ReceiptScalarState, isReceiptTimestamp, isSafeReceiptText, isSha256 } from "./src/fix-types.ts";
 import { type JsonPropertyEdit, type ModelNodeLocation, deepEqualIgnoringKeys, deriveInnerIndent, findExistingCompatKeysInJsonc, findJsonObjectKey, findMatchingBracket, isJsonWhitespace, lineIndentOf, locateJsonPropertyValueSpan, locateModelOverrideInJsonc, locateProviderCompatInJsonc, parseJsonc, readJsonStringLiteral, skipJsonValue, skipJsonWhitespace, stripJsoncComments, stripJsoncTrailingCommas } from "./src/jsonc.ts";
@@ -23,13 +23,13 @@ import { CACHE_PROVIDER_IDS, type CacheProviderId, type CacheStats, LEGACY_STATE
 import { ALEPH_MODEL_PATTERN, ARCTIC_MODEL_PATTERN, AYA_MODEL_PATTERN, DOUBAO_SEED_PATTERN, MIMO_MODEL_PATTERN, MPT_MODEL_PATTERN, NOVA_MODEL_PATTERN, ORION_MODEL_PATTERN, PHI_MODEL_PATTERN, PI_VIRTUAL_MODEL_API, PPLX_MODEL_PATTERN, ROUTED_FALLBACK_MODEL_SYMBOL, XAI_MODEL_PATTERN, YI_MODEL_PATTERN, getAssistantRecord, getCompat, isAnthropicMessagesApi, isAssistantMessage, isClaudeLikeAssistantMessage, isClaudeLikeModel, isDeepSeekLikeAssistantMessage, isDeepSeekLikeModel, isGeminiLikeAssistantMessage, isGeminiLikeModel, isKimiCodingEmptySignatureModel, isKnownThirdPartyOpenAIEndpoint, isMistralConversationsApi, isNativeVirtualModel, isOfficialOpenAIBaseUrl, isOpenAICompatibleApi, isOpenAICompatibleProxyApi, isOpenAIFamilyAssistantMessage, isOpenAIFamilyModel, isOpenAIFamilyToken, isPiBuiltInLlamaCppModel, isResponsesPromptRewriteBypassApi, isRoutedFallbackModel, isValidModelsConfigForEffectiveCompat, modelKey, readEffectiveCompatConfig } from "./src/model-identity.ts";
 import { invalidateModelsConfigCache } from "./src/model-identity.ts";
 import { getAnthropicRawUsage, getDeepSeekRawUsage, getGeminiRawUsage, getOpenAIRawUsage, normalizeWithFallback, usageRecordFromAssistant } from "./src/usage.ts";
-import { CONFIG_FILE_PATH, FOOTER_MODE_ENV, type FooterStatsMode, type MutableEnv, NO_OPENAI_CACHE_KEY_ENV, type PersistedCacheOptimizerConfig, type PersistedCacheOptimizerConfigV2, type PersistedCacheOptimizerConfigV3, type PersistedCacheOptimizerFeature, TOOL_ORDER_ENV, featureEnabled, footerStatsMode, isEnabledEnv, isToolOrderEnabled, normalizePersistedCacheOptimizerConfig, parseFooterStatsMode, parsePersistedCacheOptimizerConfig, persistedCacheOptimizerConfig, persistedFooterStatsMode, readPersistedCacheOptimizerConfig, resolveFooterStatsMode, runtimeOptimizerEnabled, setPersistedCacheOptimizerConfig, shouldInjectOpenAIPromptCacheKey, writePersistedCacheOptimizerConfig, writePersistedFeature, writePersistedFooterMode } from "./src/config.ts";
+import { CONFIG_FILE_PATH, NO_SKILL_COMPRESSION_ENV, VIRTUAL_REWRITE_ENV, FOOTER_MODE_ENV, type FooterStatsMode, NO_OPENAI_CACHE_KEY_ENV, type PersistedCacheOptimizerConfig, type PersistedCacheOptimizerConfigV2, type PersistedCacheOptimizerConfigV3, type PersistedCacheOptimizerFeature, TOOL_ORDER_ENV, featureEnabled, footerStatsMode, isEnabledEnv, isToolOrderEnabled, normalizePersistedCacheOptimizerConfig, parseFooterStatsMode, parsePersistedCacheOptimizerConfig, persistedCacheOptimizerConfig, persistedFooterStatsMode, readPersistedCacheOptimizerConfig, resolveFooterStatsMode, runtimeOptimizerEnabled, setPersistedCacheOptimizerConfig, shouldInjectOpenAIPromptCacheKey, writePersistedCacheOptimizerConfig, writePersistedFeature, writePersistedFooterMode } from "./src/config.ts";
 import { LONG_CACHE_RETENTION_VALUE, PI_CACHE_RETENTION_BASELINE_SYMBOL, PI_CACHE_RETENTION_ENV, STARTUP_CACHE_RETENTION_ENV, captureCacheRetentionEnv, getOrCaptureCacheRetentionBaseline, requestLongCacheRetention, restoreCacheRetentionEnv } from "./src/retention.ts";
 import { isRuntimeOptimizerEnabled, setRuntimeOptimizerEnabled } from "./src/config.ts";
 import { compareToolOrderEntries, getToolNameForPayload, isKnownToolOrderApi, isToolOrderingEligibleModel, isVerifiedToolForApi, normalizeToolsInPayload, sortToolsInPayload } from "./src/tool-ordering.ts";
-import { NO_SKILL_COMPRESSION_ENV, SKILL_COMPRESSION_MIN_COUNT, compressSkillsInSystemPrompt, compressSkillsViaSection, formatSkillsForPrompt, formatSkillsForPromptCompressed, stripSessionOverviewChurn } from "./src/prompt-rewrite.ts";
+import { SKILL_COMPRESSION_MIN_COUNT, compressSkillsInSystemPrompt, compressSkillsViaSection, formatSkillsForPrompt, formatSkillsForPromptCompressed, stripSessionOverviewChurn, explainSkillCompressionSkip, recordSkillCompressionOutcome, getLastSkillCompressionOutcome, describeSkillCompressionOutcome } from "./src/prompt-rewrite.ts";
 import { addEffectiveSessionAffinityHeaders, addOpenAIPromptCacheKey, clampPromptCacheKey, collectAnthropicCacheControlsInWireOrder, downgradeAnthropicLongCacheControls, getEffectiveCompatValueSource, hasAnthropicCacheTtlOrderError, hasEffectivePromptCacheKey, isPromptCacheKeyOmittedForModel, normalizeAnthropicCacheControlTtlOrder, omitOpenAIPromptCacheKeys, shouldInjectOpenAIPromptCacheKeyForModel } from "./src/request-payload.ts";
-import { PI_CACHE_HINTS_SYMBOL, PI_ROUTING_REGISTRY_SYMBOL, type PiCacheHintsInput, type PiCacheHintsOutput, type PiCacheHintsV1, VIRTUAL_REWRITE_ENV, applyConfiguredTransportToModel, canRewriteNativeVirtualPrompt, describeNativeVirtualRouteNote, ensureRoutingRegistry, findModelInRegistry, findNativeVirtualDispatches, firstNonEmptyString, getProtocolGlobal, getProviderPayloadModelId, getRoutingRegistry, hashSessionId, installCacheHintsService, isRouterModel, nativeVirtualDispatchFromMessage, nativeVirtualDispatchToModel, parseRouteSnapshot, resolveActiveRouteSnapshot, resolveNativeVirtualRequestModel, resolveNativeVirtualRouteModel, resolveRouteModel, routeSnapshotToPiModel, sessionHashFromContext } from "./src/routing.ts";
+import { PI_CACHE_HINTS_SYMBOL, PI_ROUTING_REGISTRY_SYMBOL, type PiCacheHintsInput, type PiCacheHintsOutput, type PiCacheHintsV1, applyConfiguredTransportToModel, canRewriteNativeVirtualPrompt, describeNativeVirtualRouteNote, ensureRoutingRegistry, findModelInRegistry, findNativeVirtualDispatches, firstNonEmptyString, getProtocolGlobal, getProviderPayloadModelId, getRoutingRegistry, hashSessionId, installCacheHintsService, isRouterModel, nativeVirtualDispatchFromMessage, nativeVirtualDispatchToModel, parseRouteSnapshot, resolveActiveRouteSnapshot, resolveNativeVirtualRequestModel, resolveNativeVirtualRouteModel, resolveRouteModel, routeSnapshotToPiModel, sessionHashFromContext } from "./src/routing.ts";
 import { CONFIG_RECEIPT_PATH, type PromptCacheKeyConfigReceipt, type PromptCacheKeyConfigReceiptSnapshot, applyPromptCacheKeyConfigFix, configReceiptBackupPath, parsePromptCacheKeyConfigReceipt, rollbackPromptCacheKeyConfig, writePromptCacheKeyConfigReceipt } from "./src/prompt-cache-key-config.ts";
 import { type CompatAdvicePlacement, appendCredentialSafeProviderGuidance, appendDeepSeekCompatAdviceLines, appendOpenAIProxyCompatAdviceLines, buildDeepSeekCompatSuggestion, buildDeepSeekCompatWarningText, buildModelCompatOverride, buildOpenAIProxyCompatWarningText, buildProviderCompatOverride, buildSafeOpenAIProxyCompatSuggestion, describeMissingAdaptiveThinkingCompat, describeMissingCacheCompatForModel, describeMissingDeepSeekCompat, describeMissingOpenAICompatibleProxyCompat, getAgentDirDisplayPath, getModelsJsonDisplayPath, isAdaptiveThinkingCompatApplicable, isDeepSeekWireCompatApplicable } from "./src/compat-advice.ts";
 import { type CacheProviderAdapter, isVirtualRoutingModel, modelFromAssistantMessage, selectAdapterForAssistantMessage, selectAdapterForModel } from "./src/adapters.ts";
@@ -142,6 +142,8 @@ function notifyCacheCompatIfNeeded(
 // (.trellis/tasks/.../verify.ts) can exercise them. They are not part of the
 // extension's public API; pi only invokes the default export below.
 export const __internals_for_tests = {
+  getLastSkillCompressionOutcome,
+  describeSkillCompressionOutcome,
   stripSessionOverviewChurn,
   formatSkillsForPrompt,
   formatSkillsForPromptCompressed,
@@ -1049,21 +1051,30 @@ export default function (pi: ExtensionAPI) {
     // Pi 0.99+ native virtual selections pick the physical model per request,
     // after this system prompt is built, so the API cannot be decided here.
     // Keep Pi's prompt byte-for-byte unless the route is explicitly known safe.
+    const visibleSkills = (event.systemPromptOptions?.skills ?? []).filter((skill) => !skill.disableModelInvocation).length;
+    const skipSkills = (reason: string) => recordSkillCompressionOutcome({ applied: false, reason, visibleSkills, at: Date.now() });
     if (isNativeVirtualModel(_ctx.model) && !canRewriteNativeVirtualPrompt(_ctx.model, _ctx)) {
+      skipSkills("native virtual model: the prompt is kept unchanged unless virtual-rewrite is enabled for a known-safe route");
       return {};
     }
 
-    if (!runtimeOptimizerEnabled) return {};
+    if (!runtimeOptimizerEnabled) {
+      skipSkills("the optimizer is disabled for this process (/cache-optimizer disable)");
+      return {};
+    }
 
     // Global opt-out: PI_CACHE_OPTIMIZER_NO_PROMPT_REWRITE=1 bypasses all
     // prompt mutations below (session-overview churn strip and skill
     // compression). Footer stats and the OpenAI prompt_cache_key fallback
     // remain active.
-    if (!featureEnabled("promptRewrite", NO_PROMPT_REWRITE_ENV, true)) return {};
+    if (!featureEnabled("promptRewrite", NO_PROMPT_REWRITE_ENV, true)) {
+      skipSkills("prompt rewrite is turned off");
+      return {};
+    }
 
     // Skill compression first, as a section edit when Pi supports it (see
     // compressSkillsViaSection); the string path below is the fallback.
-    compressSkillsViaSection(event);
+    const skillsViaSection = compressSkillsViaSection(event);
 
     // Strip per-turn churn from <session-overview>.
     // Removing RECENT COMMITS, Working directory status, and
@@ -1083,6 +1094,13 @@ export default function (pi: ExtensionAPI) {
     );
     // With a section edit and nothing to strip, Pi renders the compressed prompt
     // itself and no forced prompt is returned.
+    recordSkillCompressionOutcome(
+      skillsViaSection
+        ? { applied: "section", visibleSkills, at: Date.now() }
+        : compressedPrompt !== strippedPrompt
+          ? { applied: "string", visibleSkills, at: Date.now() }
+          : { applied: false, reason: explainSkillCompressionSkip(strippedPrompt, event.systemPromptOptions), visibleSkills, at: Date.now() },
+    );
     const changed = compressedPrompt !== event.systemPrompt && compressedPrompt.trim().length > 0;
     const finalPrompt = changed ? compressedPrompt : event.systemPrompt;
 

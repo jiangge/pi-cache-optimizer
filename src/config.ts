@@ -1,14 +1,11 @@
 import { atomicCreateTextFileNoReplace, atomicReplaceTextFilePreservingMode, hashText, withModelsJsonTransactionLock } from "./atomic-fs.ts";
-import { LOG_PREFIX, asRecord, getErrorCode, isNonEmptyString } from "./common.ts";
+import { LOG_PREFIX, type MutableEnv, asRecord, getErrorCode, isNonEmptyString } from "./common.ts";
 import { STATE_DIR } from "./paths.ts";
-import { NO_SKILL_COMPRESSION_ENV } from "./prompt-rewrite.ts";
 import { PI_CACHE_RETENTION_ENV, STARTUP_CACHE_RETENTION_ENV, requestLongCacheRetention, restoreCacheRetentionEnv } from "./retention.ts";
-import { VIRTUAL_REWRITE_ENV } from "./routing.ts";
 import { readFileSync } from "node:fs";
 import { lstat, mkdir, readFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 
-export type MutableEnv = Record<string, string | undefined>;
 
 export const CONFIG_FILE_PATH = join(STATE_DIR, "pi-cache-optimizer-config.json");
 
@@ -284,9 +281,12 @@ export function getOptimizerRuntimeModeLines(): string[] {
   const state = runtimeOptimizerEnabled ? "enabled" : "disabled";
   const lines: string[] = [];
   lines.push(`Runtime state: ${state}`);
-  lines.push(`• Prompt rewrite: ${runtimeOptimizerEnabled && featureEnabled("promptRewrite", NO_PROMPT_REWRITE_ENV, true) ? "on" : "off"}`);
+  const promptRewriteActive = runtimeOptimizerEnabled && featureEnabled("promptRewrite", NO_PROMPT_REWRITE_ENV, true);
+  lines.push(`• Prompt rewrite: ${promptRewriteActive ? "on" : "off"} (in-place: session-overview churn strip, skill list compression; never reorders the prompt)`);
   lines.push(`• Native virtual rewrite: ${featureEnabled("virtualRewrite", VIRTUAL_REWRITE_ENV, false) ? "opt-in" : "off"}`);
-  lines.push(`• Skill compression: ${featureEnabled("skillCompression", NO_SKILL_COMPRESSION_ENV, true) ? "on" : "off"}`);
+  const skillCompressionSetting = featureEnabled("skillCompression", NO_SKILL_COMPRESSION_ENV, true);
+  // Compression runs inside prompt rewrite, so its own switch is not enough to make it active.
+  lines.push(`• Skill compression: ${!skillCompressionSetting ? "off" : promptRewriteActive ? "on" : "on (inactive: prompt rewrite is off)"}`);
   lines.push(`• Deterministic tool ordering: ${isToolOrderEnabled() ? "on (verified built-in payloads, opt-in)" : "off"}`);
   lines.push(`• OpenAI prompt_cache_key fallback: ${shouldInjectOpenAIPromptCacheKey() ? "on" : "off"}`);
   lines.push(`• Footer cache stats: on${runtimeOptimizerEnabled ? "" : " (comparison mode)"}`);
@@ -323,3 +323,7 @@ export function formatOptimizerRuntimeMode(): string {
 }
 
 export const NO_PROMPT_REWRITE_ENV = "PI_CACHE_OPTIMIZER_NO_PROMPT_REWRITE";
+
+export const NO_SKILL_COMPRESSION_ENV = "PI_CACHE_OPTIMIZER_NO_SKILL_COMPRESSION";
+
+export const VIRTUAL_REWRITE_ENV = "PI_CACHE_OPTIMIZER_VIRTUAL_REWRITE";
