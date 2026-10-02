@@ -21,7 +21,7 @@ const TRIALS: Array<{ id: string; task: string; accept: string[] }> = [
   { id: "critique", task: "Give me a design critique of our landing page's hierarchy and cognitive load.", accept: ["critique"] },
   { id: "adapt", task: "Make this layout work on phones and tablets: breakpoints and touch targets.", accept: ["adapt"] },
   { id: "to-prd", task: "Turn our discussion so far into a PRD and publish it to the issue tracker.", accept: ["to-prd"] },
-  { id: "code-review", task: "Review my current diff for correctness bugs.", accept: ["code-review"] },
+  { id: "tdd", task: "Build this feature test-first, one failing test at a time, with a red-green-refactor loop.", accept: ["tdd"] },
   { id: "diagnose", task: "A test fails intermittently; run a disciplined reproduce-and-minimise debugging loop.", accept: ["diagnose"] },
   { id: "grill-me", task: "Interview me relentlessly about my plan until we reach shared understanding.", accept: ["grill-me", "grill-with-docs"] },
   { id: "wrangler", task: "Deploy this Worker with the Cloudflare CLI.", accept: ["wrangler", "cloudflare", "workers-best-practices"] },
