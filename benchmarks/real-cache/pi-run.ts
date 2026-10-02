@@ -21,7 +21,7 @@ const EXTENSION_PATH = join(BENCH_DIR, "..", "..", "index.ts");
  * variables are the only feature switches.
  */
 export function prepareAgentDir(config: ProviderConfig, group: PiGroup, label: string, port: number): string {
-  const dir = join(OUT_DIR, "agents", label);
+  const dir = join(process.env.BENCH_AGENTS_DIR || join(OUT_DIR, "agents"), label);
   mkdirSync(dir, { recursive: true });
   const provider = {
     ...config.providerEntry,
