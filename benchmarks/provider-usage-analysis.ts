@@ -96,9 +96,10 @@ if (!input) fail("usage: npm run benchmark:provider -- <sanitized-usage.jsonl>")
 
 const text = await readFile(input, "utf8");
 const rows = text.split(/\r?\n/).map((line, index) => {
-  if (!line.trim()) return undefined;
+  const trimmed = line.trim();
+  if (!trimmed || trimmed.startsWith(">") || trimmed.startsWith("npm ") || trimmed.startsWith("pi-cache-")) return undefined;
   try {
-    return parseRow(JSON.parse(line), index + 1);
+    return parseRow(JSON.parse(trimmed), index + 1);
   } catch (error) {
     if (error instanceof SyntaxError) fail(`line ${index + 1} is not valid JSON`);
     throw error;
