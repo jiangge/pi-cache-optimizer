@@ -178,7 +178,7 @@ describe("footer status separation and command completion", () => {
     );
     assert.deepEqual(
       internals.getCacheOptimizerArgumentCompletions("config "),
-      [{ value: "config footer-mode", label: "footer-mode" }],
+      ["footer-mode", "prompt-rewrite", "virtual-rewrite", "skill-compression", "openai-cache-key", "tool-order", "reset"].map((value) => ({ value: `config ${value}`, label: value })),
     );
     assert.deepEqual(
       internals.getCacheOptimizerArgumentCompletions("stats "),

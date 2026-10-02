@@ -97,6 +97,20 @@ Pi 0.79.7 及之后，`pi update` 默认只更新 Pi 本体。若要更新已安
 | `PI_CACHE_OPTIMIZER_NO_OPENAI_CACHE_KEY=1` | 关闭 OpenAI-compatible `prompt_cache_key` fallback。推荐使用这个显式 opt-out。 |
 | `PI_CACHE_OPTIMIZER_OPENAI_CACHE_KEY=0` | 通过旧的反向开关关闭同一个 fallback。取值 `0`、`false`、`no`、`off` 时关闭。 |
 
+持久化 feature 配置由 Pi agent 目录中的原生命令管理，并且优先于对应环境变量：
+
+```text
+/cache-optimizer config prompt-rewrite on|off
+/cache-optimizer config virtual-rewrite on|off
+/cache-optimizer config skill-compression on|off
+/cache-optimizer config openai-cache-key on|off
+/cache-optimizer config tool-order on|off
+/cache-optimizer config footer-mode total|session|process
+/cache-optimizer config reset
+```
+
+`config reset` 会移除持久化 feature 覆盖，同时保留现有 footer mode 和按模型配置的 prompt-cache-key 设置。这些命令不会修改 shell 启动文件或 `PI_CACHE_RETENTION`；`enable` 和 `disable` 仍然是当前进程的运行时开关。
+
 ## Opt-in 确定性工具排序
 
 `PI_CACHE_OPTIMIZER_TOOL_ORDER=1` 会对 Pi 内置 OpenAI Completions、Anthropic、Google 与 Bedrock payload 中已验证的工具定义进行确定性排序。Truthy 取值为（不区分大小写）`1`、`true`、`yes` 或 `on`。该能力默认关闭、仅在当前进程生效，并会被 `/cache-optimizer disable` 抑制。

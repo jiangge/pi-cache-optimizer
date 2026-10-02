@@ -180,6 +180,7 @@ type PersistedCacheOptimizerConfigV1 = {
   version: 1;
   footerMode?: FooterStatsMode;
 };
+type PersistedCacheOptimizerFeature = "promptRewrite" | "virtualRewrite" | "skillCompression" | "openAICacheKey" | "toolOrder";
 type PersistedCacheOptimizerConfigV2 = {
   version: 2;
   footerMode?: FooterStatsMode;
@@ -187,7 +188,13 @@ type PersistedCacheOptimizerConfigV2 = {
     omit?: string[];
   };
 };
-type PersistedCacheOptimizerConfig = PersistedCacheOptimizerConfigV1 | PersistedCacheOptimizerConfigV2;
+type PersistedCacheOptimizerConfigV3 = {
+  version: 2 | 3;
+  footerMode?: FooterStatsMode;
+  promptCacheKey?: { omit?: string[] };
+  features?: Partial<Record<PersistedCacheOptimizerFeature, boolean>>;
+};
+type PersistedCacheOptimizerConfig = PersistedCacheOptimizerConfigV1 | PersistedCacheOptimizerConfigV2 | PersistedCacheOptimizerConfigV3;
 type PromptCacheKeyConfigReceipt = {
   version: 2;
   kind: "pi-cache-optimizer-config-receipt";
@@ -923,7 +930,7 @@ function compressSkillsInSystemPrompt(
   prompt: string,
   opts: BuildSystemPromptOptions,
 ): string {
-  if (isEnabledEnv(process.env[NO_SKILL_COMPRESSION_ENV])) return prompt;
+  if (!featureEnabled("skillCompression", NO_SKILL_COMPRESSION_ENV, true)) return prompt;
   if (!opts.skills || opts.skills.length === 0) return prompt;
 
   const visible = opts.skills.filter((skill) => !skill.disableModelInvocation);
@@ -1365,7 +1372,7 @@ function canRewriteNativeVirtualPrompt(
   model: PiModel | undefined,
   ctx?: ContextWithOptionalModelRegistry,
 ): boolean {
-  if (!isNativeVirtualModel(model) || !isEnabledEnv(process.env[VIRTUAL_REWRITE_ENV])) return false;
+  if (!isNativeVirtualModel(model) || !featureEnabled("virtualRewrite", VIRTUAL_REWRITE_ENV, false)) return false;
   const candidates = resolveNativeVirtualCandidateModels(model, ctx);
   return !!candidates?.length && candidates.every((candidate) =>
     candidate.api === "openai-completions" || candidate.api === "anthropic-messages",
@@ -2082,8 +2089,18 @@ function isEnabledEnv(value: string | undefined): boolean {
   return normalized === "1" || normalized === "true" || normalized === "yes" || normalized === "on";
 }
 
+function featureEnabled(feature: PersistedCacheOptimizerFeature, envName: string, defaultValue: boolean): boolean {
+  const configured = (persistedCacheOptimizerConfig as PersistedCacheOptimizerConfigV3).features?.[feature];
+  if (configured !== undefined) return configured;
+  if (feature === "virtualRewrite") return isEnabledEnv(process.env[envName]);
+  if (feature === "promptRewrite" || feature === "skillCompression" || feature === "openAICacheKey") {
+    return !isEnabledEnv(process.env[envName]);
+  }
+  return isEnabledEnv(process.env[envName]) || defaultValue;
+}
+
 function isToolOrderEnabled(env: MutableEnv = process.env): boolean {
-  return runtimeOptimizerEnabled && isEnabledEnv(env[TOOL_ORDER_ENV]);
+  return runtimeOptimizerEnabled && featureEnabled("toolOrder", TOOL_ORDER_ENV, false);
 }
 
 function parseFooterStatsMode(value: unknown): FooterStatsMode | undefined {
@@ -2109,8 +2126,17 @@ const CACHE_OPTIMIZER_COMMANDS = [
   "fix",
   "rollback",
 ] as const;
-const CACHE_OPTIMIZER_CONFIG_ARGUMENTS = ["footer-mode"] as const;
+const CACHE_OPTIMIZER_CONFIG_ARGUMENTS = ["footer-mode", "prompt-rewrite", "virtual-rewrite", "skill-compression", "openai-cache-key", "tool-order", "reset"] as const;
+const CACHE_OPTIMIZER_FEATURE_COMMANDS = ["prompt-rewrite", "virtual-rewrite", "skill-compression", "openai-cache-key", "tool-order"] as const;
+const CACHE_OPTIMIZER_FEATURE_VALUES = ["on", "off"] as const;
 const CACHE_OPTIMIZER_FOOTER_MODES = ["total", "session", "process"] as const;
+const FEATURE_COMMAND_MAP: Record<string, PersistedCacheOptimizerFeature> = {
+  "prompt-rewrite": "promptRewrite",
+  "virtual-rewrite": "virtualRewrite",
+  "skill-compression": "skillCompression",
+  "openai-cache-key": "openAICacheKey",
+  "tool-order": "toolOrder",
+};
 const CACHE_OPTIMIZER_STATS_ARGUMENTS = ["all", "contributors"] as const;
 const CACHE_OPTIMIZER_FIX_ARGUMENTS = ["prompt-cache-key"] as const;
 
@@ -2182,18 +2208,27 @@ function getCacheOptimizerArgumentCompletions(argumentPrefix: string): CommandCo
   if (parts.length === 3 && parts[1].toLowerCase() === "footer-mode") {
     return filterCommandCompletionItems(CACHE_OPTIMIZER_FOOTER_MODES, parts[2], "config footer-mode");
   }
+  if (parts.length === 3 && CACHE_OPTIMIZER_FEATURE_COMMANDS.includes(parts[1] as typeof CACHE_OPTIMIZER_FEATURE_COMMANDS[number])) {
+    return filterCommandCompletionItems(CACHE_OPTIMIZER_FEATURE_VALUES, parts[2], `config ${parts[1]}`);
+  }
 
   return null;
 }
 
 function parsePersistedCacheOptimizerConfig(value: unknown): PersistedCacheOptimizerConfig | undefined {
   const record = asRecord(value);
-  if (!record || (record.version !== 1 && record.version !== 2)) return undefined;
-  const allowedTopLevel = new Set(record.version === 1 ? ["version", "footerMode"] : ["version", "footerMode", "promptCacheKey"]);
+  if (!record || (record.version !== 1 && record.version !== 2 && record.version !== 3)) return undefined;
+  const allowedTopLevel = new Set(record.version === 1 ? ["version", "footerMode"] : record.version === 2 ? ["version", "footerMode", "promptCacheKey"] : ["version", "footerMode", "promptCacheKey", "features"]);
   if (Object.keys(record).some((key) => !allowedTopLevel.has(key))) return undefined;
   const footerMode = parseFooterStatsMode(record.footerMode);
   if (record.footerMode !== undefined && !footerMode) return undefined;
   if (record.version === 1) return { version: 1, ...(footerMode ? { footerMode } : {}) };
+
+  const rawFeatures = record.version === 3 ? record.features : undefined;
+  if (rawFeatures !== undefined && !asRecord(rawFeatures)) return undefined;
+  const featuresRecord = asRecord(rawFeatures);
+  const featureNames = new Set<PersistedCacheOptimizerFeature>(["promptRewrite", "virtualRewrite", "skillCompression", "openAICacheKey", "toolOrder"]);
+  if (featuresRecord && Object.keys(featuresRecord).some((key) => !featureNames.has(key as PersistedCacheOptimizerFeature) || typeof featuresRecord[key] !== "boolean")) return undefined;
 
   const rawPromptCacheKey = record.promptCacheKey;
   if (rawPromptCacheKey !== undefined && !asRecord(rawPromptCacheKey)) return undefined;
@@ -2204,20 +2239,25 @@ function parsePersistedCacheOptimizerConfig(value: unknown): PersistedCacheOptim
   const stringOmit = omit as string[] | undefined;
   const uniqueOmit = stringOmit ? [...new Set(stringOmit.map((value) => value.trim()))].sort() : undefined;
   return {
-    version: 2,
+    version: record.version === 3 ? 3 : 2,
     ...(footerMode ? { footerMode } : {}),
     ...(uniqueOmit && uniqueOmit.length > 0 ? { promptCacheKey: { omit: uniqueOmit } } : {}),
+    ...(featuresRecord ? { features: Object.fromEntries(Object.entries(featuresRecord)) as Partial<Record<PersistedCacheOptimizerFeature, boolean>> } : {}),
+  } as PersistedCacheOptimizerConfigV3;
+}
+
+function normalizePersistedCacheOptimizerConfig(value: PersistedCacheOptimizerConfig | undefined): PersistedCacheOptimizerConfigV3 {
+  if (!value) return { version: 2 };
+  const features = value.version === 3 ? value.features : undefined;
+  return {
+    version: features ? 3 : 2,
+    ...(value.footerMode ? { footerMode: value.footerMode } : {}),
+    ...(value.version !== 1 && value.promptCacheKey ? { promptCacheKey: value.promptCacheKey } : {}),
+    ...(features ? { features } : {}),
   };
 }
 
-function normalizePersistedCacheOptimizerConfig(value: PersistedCacheOptimizerConfig | undefined): PersistedCacheOptimizerConfigV2 {
-  if (!value) return { version: 2 };
-  return value.version === 2
-    ? value
-    : { version: 2, ...(value.footerMode ? { footerMode: value.footerMode } : {}) };
-}
-
-function readPersistedCacheOptimizerConfig(configPath: string = CONFIG_FILE_PATH): PersistedCacheOptimizerConfigV2 {
+function readPersistedCacheOptimizerConfig(configPath: string = CONFIG_FILE_PATH): PersistedCacheOptimizerConfigV3 {
   try {
     return normalizePersistedCacheOptimizerConfig(parsePersistedCacheOptimizerConfig(JSON.parse(readFileSync(configPath, "utf8"))));
   } catch (error) {
@@ -2231,7 +2271,7 @@ function readPersistedFooterMode(configPath: string = CONFIG_FILE_PATH): FooterS
 }
 
 async function writePersistedCacheOptimizerConfigUnlocked(
-  config: PersistedCacheOptimizerConfigV2,
+  config: PersistedCacheOptimizerConfig | PersistedCacheOptimizerConfigV3,
   configPath: string,
 ): Promise<void> {
   await mkdir(dirname(configPath), { recursive: true });
@@ -2261,7 +2301,7 @@ async function writePersistedCacheOptimizerConfigUnlocked(
 }
 
 async function writePersistedCacheOptimizerConfig(
-  config: PersistedCacheOptimizerConfigV2,
+  config: PersistedCacheOptimizerConfig | PersistedCacheOptimizerConfigV3,
   configPath: string = CONFIG_FILE_PATH,
 ): Promise<void> {
   await withModelsJsonTransactionLock(() => writePersistedCacheOptimizerConfigUnlocked(config, configPath));
@@ -2271,14 +2311,14 @@ async function writePersistedFooterModeUnlocked(
   mode: FooterStatsMode,
   configPath: string,
 ): Promise<void> {
-  let version: 1 | 2 = 1;
+  let version: 1 | 2 | 3 = 1;
   let raw: PersistedCacheOptimizerConfig | undefined;
   let targetExists = false;
   try {
     raw = parsePersistedCacheOptimizerConfig(JSON.parse(readFileSync(configPath, "utf8")));
     targetExists = true;
     if (!raw) throw new Error("invalid footer config schema");
-    version = raw.version === 2 ? 2 : 1;
+    version = raw.version === 3 ? 3 : raw.version === 2 ? 2 : 1;
   } catch (error) {
     if (getErrorCode(error) !== "ENOENT") throw new Error("invalid footer config schema");
   }
@@ -2301,7 +2341,7 @@ async function writePersistedFooterModeUnlocked(
     }
     return;
   }
-  await writePersistedCacheOptimizerConfigUnlocked({ ...current, version: 2, footerMode: mode }, configPath);
+  await writePersistedCacheOptimizerConfigUnlocked({ ...current, version: 3, footerMode: mode } as PersistedCacheOptimizerConfigV3, configPath);
 }
 
 async function writePersistedFooterMode(
@@ -2309,6 +2349,17 @@ async function writePersistedFooterMode(
   configPath: string = CONFIG_FILE_PATH,
 ): Promise<void> {
   await withModelsJsonTransactionLock(() => writePersistedFooterModeUnlocked(mode, configPath));
+}
+
+async function writePersistedFeature(feature: PersistedCacheOptimizerFeature, enabled: boolean): Promise<void> {
+  const current = readPersistedCacheOptimizerConfig();
+  const next: PersistedCacheOptimizerConfigV3 = {
+    ...current,
+    version: 3,
+    features: { ...(current.features ?? {}), [feature]: enabled },
+  };
+  await writePersistedCacheOptimizerConfig(next);
+  setPersistedCacheOptimizerConfig(readPersistedCacheOptimizerConfig());
 }
 
 function configReceiptBackupPath(receipt: PromptCacheKeyConfigReceipt, receiptPath: string = CONFIG_RECEIPT_PATH): string {
@@ -2703,7 +2754,7 @@ function isDisabledEnv(value: string | undefined): boolean {
 
 function shouldInjectOpenAIPromptCacheKey(): boolean {
   if (!runtimeOptimizerEnabled) return false;
-  if (isEnabledEnv(process.env[NO_OPENAI_CACHE_KEY_ENV])) return false;
+  if (!featureEnabled("openAICacheKey", NO_OPENAI_CACHE_KEY_ENV, true)) return false;
   if (isDisabledEnv(process.env[OPENAI_CACHE_KEY_ENV])) return false;
   return true;
 }
@@ -2725,7 +2776,9 @@ function getOptimizerRuntimeModeLines(): string[] {
   const state = runtimeOptimizerEnabled ? "enabled" : "disabled";
   const lines: string[] = [];
   lines.push(`Runtime state: ${state}`);
-  lines.push(`• Prompt rewrite: ${runtimeOptimizerEnabled && !isEnabledEnv(process.env[NO_PROMPT_REWRITE_ENV]) ? "on" : "off"}`);
+  lines.push(`• Prompt rewrite: ${runtimeOptimizerEnabled && featureEnabled("promptRewrite", NO_PROMPT_REWRITE_ENV, true) ? "on" : "off"}`);
+  lines.push(`• Native virtual rewrite: ${featureEnabled("virtualRewrite", VIRTUAL_REWRITE_ENV, false) ? "opt-in" : "off"}`);
+  lines.push(`• Skill compression: ${featureEnabled("skillCompression", NO_SKILL_COMPRESSION_ENV, true) ? "on" : "off"}`);
   lines.push(`• Deterministic tool ordering: ${isToolOrderEnabled() ? "on (verified built-in payloads, opt-in)" : "off"}`);
   lines.push(`• OpenAI prompt_cache_key fallback: ${shouldInjectOpenAIPromptCacheKey() ? "on" : "off"}`);
   lines.push(`• Footer cache stats: on${runtimeOptimizerEnabled ? "" : " (comparison mode)"}`);
@@ -2733,7 +2786,7 @@ function getOptimizerRuntimeModeLines(): string[] {
   lines.push(`• ${PI_CACHE_RETENTION_ENV}: ${process.env[PI_CACHE_RETENTION_ENV] ?? "(unset)"}`);
   if (!runtimeOptimizerEnabled) {
     lines.push("This is a current-process switch. Run /reload or restart Pi to return to startup behavior.");
-  } else if (isEnabledEnv(process.env[NO_PROMPT_REWRITE_ENV]) || !shouldInjectOpenAIPromptCacheKey()) {
+  } else if (!featureEnabled("promptRewrite", NO_PROMPT_REWRITE_ENV, true) || !shouldInjectOpenAIPromptCacheKey()) {
     lines.push("Some features are still disabled by environment variables.");
   }
   return lines;
@@ -2820,12 +2873,12 @@ function shouldInjectOpenAIPromptCacheKeyForModel(model: PiModel | undefined): b
   return isOpenAICompatibleApi(model?.api);
 }
 
-function isPromptCacheKeyOmittedForModel(model: PiModel | undefined, config: PersistedCacheOptimizerConfigV2 = persistedCacheOptimizerConfig): boolean {
+function isPromptCacheKeyOmittedForModel(model: PiModel | undefined, config: PersistedCacheOptimizerConfig | PersistedCacheOptimizerConfigV3 = persistedCacheOptimizerConfig): boolean {
   if (!model || !isOpenAICompatibleApi(model.api)) return false;
-  return config.promptCacheKey?.omit?.includes(modelKey(model)) === true;
+  return "promptCacheKey" in config && config.promptCacheKey?.omit?.includes(modelKey(model)) === true;
 }
 
-function setPersistedCacheOptimizerConfig(config: PersistedCacheOptimizerConfigV2): void {
+function setPersistedCacheOptimizerConfig(config: PersistedCacheOptimizerConfig | PersistedCacheOptimizerConfigV3): void {
   persistedCacheOptimizerConfig = normalizePersistedCacheOptimizerConfig(config);
   persistedFooterStatsMode = persistedCacheOptimizerConfig.footerMode;
 }
@@ -11252,7 +11305,7 @@ export default function (pi: ExtensionAPI) {
     // prompt mutations below (session-overview churn strip, skill compression,
     // and stable-prefix reordering). Footer stats and the OpenAI
     // prompt_cache_key fallback remain active.
-    if (isEnabledEnv(process.env[NO_PROMPT_REWRITE_ENV])) return {};
+    if (!featureEnabled("promptRewrite", NO_PROMPT_REWRITE_ENV, true)) return {};
 
     // Step 1: strip per-turn churn from <session-overview>.
     // Removing RECENT COMMITS, Working directory status, and
@@ -11821,10 +11874,34 @@ export default function (pi: ExtensionAPI) {
       } else if (subcommand === "config") {
         const configKey = commandParts[1];
         const requestedMode = commandParts[2];
+        const feature = configKey ? FEATURE_COMMAND_MAP[configKey] : undefined;
+        if (feature && (requestedMode === "on" || requestedMode === "off")) {
+          try {
+            await writePersistedFeature(feature, requestedMode === "on");
+            lastStatusText = undefined;
+            await publishStatus(cmdCtx, model);
+            cmdCtx.ui.notify(`✅ ${configKey} set to ${requestedMode}. Persistent config overrides its environment variable.`, "info");
+          } catch (error) {
+            cmdCtx.ui.notify(`❌ Could not update ${configKey}: ${error instanceof Error ? error.message : String(error)}`, "error");
+          }
+          return;
+        }
+        if (configKey === "reset") {
+          try {
+            await writePersistedCacheOptimizerConfig({ version: 2, footerMode: persistedFooterStatsMode, promptCacheKey: persistedCacheOptimizerConfig.promptCacheKey });
+            setPersistedCacheOptimizerConfig(readPersistedCacheOptimizerConfig());
+            cmdCtx.ui.notify("✅ Feature configuration reset. Environment variables now apply again.", "info");
+          } catch (error) {
+            cmdCtx.ui.notify(`❌ Could not reset feature configuration: ${error instanceof Error ? error.message : String(error)}`, "error");
+          }
+          return;
+        }
         if (configKey !== "footer-mode" || !requestedMode || !["session", "total", "process"].includes(requestedMode)) {
           const resolved = resolveFooterStatsMode(persistedFooterStatsMode);
           cmdCtx.ui.notify(
             `Usage: /cache-optimizer config footer-mode total|session|process\n` +
+            `       /cache-optimizer config prompt-rewrite|virtual-rewrite|skill-compression|openai-cache-key|tool-order on|off\n` +
+            `       /cache-optimizer config reset\n` +
             `Current footer mode: ${resolved.mode} (${resolved.source})`,
             "info",
           );
@@ -12641,7 +12718,9 @@ export default function (pi: ExtensionAPI) {
         diagnosis.push("  stats all — Show detailed totals for every model across all local sessions");
         diagnosis.push("  stats contributors — Show per-session contributors for the active model");
         diagnosis.push("  compat  — Show compat suggestion with edit location");
+        diagnosis.push("  config prompt-rewrite|virtual-rewrite|skill-compression|openai-cache-key|tool-order on|off — Persist feature settings");
         diagnosis.push("  config footer-mode total|session|process — Persist the footer stats mode");
+        diagnosis.push("  config reset — Remove persistent feature overrides");
         diagnosis.push("  fix     — Auto-fix compat issues (writes models.json or extension config, requires UI)");
         diagnosis.push("  fix prompt-cache-key — Explicitly omit prompt_cache_key for the active model");
         diagnosis.push("  rollback — Undo the latest confirmed fix (requires UI confirmation)");

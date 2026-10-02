@@ -97,6 +97,20 @@ The interactive `/cache-optimizer` menu includes `Footer mode`, where you can ch
 | `PI_CACHE_OPTIMIZER_NO_OPENAI_CACHE_KEY=1` | Disable the OpenAI-compatible `prompt_cache_key` fallback. Preferred explicit opt-out. |
 | `PI_CACHE_OPTIMIZER_OPENAI_CACHE_KEY=0` | Disable the same fallback via the legacy inverse switch. Values `0`, `false`, `no`, or `off` disable it. |
 
+Persistent feature settings are managed under the Pi agent directory by the native command interface. They take precedence over their corresponding environment variables:
+
+```text
+/cache-optimizer config prompt-rewrite on|off
+/cache-optimizer config virtual-rewrite on|off
+/cache-optimizer config skill-compression on|off
+/cache-optimizer config openai-cache-key on|off
+/cache-optimizer config tool-order on|off
+/cache-optimizer config footer-mode total|session|process
+/cache-optimizer config reset
+```
+
+`config reset` removes persistent feature overrides while preserving the existing footer mode and model-specific prompt-cache-key settings. These commands do not modify shell startup files or `PI_CACHE_RETENTION`; `enable` and `disable` remain current-process runtime switches.
+
 ## Opt-in deterministic tool ordering
 
 `PI_CACHE_OPTIMIZER_TOOL_ORDER=1` enables deterministic ordering for verified tool definitions in Pi's built-in OpenAI Completions, Anthropic, Google, and Bedrock payload shapes. Truthy values are `1`, `true`, `yes`, or `on` (case-insensitive). The feature is off by default, process-local, and suppressed by `/cache-optimizer disable`.
