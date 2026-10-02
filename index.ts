@@ -833,29 +833,25 @@ function formatSkillsForPrompt(skills: NonNullable<BuildSystemPromptOptions["ski
 /**
  * Compressed alternative to `formatSkillsForPrompt`.
  *
- * Pi emits a four-line XML block per skill (`<name>`, `<description>`,
- * `<location>`) plus a three-sentence preamble. With 31 skills active in
- * this repo that block measured 13.3 KB — 61.5 % of the total system
- * prompt. The full description text matters when the model has to decide
- * which skill to load, but the model can read SKILL.md on demand: the
- * names alone plus a known location pattern is enough to identify
- * candidates.
+ * Pi emits one four-line XML element per skill (`<skill>`, `<name>`,
+ * `<description>`, `<location>`). In a 54-skill setup that block was
+ * ~24.6 KB, of which the descriptions are 54 % and the rest is XML tags
+ * plus a repeated absolute path per skill.
  *
- * This compressed form preserves:
- *   1. The instruction to read SKILL.md when a task matches a skill name.
- *   2. The relative-path resolution rule (parent of SKILL.md is the
- *      skill directory).
- *   3. Discoverability of every skill: name + location prefix per skill.
+ * This form keeps everything the model needs to choose and load a skill —
+ * every skill's name and its full description — and removes the repetition:
+ *   - Skills are grouped by skills root directory; the root and the
+ *     `<name>/SKILL.md` convention are stated once per group instead of one
+ *     `<location>` per skill. agentskills.io requires `location` so file-read
+ *     activation can find SKILL.md; the rule gives the model the same path.
+ *   - Skills that do not follow `<root>/<name>/SKILL.md` (different file or
+ *     directory name, Windows-style paths) are listed with their explicit
+ *     file path, so no path is ever guessed.
+ *   - The XML envelope is replaced by Markdown headings and bullets.
  *
- * It drops:
- *   - Per-skill description text (model loads it via `read` when a name
- *     matches a task).
- *   - The `<available_skills>` XML envelope and per-skill XML overhead
- *     (~110 bytes per skill of pure structure, plus the location path).
- *
- * Output shape is a single text block grouped by skill-root directory so
- * the model can compute each skill's full path by name. Names are sorted
- * alphabetically within each group for determinism (cache stability).
+ * Descriptions are kept verbatim except that whitespace runs (including
+ * newlines from folded YAML) collapse to one space so each skill is one
+ * bullet. Groups and skills are sorted for determinism (cache stability).
  */
 function formatSkillsForPromptCompressed(
   skills: NonNullable<BuildSystemPromptOptions["skills"]>,
@@ -863,49 +859,41 @@ function formatSkillsForPromptCompressed(
   const visibleSkills = skills.filter((skill) => !skill.disableModelInvocation);
   if (visibleSkills.length === 0) return "";
 
-  const groups = new Map<string, string[]>();
+  const byRoot = new Map<string, Array<{ name: string; description: string }>>();
+  const explicit: Array<{ name: string; description: string; filePath: string }> = [];
   for (const skill of visibleSkills) {
-    // skill.filePath = .../<skill-name>/SKILL.md, so dirname is the
-    // skill directory and dirname-of-dirname is the skills root.
+    const description = skill.description.replace(/\s+/g, " ").trim();
     const skillDir = dirname(skill.filePath);
+    const conventional =
+      !skill.filePath.includes("\\") &&
+      basename(skill.filePath) === "SKILL.md" &&
+      basename(skillDir) === skill.name;
+    if (!conventional) {
+      explicit.push({ name: skill.name, description, filePath: skill.filePath });
+      continue;
+    }
     const root = dirname(skillDir);
-    const list = groups.get(root) ?? [];
-    list.push(skill.name);
-    groups.set(root, list);
+    const list = byRoot.get(root) ?? [];
+    list.push({ name: skill.name, description });
+    byRoot.set(root, list);
   }
 
-  // Sort group entries by root for determinism: same skill set under the
-  // same roots must always produce the same string, otherwise the
-  // provider prompt-prefix cache loses on prompt builder runs that
-  // happened to iterate the underlying Map in different orders.
-  const sortedGroups = [...groups.entries()].sort(([a], [b]) =>
-    a < b ? -1 : a > b ? 1 : 0,
-  );
+  const compare = (a: string, b: string): number => (a < b ? -1 : a > b ? 1 : 0);
+  const header = formatSkillsForPrompt(skills);
+  const preamble = header.slice(0, header.indexOf("<available_skills>")).trim();
 
-  const lines: string[] = [
-    "",
-    "",
-    "The following skills provide specialized instructions for specific tasks. When a skill name matches the task you are doing, read the SKILL.md at the listed location to load the full instructions. When a SKILL.md references a relative path, resolve it against the skill directory (parent of SKILL.md / dirname of the path) and use that absolute path in tool commands.",
-  ];
-
-  for (const [root, names] of sortedGroups) {
-    names.sort();
-    lines.push("");
-    lines.push(`Skills under ${root}/<name>/SKILL.md:`);
-    // Wrap the name list at ~80 columns for readability without
-    // affecting determinism. Each line is `  name1, name2, name3,`.
-    let buf = "  ";
-    for (let i = 0; i < names.length; i++) {
-      const name = names[i];
-      const piece = (buf === "  " ? "" : ", ") + name;
-      if (buf.length > 2 && buf.length + piece.length > 80) {
-        lines.push(`${buf},`);
-        buf = `  ${name}`;
-      } else {
-        buf += piece;
-      }
+  const lines: string[] = [preamble];
+  for (const [root, entries] of [...byRoot.entries()].sort(([a], [b]) => compare(a, b))) {
+    lines.push("", `## Skills in ${root}/`, `Each skill file is at ${root}/<name>/SKILL.md`, "");
+    for (const entry of entries.sort((a, b) => compare(a.name, b.name))) {
+      lines.push(`- ${entry.name}: ${entry.description}`);
     }
-    if (buf.length > 2) lines.push(buf);
+  }
+  if (explicit.length > 0) {
+    lines.push("", "## Skills with explicit file paths", "");
+    for (const entry of explicit.sort((a, b) => compare(a.filePath, b.filePath))) {
+      lines.push(`- ${entry.name} (file: ${entry.filePath}): ${entry.description}`);
+    }
   }
 
   return lines.join("\n");
@@ -913,7 +901,7 @@ function formatSkillsForPromptCompressed(
 
 /**
  * Replace pi's verbose `<available_skills>` block in `prompt` with the
- * compressed one-index form. Idempotent: if the verbose form is not
+ * compressed grouped form. Idempotent: if the verbose form is not
  * present (compression already applied, or skill count below threshold),
  * the prompt is returned unchanged.
  *
@@ -925,6 +913,11 @@ function formatSkillsForPromptCompressed(
  *     `prompt` (substring match, no regex). This anchors the substitution
  *     to pi's own emitter; if pi changes the format, we no-op rather
  *     than mangle.
+ *
+ * Both sides are compared trimmed: since Pi 0.86 the skills block is trimmed
+ * and wrapped in a `<skills>` section, older Pi appended it with leading
+ * newlines. Matching the untrimmed text silently disabled compression on
+ * every Pi >= 0.86.
  */
 function compressSkillsInSystemPrompt(
   prompt: string,
@@ -936,13 +929,13 @@ function compressSkillsInSystemPrompt(
   const visible = opts.skills.filter((skill) => !skill.disableModelInvocation);
   if (visible.length < SKILL_COMPRESSION_MIN_COUNT) return prompt;
 
-  const verbose = formatSkillsForPrompt(opts.skills);
+  const verbose = formatSkillsForPrompt(opts.skills).trim();
   if (!verbose || !prompt.includes(verbose)) return prompt;
 
-  const compressed = formatSkillsForPromptCompressed(opts.skills);
+  const compressed = formatSkillsForPromptCompressed(opts.skills).trim();
   if (!compressed || compressed.length >= verbose.length) return prompt;
 
-  return prompt.replace(verbose, compressed);
+  return prompt.replace(verbose, () => compressed);
 }
 
 function buildStableCandidates(opts: BuildSystemPromptOptions): string[] {
