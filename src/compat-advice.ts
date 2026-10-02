@@ -1,10 +1,10 @@
-import { getAgentDir } from "@earendil-works/pi-coding-agent";
-import { homedir } from "node:os";
-import { join } from "node:path";
 import { type PiModel, isNonEmptyString, lower } from "./common.ts";
 import { isAdaptiveGenerationModel, isKimiCodingAdaptiveModel } from "./model-detect.ts";
 import { getCompat, isDeepSeekLikeModel, isKimiCodingEmptySignatureModel, isKnownThirdPartyOpenAIEndpoint, isOpenAICompatibleProxyApi, isOpenAIFamilyModel, isPiBuiltInLlamaCppModel, isRoutedFallbackModel } from "./model-identity.ts";
 import { MODELS_JSON_PATH, STATE_DIR } from "./paths.ts";
+import { getAgentDir } from "@earendil-works/pi-coding-agent";
+import { homedir } from "node:os";
+import { join } from "node:path";
 
 /** Join display-only path fragments without resolving them for I/O. */
 export function joinDisplayPath(base: string, child: string, platform: string = process.platform): string {
@@ -302,4 +302,19 @@ export function buildDeepSeekCompatWarningText(key: string, missing: string[]): 
   appendDeepSeekCompatAdviceLines(lines, missing, { providerLabel, modelId });
 
   return lines.join("\n");
+}
+
+export function describeMissingOpenAIFamilyProxyCompat(model: PiModel): string[] {
+  const compat = getCompat(model);
+  const missing: string[] = [];
+
+  if (!isOpenAIFamilyModel(model)) return missing;
+  if (!isOpenAICompatibleProxyApi(model.api)) return missing;
+  if (!isKnownThirdPartyOpenAIEndpoint(model)) return missing;
+
+  if (compat.sendSessionAffinityHeaders !== true) {
+    missing.push("sendSessionAffinityHeaders");
+  }
+
+  return missing;
 }
