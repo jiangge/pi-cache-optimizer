@@ -32,7 +32,7 @@
     "test": "node --import jiti/register --test tests/*.test.ts",
     "typecheck": "tsc --noEmit --pretty false",
     "check:diff": "git diff --check",
-    "check:pack": "npm pack --dry-run --cache node_modules/.cache/npm",
+    "check:pack": "node scripts/check-pack.mjs",
     "benchmark:prefix": "node --import jiti/register benchmarks/prompt-prefix-stability.ts",
     "benchmark:provider": "node --import jiti/register benchmarks/provider-usage-analysis.ts",
     "benchmark:snapshot": "node --import jiti/register benchmarks/snapshot-provider-usage.ts",
