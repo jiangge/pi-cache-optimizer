@@ -93,6 +93,9 @@ export function startProxy(options: ProxyOptions): Promise<{ server: Server; por
   // Strict serialization: one upstream request in flight, ever. Pi's own retries and warmers queue behind it.
   let tail: Promise<void> = Promise.resolve();
   const priorByLabel = new Map<string, string[]>();
+  // Upstream gateways rate-limit with 429/5xx; Pi retries immediately, which only deepens the limit. After a failure the
+  // proxy backs off (20s, doubling to 120s) before the next upstream call and resets on the first success.
+  let cooldownMs = 0;
 
   async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> {
     const raw = await readBody(req);
@@ -199,7 +202,8 @@ export function startProxy(options: ProxyOptions): Promise<{ server: Server; por
           priorByLabel.set(label, earlier);
         }
       }
-      await sleep(minGapMs);
+      cooldownMs = status === 429 || status >= 500 ? Math.min(cooldownMs ? cooldownMs * 2 : 20_000, 120_000) : 0;
+      await sleep(minGapMs + cooldownMs);
     });
     tail = result.catch(() => undefined);
     await result;
