@@ -31,6 +31,8 @@ import { NO_SKILL_COMPRESSION_ENV, SKILL_COMPRESSION_MIN_COUNT, compressSkillsIn
 import { addEffectiveSessionAffinityHeaders, addOpenAIPromptCacheKey, clampPromptCacheKey, collectAnthropicCacheControlsInWireOrder, downgradeAnthropicLongCacheControls, getEffectiveCompatValueSource, hasAnthropicCacheTtlOrderError, hasEffectivePromptCacheKey, isPromptCacheKeyOmittedForModel, normalizeAnthropicCacheControlTtlOrder, omitOpenAIPromptCacheKeys, shouldInjectOpenAIPromptCacheKeyForModel } from "./src/request-payload.ts";
 import { PI_CACHE_HINTS_SYMBOL, PI_ROUTING_REGISTRY_SYMBOL, type PiCacheHintsInput, type PiCacheHintsOutput, type PiCacheHintsV1, VIRTUAL_REWRITE_ENV, applyConfiguredTransportToModel, canRewriteNativeVirtualPrompt, describeNativeVirtualRouteNote, ensureRoutingRegistry, findModelInRegistry, findNativeVirtualDispatches, firstNonEmptyString, getProtocolGlobal, getProviderPayloadModelId, getRoutingRegistry, hashSessionId, installCacheHintsService, isRouterModel, nativeVirtualDispatchFromMessage, nativeVirtualDispatchToModel, parseRouteSnapshot, resolveActiveRouteSnapshot, resolveNativeVirtualRequestModel, resolveNativeVirtualRouteModel, resolveRouteModel, routeSnapshotToPiModel, sessionHashFromContext } from "./src/routing.ts";
 import { CONFIG_RECEIPT_PATH, type PromptCacheKeyConfigReceipt, type PromptCacheKeyConfigReceiptSnapshot, applyPromptCacheKeyConfigFix, configReceiptBackupPath, parsePromptCacheKeyConfigReceipt, rollbackPromptCacheKeyConfig, writePromptCacheKeyConfigReceipt } from "./src/prompt-cache-key-config.ts";
+import { type CompatAdvicePlacement, appendCredentialSafeProviderGuidance, appendDeepSeekCompatAdviceLines, appendOpenAIProxyCompatAdviceLines, buildDeepSeekCompatSuggestion, buildDeepSeekCompatWarningText, buildModelCompatOverride, buildOpenAIProxyCompatWarningText, buildProviderCompatOverride, buildSafeOpenAIProxyCompatSuggestion, describeMissingAdaptiveThinkingCompat, describeMissingCacheCompatForModel, describeMissingDeepSeekCompat, describeMissingOpenAICompatibleProxyCompat, getAgentDirDisplayPath, getModelsJsonDisplayPath, isAdaptiveThinkingCompatApplicable, isDeepSeekWireCompatApplicable } from "./src/compat-advice.ts";
+import { type CacheProviderAdapter, isVirtualRoutingModel, modelFromAssistantMessage, selectAdapterForAssistantMessage, selectAdapterForModel } from "./src/adapters.ts";
 
 const STATUS_KEY = "pi-cache-stats";
 
@@ -151,23 +153,8 @@ type CacheUsageSample = {
 /** Maximum number of recent samples kept per model key (in-memory only, not persisted). */
 const MAX_RECENT_SAMPLES = 50;
 
-type CacheProviderAdapter = {
-  id: CacheProviderId;
-  label: string;
-  showCacheWrite?: boolean;
-  matchesModel(model: PiModel | undefined): boolean;
-  matchesAssistantMessage(message: unknown, model: PiModel | undefined): boolean;
-  normalizeUsage(message: unknown): UsageSnapshot | undefined;
-  warningText?(model: PiModel): string | undefined;
-};
-
 function getSessionPromptCacheKey(ctx: ExtensionContext): string | undefined {
   return clampPromptCacheKey(ctx.sessionManager.getSessionId());
-}
-
-function isVirtualRoutingModel(model: PiModel | undefined, ctx?: Pick<ExtensionContext, "sessionManager">): boolean {
-  if (!model) return false;
-  return isNativeVirtualModel(model) || isRouterModel(model) || !!getRoutingRegistry()?.getRouter(model.provider) || !!resolveActiveRouteSnapshot(model, ctx);
 }
 
 function isCacheHintsServiceV1(value: unknown): value is PiCacheHintsV1 {
@@ -205,52 +192,6 @@ function makeSessionModelKey(sessionHash: string, provider: string, id: string):
 function modelKeyFromSessionKey(sessionModelKey: string): string {
   const idx = sessionModelKey.indexOf(":");
   return idx >= 0 ? sessionModelKey.slice(idx + 1) : sessionModelKey;
-}
-
-/** Join display-only path fragments without resolving them for I/O. */
-function joinDisplayPath(base: string, child: string, platform: string = process.platform): string {
-  const sep = platform.startsWith("win") ? "\\" : "/";
-  return `${base.replace(/[\\/]+$/, "")}${sep}${child}`;
-}
-
-/**
- * Return a platform-friendly display path for Pi's agent directory.
- *
- * Derives the display path from Pi core's `getAgentDir()` result. Home-relative
- * paths use `%USERPROFILE%` on Windows and `~` on Unix-like systems; custom
- * absolute or relative agent directories remain visible as configured.
- */
-function getAgentDirDisplayPath(
-  platform: string = process.platform,
-  agentDir: string = getAgentDir(),
-  homeDir: string = homedir(),
-): string {
-  const sep = platform.startsWith("win") ? "\\" : "/";
-  const normalizedAgentDir = agentDir.replace(/[\\/]+/g, sep);
-  const normalizedHomeDir = homeDir.replace(/[\\/]+/g, sep).replace(/[\\/]+$/, "");
-  const homePrefix = `${normalizedHomeDir}${sep}`;
-
-  if (normalizedAgentDir === normalizedHomeDir || normalizedAgentDir.startsWith(homePrefix)) {
-    const relative = normalizedAgentDir.slice(normalizedHomeDir.length).replace(/^[\\/]+/, "");
-    const homeLabel = platform.startsWith("win") ? "%USERPROFILE%" : "~";
-    return relative ? `${homeLabel}${sep}${relative}` : homeLabel;
-  }
-
-  return normalizedAgentDir;
-}
-
-/**
- * Return a platform-friendly display path for Pi's `models.json`.
- *
- * This is a DISPLAY helper only. Actual I/O uses `MODELS_JSON_PATH`, resolved
- * from the same custom agent/config directory rules as `STATE_DIR`.
- */
-function getModelsJsonDisplayPath(
-  platform: string = process.platform,
-  agentDir: string = getAgentDir(),
-  homeDir: string = homedir(),
-): string {
-  return joinDisplayPath(getAgentDirDisplayPath(platform, agentDir, homeDir), "models.json", platform);
 }
 
 type CommandCompletionItem = {
@@ -430,31 +371,6 @@ function formatOptimizerRuntimeMode(): string {
   return getOptimizerRuntimeModeLines().join("\n");
 }
 
-function isAdaptiveThinkingCompatApplicable(model: PiModel): boolean {
-  // A routed registry miss may preserve the upstream API/model identity while
-  // lacking a verified endpoint. Do not diagnose or suggest compat fixes for
-  // that incomplete transport metadata; ordinary direct Anthropic models still
-  // use their normal native adaptive-thinking check.
-  if (isRoutedFallbackModel(model) && !isNonEmptyString(model.baseUrl)) {
-    return false;
-  }
-
-  return lower(model.api) === "anthropic-messages"
-    && (isAdaptiveGenerationModel(model) || isKimiCodingAdaptiveModel(model));
-}
-
-function describeMissingAdaptiveThinkingCompat(model: PiModel): string[] {
-  const compat = getCompat(model);
-  const missing: string[] = [];
-  if (compat.forceAdaptiveThinking !== true) {
-    missing.push("forceAdaptiveThinking");
-  }
-  if (isKimiCodingEmptySignatureModel(model) && compat.allowEmptySignature !== true) {
-    missing.push("allowEmptySignature");
-  }
-  return missing;
-}
-
 function buildAdaptiveThinkingCompatSuggestion(missing: string[]): Record<string, unknown> {
   const suggestion: Record<string, unknown> = {};
   if (missing.includes("forceAdaptiveThinking")) {
@@ -494,41 +410,6 @@ function buildAdaptiveThinkingCompatWarningText(key: string, missing: string[]):
   ];
   appendAdaptiveThinkingCompatAdviceLines(lines, missing, { providerLabel, modelId });
   return lines.join("\n");
-}
-
-function modelFromAssistantMessage(message: unknown, fallback: PiModel | undefined): PiModel | undefined {
-  const record = getAssistantRecord(message);
-  if (!record) return fallback;
-
-  const id = firstNonEmptyString(record.responseModel, record.model, fallback?.id);
-  const provider = firstNonEmptyString(record.provider, fallback?.provider);
-  const api = firstNonEmptyString(record.api, fallback?.api) ?? "";
-  if (!id || !provider) return fallback;
-
-  const fallbackName = isNonEmptyString(fallback?.name) ? fallback.name : undefined;
-  const preservesFallbackIdentity =
-    !isVirtualRoutingModel(fallback) &&
-    provider === fallback?.provider &&
-    id === fallback?.id &&
-    fallbackName !== undefined;
-
-  return {
-    ...(fallback ?? {}),
-    id,
-    // Direct providers such as kimi-coding may echo only a short model id
-    // (`k3`) while the active model name (`Kimi K3`) carries the adapter token.
-    // Preserve that display name only when response and fallback identities are
-    // exactly the same; routed/different identities keep message-local naming.
-    name: preservesFallbackIdentity ? fallbackName : id,
-    provider,
-    api,
-    baseUrl: fallback?.baseUrl ?? "",
-    reasoning: fallback?.reasoning ?? false,
-    input: fallback?.input ?? ["text"],
-    cost: fallback?.cost ?? { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-    contextWindow: fallback?.contextWindow ?? 0,
-    maxTokens: fallback?.maxTokens ?? 0,
-  } as PiModel;
 }
 
 const REQUEST_SNAPSHOT_COMPAT_KEYS: Array<keyof CacheCompat> = [
@@ -681,40 +562,6 @@ function describeMissingOpenAIFamilyProxyCompat(model: PiModel): string[] {
   return missing;
 }
 
-/**
- * Like describeMissingOpenAIFamilyProxyCompat but without the isOpenAIFamilyModel
- * gate. Warns for ANY model using openai-completions through a non-official base
- * URL — covers GPT, Kimi, Qwen, GLM, MiniMax, Mimo, Hunyuan, and any other
- * OpenAI-compatible proxy.
- */
-function describeMissingOpenAICompatibleProxyCompat(model: PiModel): string[] {
-  const compat = getCompat(model);
-  const missing: string[] = [];
-
-  if (!isOpenAICompatibleProxyApi(model.api)) return missing;
-  if (!isKnownThirdPartyOpenAIEndpoint(model)) return missing;
-  if (isPiBuiltInLlamaCppModel(model)) return missing;
-
-  if (compat.sendSessionAffinityHeaders === undefined) {
-    missing.push("sendSessionAffinityHeaders");
-  }
-
-  // Explicit `sendSessionAffinityHeaders: false` is a valid safe opt-out for
-  // proxies/CDNs/WAFs that block Pi's custom affinity headers with HTTP 403.
-  // Treat only a missing/undefined value as missing compat; do not mark an
-  // intentional false override as ⚠️ compat or let /cache-optimizer fix turn it
-  // back to true.
-  //
-  // NOTE: supportsLongCacheRetention is intentionally NOT checked here.
-  // Per spec, it is optional/risky advisory text only and must NOT trigger
-  // the ⚠️ compat marker. The before_provider_request hook proactively
-  // strips prompt_cache_retention for models without explicit opt-in,
-  // so 400 errors are prevented regardless of this compat flag.
-  // Doctor/compat may mention it as optional guidance separately.
-
-  return missing;
-}
-
 function describeOptionalOpenAICompatibleProxyCompat(model: PiModel): string[] {
   const compat = getCompat(model);
   const optional: string[] = [];
@@ -728,17 +575,6 @@ function describeOptionalOpenAICompatibleProxyCompat(model: PiModel): string[] {
   }
 
   return optional;
-}
-
-function buildSafeOpenAIProxyCompatSuggestion(missing: string[]): Record<string, boolean> {
-  const suggestion: Record<string, boolean> = {};
-  if (missing.includes("sendSessionAffinityHeaders")) {
-    suggestion.sendSessionAffinityHeaders = true;
-  }
-  // supportsLongCacheRetention is NOT suggested here — per spec it is
-  // optional/risky and must not appear in the copyable safe snippet.
-  // The proactive stripping in before_provider_request handles 400 prevention.
-  return suggestion;
 }
 
 function getPromptCacheRetentionUnsupportedHint(): string {
@@ -1067,139 +903,12 @@ function buildReasoningProtocolFixSuggestion(
   };
 }
 
-type CompatAdvicePlacement = {
-  providerLabel?: string;
-  modelId?: string;
-};
-
-function buildProviderCompatOverride(providerLabel: string, compat: Record<string, unknown>): Record<string, unknown> {
-  return {
-    providers: {
-      [providerLabel]: {
-        compat,
-      },
-    },
-  };
-}
-
-function buildModelCompatOverride(providerLabel: string, modelId: string, compat: Record<string, unknown>): Record<string, unknown> {
-  return {
-    providers: {
-      [providerLabel]: {
-        modelOverrides: {
-          [modelId]: {
-            compat,
-          },
-        },
-      },
-    },
-  };
-}
-
-function appendCredentialSafeProviderGuidance(lines: string[], placement: CompatAdvicePlacement, compatSuggestion: Record<string, unknown>): void {
-  const providerLabel = placement.providerLabel;
-  if (!providerLabel) return;
-
-  lines.push("");
-  lines.push("If this channel has no models.json provider entry yet:");
-  lines.push("- Keep existing authentication as-is; do not copy credentials, tokens, or API keys.");
-  lines.push(`- Add only cache/routing compat overrides in ${getModelsJsonDisplayPath()}.`);
-
-  if (Object.keys(compatSuggestion).length === 0) {
-    lines.push("- No safe copyable override is available for the missing flags shown above.");
-    return;
-  }
-
-  lines.push("Provider-level minimal override:");
-  lines.push(JSON.stringify(buildProviderCompatOverride(providerLabel, compatSuggestion), null, 2));
-
-  if (placement.modelId) {
-    lines.push("Single-model override (use this if only this model should change):");
-    lines.push(JSON.stringify(buildModelCompatOverride(providerLabel, placement.modelId, compatSuggestion), null, 2));
-  }
-}
-
-function appendOpenAIProxyCompatAdviceLines(lines: string[], missing: string[], options: { includeJsonIntro?: boolean } & CompatAdvicePlacement = {}): void {
-  const suggestion = buildSafeOpenAIProxyCompatSuggestion(missing);
-  const hasSafeSuggestion = Object.keys(suggestion).length > 0;
-
-  if (hasSafeSuggestion) {
-    if (options.includeJsonIntro !== false) {
-      lines.push("Safe default suggestion:");
-    }
-    lines.push(JSON.stringify(suggestion, null, 2));
-  }
-
-  if (missing.includes("sendSessionAffinityHeaders")) {
-    lines.push("- sendSessionAffinityHeaders: recommended for third-party proxies when supported; it helps keep one Pi session on the same upstream/backend.");
-  }
-  appendCredentialSafeProviderGuidance(lines, options, suggestion);
-}
-
 function appendOptionalOpenAIProxyCompatAdviceLines(lines: string[], optional: string[]): void {
   if (!optional.includes("supportsLongCacheRetention")) return;
   lines.push("");
   lines.push("Optional (not required, not auto-fixed):");
   lines.push("- supportsLongCacheRetention: enable only after your endpoint/proxy explicitly supports OpenAI long prompt cache retention.");
   lines.push(`- ${getPromptCacheRetentionUnsupportedHint()}`);
-}
-
-/**
- * Build the warning text displayed to users when an OpenAI-family third-party
- * proxy is missing one or more cache/session-affinity compat flags.
- *
- * The returned string contains a parseable JSON object (via JSON.stringify)
- * listing only the missing flags with recommended value `true`. Inline
- * explanations for each flag follow the JSON snippet as separate prose lines,
- * so the JSON remains valid and copyable.
- *
- * Expected use: the openai adapter's warningText calls this function; tests
- * exercise it via __internals_for_tests.
- */
-function buildOpenAIProxyCompatWarningText(key: string, missing: string[]): string {
-  // Extract provider id from the model key (e.g. "otokapi/gpt-5.5" -> "otokapi").
-  // If no slash is found, fall back to the key itself.
-  const slashIdx = key.indexOf("/");
-  const providerLabel = slashIdx > 0 ? key.slice(0, slashIdx) : key;
-  const modelId = slashIdx > 0 ? key.slice(slashIdx + 1) : undefined;
-
-  const modelsJsonPath = getModelsJsonDisplayPath();
-  const lines: string[] = [
-    `💡 pi-cache-optimizer: ${key} is a third-party OpenAI-compatible proxy but merged compat lacks ${missing.join(" and ")}.`,
-    `Run /cache-optimizer fix to preview a confirmed repair (or edit ${modelsJsonPath} -> providers["${providerLabel}"] -> compat manually).`,
-    ``,
-  ];
-
-  appendOpenAIProxyCompatAdviceLines(lines, missing, { providerLabel, modelId });
-
-  return lines.join("\n");
-}
-
-/**
- * DeepSeek's model family and its reasoning wire protocol are separate facts.
- * The family name selects the cache adapter, but only an explicit effective
- * `thinkingFormat: "deepseek"` opts a third-party OpenAI Completions model into
- * the reasoning/replay compat checks below. Model names, provider ids, URLs,
- * and supportsReasoningEffort are not protocol evidence.
- */
-function isDeepSeekWireCompatApplicable(model: PiModel): boolean {
-  // `thinkingFormat` is the only wire-protocol signal. The model family is
-  // still name/id based for adapter selection, while provider, URL, and
-  // supportsReasoningEffort remain deliberately irrelevant here.
-  return isDeepSeekLikeModel(model)
-    && isOpenAICompatibleProxyApi(model.api)
-    && getCompat(model).thinkingFormat === "deepseek";
-}
-
-function describeMissingDeepSeekCompat(model: PiModel): string[] {
-  if (!isDeepSeekWireCompatApplicable(model)) return [];
-
-  const compat = getCompat(model);
-  const missing: string[] = [];
-  if (compat.requiresReasoningContentOnAssistantMessages !== true) {
-    missing.push("requiresReasoningContentOnAssistantMessages");
-  }
-  return missing;
 }
 
 /**
@@ -1215,248 +924,6 @@ function isDeepSeekCompatCheckApplicable(model: PiModel): boolean {
 
 function hasExplicitDeepSeekReasoningProtocol(model: PiModel): boolean {
   return isDeepSeekWireCompatApplicable(model);
-}
-
-function describeMissingCacheCompatForModel(model: PiModel): string[] {
-  if (isAdaptiveThinkingCompatApplicable(model)) {
-    return describeMissingAdaptiveThinkingCompat(model);
-  }
-
-  const missing = describeMissingOpenAICompatibleProxyCompat(model);
-  if (isDeepSeekWireCompatApplicable(model)) {
-    missing.push(...describeMissingDeepSeekCompat(model));
-  }
-  return missing;
-}
-
-function buildDeepSeekCompatSuggestion(missing: string[]): Record<string, unknown> {
-  const suggestion: Record<string, unknown> = {
-    ...buildSafeOpenAIProxyCompatSuggestion(missing),
-  };
-  if (missing.includes("requiresReasoningContentOnAssistantMessages")) {
-    suggestion.requiresReasoningContentOnAssistantMessages = true;
-  }
-  return suggestion;
-}
-
-function appendDeepSeekCompatAdviceLines(lines: string[], missing: string[], placement: CompatAdvicePlacement = {}): void {
-  const suggestion = buildDeepSeekCompatSuggestion(missing);
-  if (Object.keys(suggestion).length > 0) {
-    lines.push("Recommended DeepSeek reasoning/replay compat snippet:");
-    lines.push(JSON.stringify(suggestion, null, 2));
-  }
-
-  if (missing.includes("requiresReasoningContentOnAssistantMessages")) {
-    lines.push('- requiresReasoningContentOnAssistantMessages: true keeps replayed assistant turns compatible with an explicitly selected DeepSeek reasoning wire format.');
-  }
-  if (missing.includes("sendSessionAffinityHeaders")) {
-    lines.push("- sendSessionAffinityHeaders: recommended for third-party OpenAI-compatible proxies when supported; it helps keep one Pi session on the same upstream/backend.");
-  }
-
-  appendCredentialSafeProviderGuidance(lines, placement, suggestion);
-}
-
-function buildDeepSeekCompatWarningText(key: string, missing: string[]): string {
-  const slashIdx = key.indexOf("/");
-  const providerLabel = slashIdx > 0 ? key.slice(0, slashIdx) : key;
-  const modelId = slashIdx > 0 ? key.slice(slashIdx + 1) : undefined;
-  const modelsJsonPath = getModelsJsonDisplayPath();
-  const lines: string[] = [
-    `💡 pi-cache-optimizer: ${key} is DeepSeek-like but merged compat lacks ${missing.join(" and ")}.`,
-    `Proxies may reduce or hide cache hits. Edit ${modelsJsonPath} -> providers["${providerLabel}"] -> compat (at the same level as baseUrl/api/apiKey/models).`,
-    "",
-  ];
-
-  appendDeepSeekCompatAdviceLines(lines, missing, { providerLabel, modelId });
-
-  return lines.join("\n");
-}
-
-/**
- * Model families that share one adapter shape: usage is read from OpenAI-shaped
- * fields and the OpenAI-compatible proxy compat warning applies. A family
- * matches when any of the model's (or the assistant message's) lowercase id /
- * name tokens contains one of `needles`, or satisfies `pattern`. Order matters:
- * the first matching adapter wins, so it follows the specific adapters above.
- * Supporting a new family is one row here.
- */
-type OpenAIShapedFamily = { label: string; needles: string[]; pattern?: RegExp };
-
-const OPENAI_SHAPED_FAMILIES: OpenAIShapedFamily[] = [
-  { label: "Kimi cache", needles: ["kimi"] },
-  { label: "Qwen cache", needles: ["qwen"] },
-  { label: "GLM cache", needles: ["glm"] },
-  { label: "MiniMax cache", needles: ["minimax"] },
-  { label: "Mimo cache", needles: ["xiaomimimo"], pattern: MIMO_MODEL_PATTERN },
-  { label: "Hunyuan cache", needles: ["hunyuan"] },
-  { label: "Mistral cache", needles: ["mistral", "mixtral", "codestral"] },
-  { label: "Grok cache", needles: ["grok"], pattern: XAI_MODEL_PATTERN },
-  { label: "Llama cache", needles: ["llama"] },
-  { label: "Nemotron cache", needles: ["nemotron"] },
-  { label: "Cohere cache", needles: ["cohere", "command-r"] },
-  { label: "Yi cache", needles: ["yi-", "01-ai", "zero-one"], pattern: YI_MODEL_PATTERN },
-  { label: "Doubao cache", needles: ["doubao", "豆包", "volcengine", "bytedance", "byte-dance"], pattern: DOUBAO_SEED_PATTERN },
-  { label: "ERNIE cache", needles: ["ernie", "wenxin", "文心", "yiyan", "一言", "baidu"] },
-  { label: "Baichuan cache", needles: ["baichuan", "百川"] },
-  { label: "StepFun cache", needles: ["stepfun", "step-"] },
-  { label: "Spark cache", needles: ["spark", "xinghuo", "星火", "iflytek", "讯飞"] },
-  { label: "InternLM cache", needles: ["internlm", "intern-lm", "书生"] },
-  { label: "Gemma cache", needles: ["gemma"] },
-  { label: "Phi cache", needles: ["phi-"], pattern: PHI_MODEL_PATTERN },
-  { label: "Jamba cache", needles: ["jamba", "ai21"] },
-  { label: "Solar cache", needles: ["solar", "upstage"] },
-  { label: "Sonar cache", needles: ["sonar", "perplexity"], pattern: PPLX_MODEL_PATTERN },  // Perplexity / Sonar
-  { label: "Nova cache", needles: ["amazon-nova"], pattern: NOVA_MODEL_PATTERN },  // Amazon Nova
-  { label: "Reka cache", needles: ["reka"] },  // Reka
-  { label: "Falcon cache", needles: ["falcon", "tiiuae"] },  // Falcon / TII
-  { label: "DBRX cache", needles: ["dbrx", "databricks"] },  // Databricks DBRX
-  { label: "MPT cache", needles: ["mosaicml", "mpt-"], pattern: MPT_MODEL_PATTERN },  // MosaicML MPT
-  { label: "StableLM cache", needles: ["stablelm", "stable-lm", "stability-ai"] },  // StableLM / Stability AI
-  { label: "Aquila cache", needles: ["aquila", "baai"] },  // BAAI / Aquila
-  { label: "EXAONE cache", needles: ["exaone"] },  // LG EXAONE
-  { label: "HyperCLOVA cache", needles: ["hyperclova", "clova-x"] },  // Naver HyperCLOVA X (conservative: hyperclova, clova-x only)
-  { label: "Luminous cache", needles: ["luminous", "aleph-alpha"], pattern: ALEPH_MODEL_PATTERN },  // Aleph Alpha Luminous
-  { label: "Hermes cache", needles: ["nous", "hermes", "openhermes"] },  // Nous / Hermes / OpenHermes
-  { label: "Granite cache", needles: ["granite", "ibm-granite"] },  // IBM Granite
-  { label: "Arctic cache", needles: ["snowflake-arctic"], pattern: ARCTIC_MODEL_PATTERN },  // Snowflake Arctic
-  { label: "Pangu cache", needles: ["pangu", "pan-gu", "盘古", "huawei-pangu"] },  // Huawei Pangu / 盘古
-  { label: "SenseNova cache", needles: ["sensenova", "sense-nova", "sensechat", "商汤"] },  // SenseTime SenseNova / 商汤
-  { label: "Zhinao cache", needles: ["360gpt", "360-gpt", "zhinao", "智脑"] },  // 360 Zhinao / 智脑
-  { label: "MiniCPM cache", needles: ["minicpm", "mini-cpm", "openbmb"] },  // OpenBMB MiniCPM
-  { label: "XVERSE cache", needles: ["xverse"] },  // XVERSE
-  { label: "Orion cache", needles: ["orionstar", "orion-star"], pattern: ORION_MODEL_PATTERN },  // OrionStar Orion
-  { label: "OpenChat cache", needles: ["openchat"] },  // OpenChat
-  { label: "Vicuna cache", needles: ["vicuna"] },  // Vicuna
-  { label: "Wizard cache", needles: ["wizardlm", "wizard-lm", "wizardcoder", "wizard-coder"] },  // WizardLM / WizardCoder
-  { label: "Zephyr cache", needles: ["zephyr"] },  // Zephyr
-  { label: "Dolphin cache", needles: ["dolphin"] },  // Dolphin
-  { label: "OpenOrca cache", needles: ["openorca", "open-orca"] },  // OpenOrca
-  { label: "Starling cache", needles: ["starling"] },  // Starling
-  { label: "BLOOM cache", needles: ["bloom", "bigscience"] },  // BLOOM / BigScience
-  { label: "RWKV cache", needles: ["rwkv"] },  // RWKV
-  { label: "Aya cache", needles: ["aya-expanse"], pattern: AYA_MODEL_PATTERN },  // Cohere Aya
-];
-
-function familyMatchesTokens(family: OpenAIShapedFamily, tokens: string[]): boolean {
-  return hasAnyTokenContaining(tokens, family.needles) || (family.pattern !== undefined && tokens.some((token) => family.pattern!.test(token)));
-}
-
-function createOpenAIShapedAdapter(family: OpenAIShapedFamily): CacheProviderAdapter {
-  return {
-    id: "openai" as CacheProviderId,
-    label: family.label,
-    matchesModel: (model) => familyMatchesTokens(family, getModelIdNameTokenValues(model)),
-    matchesAssistantMessage(message, model) {
-      if (!isAssistantMessage(message)) return false;
-      return familyMatchesTokens(family, [...getModelIdNameTokenValues(model), ...getAssistantMessageModelTokenValues(message)]);
-    },
-    normalizeUsage(message) {
-      return normalizeWithFallback(message, getOpenAIRawUsage);
-    },
-    warningText(model) {
-      const missing = describeMissingOpenAICompatibleProxyCompat(model);
-      if (missing.length === 0) return undefined;
-      return buildOpenAIProxyCompatWarningText(modelKey(model), missing);
-    },
-  };
-}
-
-const OPENAI_SHAPED_FAMILY_ADAPTERS: CacheProviderAdapter[] = OPENAI_SHAPED_FAMILIES.map(createOpenAIShapedAdapter);
-
-const CACHE_PROVIDER_ADAPTERS: CacheProviderAdapter[] = [
-  {
-    id: "deepseek",
-    label: "DS cache",
-    matchesModel: isDeepSeekLikeModel,
-    matchesAssistantMessage(message, model) {
-      if (!isAssistantMessage(message)) return false;
-      return isDeepSeekLikeAssistantMessage(message, model);
-    },
-    normalizeUsage(message) {
-      return normalizeWithFallback(message, getDeepSeekRawUsage, { allowInputOnlyPiUsage: true });
-    },
-    warningText(model) {
-      const missing = describeMissingCacheCompatForModel(model);
-      if (missing.length === 0) return undefined;
-
-      const key = modelKey(model);
-      return isDeepSeekWireCompatApplicable(model)
-        ? buildDeepSeekCompatWarningText(key, missing)
-        : buildOpenAIProxyCompatWarningText(key, missing);
-    },
-  },
-  {
-    id: "claude",
-    label: "Claude cache",
-    showCacheWrite: true,
-    matchesModel: isClaudeLikeModel,
-    matchesAssistantMessage(message, model) {
-      if (!isAssistantMessage(message)) return false;
-      return isClaudeLikeAssistantMessage(message, model);
-    },
-    normalizeUsage(message) {
-      return normalizeWithFallback(message, getAnthropicRawUsage);
-    },
-    warningText(model) {
-      if (!isClaudeLikeModel(model) || !isOpenAICompatibleApi(model.api) || isPiBuiltInLlamaCppModel(model)) return undefined;
-      if (getCompat(model).cacheControlFormat === "anthropic") return undefined;
-
-      return (
-        `💡 Cache optimizer: ${modelKey(model)} looks Claude/Anthropic-like but OpenAI-compatible compat lacks cacheControlFormat: "anthropic". ` +
-        "Pi may not place Anthropic cache_control breakpoints unless this endpoint supports and enables that compat flag."
-      );
-    },
-  },
-  {
-    id: "openai",
-    label: "OpenAI cache",
-    matchesModel: isOpenAIFamilyModel,
-    matchesAssistantMessage(message, model) {
-      if (!isAssistantMessage(message)) return false;
-      return isOpenAIFamilyAssistantMessage(message, model);
-    },
-    normalizeUsage(message) {
-      return normalizeWithFallback(message, getOpenAIRawUsage);
-    },
-    warningText(model) {
-      const missing = describeMissingOpenAICompatibleProxyCompat(model);
-      if (missing.length === 0) return undefined;
-      return buildOpenAIProxyCompatWarningText(modelKey(model), missing);
-    },
-  },
-  {
-    id: "gemini",
-    label: "Gemini cache",
-    matchesModel: isGeminiLikeModel,
-    matchesAssistantMessage(message, model) {
-      if (!isAssistantMessage(message)) return false;
-      return isGeminiLikeAssistantMessage(message, model);
-    },
-    normalizeUsage(message) {
-      return normalizeWithFallback(message, getGeminiRawUsage);
-    },
-  },
-  // ── Non-GPT OpenAI-compatible adapters ──────────────────────
-  // ── More OpenAI-compatible adapters ──────────────────────────
-  // ── More OpenAI-compatible adapters (batch 2) ───────────────────
-  // ── New OpenAI-compatible adapters (batch 3, 12 families) ────────
-  // ── More OpenAI-compatible adapters (batch 4, 18 families) ────────
-  ...OPENAI_SHAPED_FAMILY_ADAPTERS,
-];
-
-function selectAdapterForModel(model: PiModel | undefined): CacheProviderAdapter | undefined {
-  // A native virtual selection has no cache identity of its own; stats always
-  // belong to the physical model it routed to.
-  if (isNativeVirtualModel(model)) return undefined;
-  return CACHE_PROVIDER_ADAPTERS.find((adapter) => adapter.matchesModel(model));
-}
-
-function selectAdapterForAssistantMessage(message: unknown, model: PiModel | undefined): CacheProviderAdapter | undefined {
-  // Assistant message metadata is request-local and authoritative for virtual
-  // routing providers. Use it first for every model; direct providers normally
-  // echo the same provider/model and therefore remain unchanged.
-  const responseModel = modelFromAssistantMessage(message, model);
-  return CACHE_PROVIDER_ADAPTERS.find((adapter) => adapter.matchesAssistantMessage(message, responseModel));
 }
 
 function notifyCacheCompatIfNeeded(
