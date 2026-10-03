@@ -288,6 +288,44 @@ describe("native virtual model hooks", () => {
     }
   });
 
+  test("native virtual prompt rewrite fails closed for unsafe or malformed candidate chains", async () => {
+    const { hooks } = setup();
+    const selected = virtualModel("router", "auto");
+    const registry = Symbol.for("pi.routing.registry.v1");
+    const previous = (globalThis as any)[registry];
+    const event = { systemPrompt: "stable project instructions", systemPromptOptions: { cwd: "/tmp", contextFiles: [], skills: [] } };
+    const proxy = physical("proxy", "kimi-k3", { api: "openai-completions" });
+    const variants = [
+      () => undefined,
+      () => [{ provider: "proxy", modelId: "kimi-k3", timestamp: 1 }],
+      () => [{ provider: "proxy", modelId: "kimi-k3", api: "openai-completions", timestamp: 1 }, { provider: "proxy", modelId: "fallback", api: "openai-codex-responses", timestamp: 2 }],
+    ];
+    try {
+      process.env.PI_CACHE_OPTIMIZER_VIRTUAL_REWRITE = "1";
+      for (const resolveCandidateRoutes of variants) {
+        (globalThis as any)[registry] = {
+          version: 1,
+          getRouter() {
+            return { virtualProvider: "router", resolveCandidateRoutes };
+          },
+        };
+        const result = await hooks.get("before_agent_start")!(event, context(selected, { all: [proxy] }));
+        assert.deepEqual(result, {});
+      }
+      (globalThis as any)[registry] = {
+        version: 1,
+        getRouter() {
+          return { virtualProvider: "router", resolveCandidateRoutes() { throw new Error("route unavailable"); } };
+        },
+      };
+      assert.deepEqual(await hooks.get("before_agent_start")!(event, context(selected, { all: [proxy] })), {});
+    } finally {
+      delete process.env.PI_CACHE_OPTIMIZER_VIRTUAL_REWRITE;
+      if (previous === undefined) delete (globalThis as any)[registry];
+      else (globalThis as any)[registry] = previous;
+    }
+  });
+
   test("native virtual prompt rewrite fails closed without candidate route metadata", async () => {
     const { hooks } = setup();
     const selected = virtualModel("unregistered", "auto");
@@ -519,6 +557,213 @@ describe("native virtual model hooks", () => {
     assert.deepEqual(routed, {});
   });
 
+
+  test("every API gets in-place edits only and Pi's section order is never changed", async () => {
+    const { hooks } = setup();
+    const sourceInfo = { path: "", source: "local", scope: "user", origin: "top-level" };
+    const skills = ["alpha", "beta", "gamma", "delta"].map((name) => ({
+      name, description: `${name} skill description`, filePath: `/skills/${name}/SKILL.md`, baseDir: `/skills/${name}`, sourceInfo, disableModelInvocation: false,
+    }));
+    const agents = "Project rules that are long enough to be lifted as a stable prefix candidate by the reorder step.";
+    const systemPrompt = [
+      "You are a coding assistant.",
+      "<project_context>",
+      `<project_instructions path="/repo/AGENTS.md">\n${agents}\n</project_instructions>`,
+      "</project_context>",
+      "",
+      `<skills>\n${t.formatSkillsForPrompt(skills as any).trim()}\n</skills>`,
+      "",
+      "<session-overview>",
+      "Branch: main",
+      "## RECENT COMMITS",
+      "abc123 changed something",
+      "## PATHS",
+      "Tasks: .trellis/tasks/",
+      "</session-overview>",
+    ].join("\n");
+    const event = { systemPrompt, systemPromptOptions: { cwd: "/repo", contextFiles: [{ path: "/repo/AGENTS.md", content: agents }], skills } };
+
+    for (const codex of [
+      physical("openai-codex", "gpt-6-luna", { api: "openai-codex-responses", baseUrl: "https://chatgpt.com/backend-api" }),
+      physical("openai", "gpt-6", { api: "openai-responses", baseUrl: "https://api.openai.com/v1" }),
+    ]) {
+      const result = await hooks.get("before_agent_start")!(event, context(codex)) as { systemPrompt?: string };
+      const out = result.systemPrompt ?? "";
+      assert.ok(out.startsWith("You are a coding assistant.\n<project_context>"), `${codex.api}: section order kept`);
+      assert.ok(out.includes(`<project_instructions path="/repo/AGENTS.md">\n${agents}`), `${codex.api}: AGENTS.md stays in its section`);
+      assert.ok(!out.includes("<available_skills>") && out.includes("- alpha: alpha skill description"), `${codex.api}: skills compressed`);
+      assert.ok(!out.includes("RECENT COMMITS"), `${codex.api}: churn stripped`);
+    }
+
+    // Chat Completions models get the identical in-place treatment: nothing is lifted out of its section.
+    const completions = await hooks.get("before_agent_start")!(event, context(physical("proxy", "kimi-k3"))) as { systemPrompt?: string };
+    const out = completions.systemPrompt ?? "";
+    assert.ok(out.startsWith("You are a coding assistant.\n<project_context>"), "completions: section order kept");
+    assert.ok(out.includes(`<project_instructions path="/repo/AGENTS.md">\n${agents}`), "completions: AGENTS.md stays in its section");
+    assert.ok(!out.includes("<available_skills>") && out.includes("- alpha: alpha skill description"), "completions: skills compressed");
+    assert.ok(!out.includes("RECENT COMMITS"), "completions: churn stripped");
+    assert.ok(!/<skills>\n\s*\n<\/skills>/.test(out), "completions: no empty section shells");
+  });
+
+  describe("skill compression as a section edit", () => {
+    const sourceInfo = { path: "", source: "local", scope: "user", origin: "top-level" };
+    const skills = ["alpha", "beta", "gamma", "delta", "epsilon"].map((name) => ({
+      name, description: `${name} skill\n description`, filePath: `/skills/${name}/SKILL.md`, baseDir: `/skills/${name}`, sourceInfo, disableModelInvocation: false,
+    }));
+    const loadPi = async () => createJiti(join(process.cwd(), "tests", "pi-system-prompt-test.ts"), { interopDefault: false, moduleCache: false }).import<typeof import("../node_modules/@earendil-works/pi-coding-agent/dist/core/system-prompt.js")>(
+      join(process.cwd(), "node_modules", "@earendil-works", "pi-coding-agent", "dist", "core", "system-prompt.js"),
+    );
+    /** Mimics ExtensionRunner.emitBeforeAgentStart: options are mutable and `systemPrompt` re-renders from them. */
+    const piEvent = (pi: Awaited<ReturnType<typeof loadPi>>, extra: Record<string, unknown> = {}) => {
+      const options = pi.normalizeBuildSystemPromptOptions({ cwd: "/repo", skills, selectedTools: ["read", "bash"], ...extra } as any);
+      return { options, event: { type: "before_agent_start", prompt: "hi", get systemPrompt() { return pi.buildSystemPrompt(options); }, systemPromptOptions: options } };
+    };
+
+    test("edits sections.skills, keeps Pi's order and wrapper, and returns no forced prompt", async () => {
+      const pi = await loadPi();
+      const { hooks } = setup();
+      const { options, event } = piEvent(pi);
+      const before = event.systemPrompt;
+      const result = await hooks.get("before_agent_start")!(event, context(physical("proxy", "kimi-k3")));
+      assert.deepEqual(result, {}, "no forced prompt: Pi renders the edited section itself");
+      assert.equal(typeof options.sections.skills, "string");
+      const after = event.systemPrompt;
+      assert.ok(!after.includes("<available_skills>") && after.length < before.length);
+      assert.match(after, /<skills>\nThe following skills provide[\s\S]*- alpha: alpha skill description[\s\S]*<\/skills>/);
+      // Section order is Pi's: skills still sits between the docs and the cwd.
+      assert.ok(after.indexOf("<docs>") < after.indexOf("<skills>") && after.indexOf("<skills>") < after.indexOf("<cwd>"));
+      assert.equal(pi.buildSystemPromptSections(options as any).skills, `<skills>\n${options.sections.skills}\n</skills>`);
+    });
+
+    test("a handler that runs later still sees, and can edit, the sections", async () => {
+      const pi = await loadPi();
+      const { hooks } = setup();
+      const { options, event } = piEvent(pi);
+      await hooks.get("before_agent_start")!(event, context(physical("proxy", "kimi-k3")));
+      options.sections.extra = "from a later extension";
+      assert.match(event.systemPrompt, /<extra>\nfrom a later extension\n<\/extra>/);
+      assert.ok(event.systemPrompt.includes("- alpha: alpha skill description"), "earlier compression survives later section edits");
+    });
+
+    test("falls back to the string substitution after a forced prompt or without sections support", async () => {
+      const pi = await loadPi();
+      const { hooks } = setup();
+
+      const forced = piEvent(pi);
+      forced.options.forceSystemPrompt = pi.buildSystemPrompt(forced.options); // an earlier handler already forced the prompt
+      const forcedResult = await hooks.get("before_agent_start")!(forced.event, context(physical("proxy", "kimi-k3"))) as { systemPrompt?: string };
+      assert.equal(forced.options.sections.skills, undefined, "sections are ignored once forced");
+      assert.ok(forcedResult.systemPrompt && !forcedResult.systemPrompt.includes("<available_skills>"));
+      assert.ok(forcedResult.systemPrompt.includes("- alpha: alpha skill description"));
+
+      // Pre-0.86 shape: no `sections`, prompt supplied as a string.
+      const legacyPrompt = `base${t.formatSkillsForPrompt(skills as any)}\n\nCurrent working directory: /repo`;
+      const legacy = { systemPrompt: legacyPrompt, systemPromptOptions: { cwd: "/repo", contextFiles: [], skills } };
+      const legacyResult = await hooks.get("before_agent_start")!(legacy, context(physical("proxy", "kimi-k3"))) as { systemPrompt?: string };
+      assert.ok(legacyResult.systemPrompt?.includes("- alpha: alpha skill description"));
+      assert.ok(!legacyResult.systemPrompt?.includes("<available_skills>"));
+    });
+
+    test("an opt-out leaves sections untouched", async () => {
+      const pi = await loadPi();
+      const { hooks } = setup();
+      const previous = process.env.PI_CACHE_OPTIMIZER_NO_SKILL_COMPRESSION;
+      process.env.PI_CACHE_OPTIMIZER_NO_SKILL_COMPRESSION = "1";
+      try {
+        const { options, event } = piEvent(pi);
+        const before = event.systemPrompt;
+        assert.deepEqual(await hooks.get("before_agent_start")!(event, context(physical("proxy", "kimi-k3"))), {});
+        assert.equal(options.sections.skills, undefined);
+        assert.equal(event.systemPrompt, before);
+      } finally {
+        if (previous === undefined) delete process.env.PI_CACHE_OPTIMIZER_NO_SKILL_COMPRESSION;
+        else process.env.PI_CACHE_OPTIMIZER_NO_SKILL_COMPRESSION = previous;
+      }
+    });
+  });
+
+  describe("skill compression outcome is visible", () => {
+    const sourceInfo = { path: "", source: "local", scope: "user", origin: "top-level" };
+    const mkSkills = (n: number) => Array.from({ length: n }, (_, i) => ({
+      name: `s${i}`, description: `skill ${i}`, filePath: `/skills/s${i}/SKILL.md`, baseDir: `/skills/s${i}`, sourceInfo, disableModelInvocation: false,
+    }));
+    const loadPi = async () => createJiti(join(process.cwd(), "tests", "pi-outcome-test.ts"), { interopDefault: false, moduleCache: false }).import<typeof import("../node_modules/@earendil-works/pi-coding-agent/dist/core/system-prompt.js")>(
+      join(process.cwd(), "node_modules", "@earendil-works", "pi-coding-agent", "dist", "core", "system-prompt.js"),
+    );
+    const piEvent = (pi: Awaited<ReturnType<typeof loadPi>>, skills: unknown[]) => {
+      const options = pi.normalizeBuildSystemPromptOptions({ cwd: "/repo", skills, selectedTools: ["read"] } as any);
+      return { options, event: { type: "before_agent_start", prompt: "hi", get systemPrompt() { return pi.buildSystemPrompt(options); }, systemPromptOptions: options } };
+    };
+    const withEnv = async (name: string, value: string, fn: () => Promise<void>) => {
+      const previous = process.env[name];
+      process.env[name] = value;
+      try { await fn(); } finally { if (previous === undefined) delete process.env[name]; else process.env[name] = previous; }
+    };
+
+    test("records which path applied, and why it did not", async () => {
+      const pi = await loadPi();
+      const { hooks } = setup();
+      const run = async (event: unknown) => { await hooks.get("before_agent_start")!(event, context(physical("proxy", "kimi-k3"))); return t.getLastSkillCompressionOutcome(); };
+
+      assert.equal((await run(piEvent(pi, mkSkills(5)).event))?.applied, "section");
+
+      const forced = piEvent(pi, mkSkills(5));
+      forced.options.forceSystemPrompt = pi.buildSystemPrompt(forced.options);
+      assert.equal((await run(forced.event))?.applied, "string");
+
+      const few = await run(piEvent(pi, mkSkills(2)).event);
+      assert.equal(few?.applied, false);
+      assert.match(few?.reason ?? "", /only 2 visible skill/);
+
+      // A skill list Pi rendered differently (the 0.86 regression) must be reported, not silently skipped.
+      const changed = { systemPrompt: "base\n<skills>\n<available_skills>\n  <skill>something new</skill>\n</available_skills>\n</skills>", systemPromptOptions: { cwd: "/repo", contextFiles: [], skills: mkSkills(5) } };
+      const unrecognised = await run(changed);
+      assert.equal(unrecognised?.applied, false);
+      assert.match(unrecognised?.reason ?? "", /format was not recognised/);
+      assert.match(t.describeSkillCompressionOutcome(unrecognised), /^Skill compression: not applied — Pi's skill list format was not recognised/);
+
+      await withEnv("PI_CACHE_OPTIMIZER_NO_PROMPT_REWRITE", "1", async () => {
+        const off = await run(piEvent(pi, mkSkills(5)).event);
+        assert.match(off?.reason ?? "", /prompt rewrite is turned off/);
+      });
+      await withEnv("PI_CACHE_OPTIMIZER_NO_SKILL_COMPRESSION", "1", async () => {
+        const off = await run(piEvent(pi, mkSkills(5)).event);
+        assert.match(off?.reason ?? "", /skill compression is turned off/);
+      });
+    });
+
+    test("runtime status reports skill compression as inactive when prompt rewrite is off", async () => {
+      assert.ok(t.getOptimizerRuntimeModeLines().some((line: string) => /^• Skill compression: on$/.test(line)));
+      assert.ok(t.getOptimizerRuntimeModeLines().some((line: string) => /^• Prompt rewrite: on \(in-place: .*never reorders/.test(line)));
+      await withEnv("PI_CACHE_OPTIMIZER_NO_PROMPT_REWRITE", "1", async () => {
+        assert.ok(t.getOptimizerRuntimeModeLines().some((line: string) => line === "• Skill compression: on (inactive: prompt rewrite is off)"));
+      });
+      await withEnv("PI_CACHE_OPTIMIZER_NO_SKILL_COMPRESSION", "1", async () => {
+        assert.ok(t.getOptimizerRuntimeModeLines().some((line: string) => line === "• Skill compression: off"));
+      });
+    });
+  });
+
+  test("cache hints follow the effective prompt-rewrite setting, not only the environment", async () => {
+    const { hooks } = setup();
+    const previousEnv = process.env.PI_CACHE_OPTIMIZER_NO_PROMPT_REWRITE;
+    const previousConfig = t.readPersistedCacheOptimizerConfig();
+    process.env.PI_CACHE_OPTIMIZER_NO_PROMPT_REWRITE = "1";
+    // Persisted config overrides the environment variable and turns prompt rewrite back on.
+    t.setPersistedCacheOptimizerConfig({ ...previousConfig, version: 3, features: { promptRewrite: true } });
+    try {
+      const systemPrompt = ["You are a coding assistant.", "<session-overview>", "Branch: main", "## RECENT COMMITS", "abc123 x", "## PATHS", "p", "</session-overview>"].join("\n");
+      const result = await hooks.get("before_agent_start")!({ systemPrompt, systemPromptOptions: { cwd: "/tmp", contextFiles: [], skills: [] } }, context(physical("proxy", "kimi-k3"))) as { systemPrompt?: string };
+      assert.ok(result.systemPrompt && !result.systemPrompt.includes("RECENT COMMITS"), "prompt was rewritten");
+      const service = (globalThis as any)[Symbol.for("pi.cache.hints.v1")];
+      const hint = service?.getHints({ upstreamProvider: "proxy", upstreamModelId: "kimi-k3" });
+      assert.equal(hint?.systemPrompt, result.systemPrompt, "router consumers receive the prompt that was actually sent");
+    } finally {
+      if (previousEnv === undefined) delete process.env.PI_CACHE_OPTIMIZER_NO_PROMPT_REWRITE;
+      else process.env.PI_CACHE_OPTIMIZER_NO_PROMPT_REWRITE = previousEnv;
+      t.setPersistedCacheOptimizerConfig(previousConfig);
+    }
+  });
 
   test("nested codemode tool calls do not refresh the footer on their own", async () => {
     const { hooks } = setup();

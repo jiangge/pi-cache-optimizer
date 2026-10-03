@@ -252,8 +252,9 @@ describe("deterministic tool ordering", () => {
     const responseResult = request({ payload }, {
       ...context,
       model: model({ api: "openai-responses", id: "gpt-5.5-responses" }),
-    }) as typeof payload & { prompt_cache_key?: string };
-    assert.deepEqual(responseResult.tools.map((tool) => tool.function.name), ["z", "a"]);
+    }) as typeof payload & { prompt_cache_key?: string } | undefined;
+    assert.equal(responseResult, undefined);
+    assert.deepEqual(payload.tools.map((tool) => tool.function.name), ["z", "a"]);
 
     const googleSignal = new AbortController().signal;
     const googleTools = [

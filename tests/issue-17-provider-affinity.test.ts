@@ -95,6 +95,41 @@ test("model-specific diagnostics remain separate within one provider", async () 
   assert.ok(warnings.some((text) => text.includes("proxy/deepseek-b")));
 });
 
+test("provider-level affinity compat suppresses warnings for every sibling model", async () => {
+  await writeFile(join(agentDir, "models.json"), JSON.stringify({
+    providers: {
+      proxy: {
+        compat: { sendSessionAffinityHeaders: true },
+        models: [{ id: "mimo-a" }, { id: "qwen-b" }],
+      },
+    },
+  }));
+  const { hooks, context, notifications } = setup();
+  for (const id of ["mimo-a", "qwen-b", "unlisted-model"]) {
+    const current = model(id);
+    await hooks.get("model_select")?.({ model: current }, context(current));
+  }
+  assert.equal(notifications.filter((text) => text.includes("merged compat lacks")).length, 0);
+});
+
+test("provider-level generic compat does not invent DeepSeek wire protocol warnings", async () => {
+  await writeFile(join(agentDir, "models.json"), JSON.stringify({
+    providers: {
+      proxy: {
+        compat: {
+          sendSessionAffinityHeaders: true,
+          requiresReasoningContentOnAssistantMessages: true,
+          supportsReasoningEffort: true,
+        },
+      },
+    },
+  }));
+  const { hooks, context, notifications } = setup();
+  const current = model("DeepSeek-V4-Flash", "proxy", { supportsReasoningEffort: true });
+  await hooks.get("model_select")?.({ model: current }, context(current));
+  assert.equal(notifications.length, 0);
+});
+
 test("one confirmed provider repair covers missing models, preserves explicit false, and rolls back", async () => {
   const path = join(agentDir, "models.json");
   const original = `{"providers":{"proxy":{"api":"openai-completions","baseUrl":"https://proxy.example/v1","modelOverrides":{"opted-out":{"compat":{"sendSessionAffinityHeaders":false}}}}}}`;

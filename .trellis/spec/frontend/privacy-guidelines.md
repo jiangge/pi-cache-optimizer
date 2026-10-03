@@ -83,7 +83,7 @@ normalizeToolsInPayload(payload, api): { payload: unknown; changed: boolean };
 
 | Condition | Behavior |
 |---|---|
-| Gate absent/non-truthy or runtime disabled | Do not reorder; retain the normal request pipeline. |
+| Gate absent/non-truthy or runtime disabled | Do not rewrite or reorder; retain the normal request pipeline. |
 | Unknown API, malformed tool, missing name, unsupported wrapper, tool cache marker, or Anthropic deferred grouping | Return the original payload unchanged. |
 | Google/Vertex payload contains `AbortSignal` | Sort the verified `config.tools` path while retaining the signal by identity. |
 | Verified payload is already sorted or has equal-name ties | Return the original payload and preserve original order. |

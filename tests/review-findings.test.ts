@@ -8,71 +8,6 @@ import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 
 import { __internals_for_tests as internals } from "#extension";
 
-describe("stable prompt reordering", () => {
-  const guideline = "- Always run repository checks before finishing.";
-
-  test("preserves an ambiguous candidate inside dynamic marked content", () => {
-    const original = [
-      "<workflow-state>",
-      `Quoted policy: ${guideline}`,
-      "</workflow-state>",
-      "",
-      "## Guidelines",
-      guideline,
-    ].join("\n");
-
-    const result = internals.optimizeSystemPrompt(original, {
-      cwd: process.cwd(),
-      promptGuidelines: [guideline.slice(2)],
-    });
-
-    assert.equal(result.systemPrompt, original);
-    assert.equal(result.stablePrefix, "");
-    assert.equal(result.changed, false);
-  });
-
-  test("lifts a unique candidate deterministically", () => {
-    const original = [
-      "Dynamic turn context",
-      "",
-      "## Guidelines",
-      guideline,
-      "",
-      "Tail context",
-    ].join("\n");
-    const options = { cwd: process.cwd(), promptGuidelines: [guideline.slice(2)] };
-
-    const first = internals.optimizeSystemPrompt(original, options);
-    const second = internals.optimizeSystemPrompt(original, options);
-
-    assert.equal(first.changed, true);
-    assert.equal(first.stablePrefix, guideline);
-    assert.equal(first.systemPrompt, second.systemPrompt);
-    assert.ok(first.systemPrompt.startsWith(`${guideline}\n\n---\n\n`));
-    assert.equal(first.systemPrompt.split(guideline).length - 1, 1);
-    assert.match(first.systemPrompt, /Dynamic turn context/);
-    assert.match(first.systemPrompt, /Tail context/);
-  });
-
-  test("preserves dynamic content nested inside a full context-file candidate", () => {
-    const content = "Always preserve this context body exactly.";
-    const fullContext = `## AGENTS.md\n\n${content}`;
-    const dynamicBlock = `<workflow-state>\n${content}\n</workflow-state>`;
-    const original = `${dynamicBlock}\n\n${fullContext}`;
-
-    const result = internals.optimizeSystemPrompt(original, {
-      cwd: process.cwd(),
-      contextFiles: [{ path: "AGENTS.md", content }],
-    });
-
-    assert.equal(result.changed, true);
-    assert.equal(result.stablePrefix, fullContext);
-    assert.equal(result.stablePrefix.split(content).length - 1, 1);
-    assert.ok(result.systemPrompt.includes(dynamicBlock));
-    assert.equal(result.systemPrompt.split(content).length - 1, 2);
-  });
-});
-
 describe("footer status separation and command completion", () => {
   test("prefixes every extension-owned footer status exactly once", () => {
     assert.equal(
@@ -403,6 +338,43 @@ describe("footer stats modes", () => {
       );
       assert.deepEqual(await readdir(tempDir), ["pi-cache-optimizer-config.json"]);
     } finally {
+      await rm(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  test("feature settings persist, override env values, and reset without losing unrelated config", async () => {
+    const tempDir = await mkdtemp(join(tmpdir(), "pi-cache-feature-command-test-"));
+    const previousAgentDir = process.env.PI_CODING_AGENT_DIR;
+    const previousVirtualRewrite = process.env.PI_CACHE_OPTIMIZER_VIRTUAL_REWRITE;
+    try {
+      process.env.PI_CODING_AGENT_DIR = tempDir;
+      process.env.PI_CACHE_OPTIMIZER_VIRTUAL_REWRITE = "0";
+      const jiti = createJiti(join(process.cwd(), "tests", "review-findings.test.ts"), { interopDefault: false, moduleCache: false });
+      const freshModule = await jiti.import<typeof import("../index.ts")>(join(process.cwd(), "index.ts"));
+      const commands = new Map<string, any>();
+      freshModule.default({ on() {}, registerCommand(name: string, command: any) { commands.set(name, command); } } as any);
+      const command = commands.get("cache-optimizer");
+      const notifications: string[] = [];
+      const context = { model: undefined, hasUI: false, sessionManager: { getSessionId: () => "feature-session" }, modelRegistry: { find: () => undefined, getAvailable: () => [], getAll: () => [] }, ui: { notify: (message: string) => notifications.push(message), setStatus() {} } };
+      const configPath = join(tempDir, "pi-cache-optimizer-config.json");
+
+      assert.equal(freshModule.__internals_for_tests.featureEnabled("virtualRewrite", "PI_CACHE_OPTIMIZER_VIRTUAL_REWRITE", false), false);
+      await command.handler("config virtual-rewrite on", context);
+      assert.equal(freshModule.__internals_for_tests.featureEnabled("virtualRewrite", "PI_CACHE_OPTIMIZER_VIRTUAL_REWRITE", false), true);
+      const persisted = JSON.parse(await readFile(configPath, "utf8"));
+      assert.equal(persisted.version, 3);
+      assert.equal(persisted.features.virtualRewrite, true);
+      assert.match(notifications.at(-1) ?? "", /virtual-rewrite set to on/);
+
+      await command.handler("config", context);
+      assert.match(notifications.at(-1) ?? "", /Persistent feature configuration/);
+      await command.handler("config reset", context);
+      const reset = JSON.parse(await readFile(configPath, "utf8"));
+      assert.equal(reset.features, undefined);
+      assert.equal(freshModule.__internals_for_tests.featureEnabled("virtualRewrite", "PI_CACHE_OPTIMIZER_VIRTUAL_REWRITE", false), false);
+    } finally {
+      if (previousAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR; else process.env.PI_CODING_AGENT_DIR = previousAgentDir;
+      if (previousVirtualRewrite === undefined) delete process.env.PI_CACHE_OPTIMIZER_VIRTUAL_REWRITE; else process.env.PI_CACHE_OPTIMIZER_VIRTUAL_REWRITE = previousVirtualRewrite;
       await rm(tempDir, { recursive: true, force: true });
     }
   });
@@ -2944,6 +2916,52 @@ describe("prompt_cache_key model opt-out", () => {
       assert.equal(await readFile(configPath, "utf8"), original);
       assert.deepEqual(internals.readPersistedCacheOptimizerConfig(configPath), { version: 2, footerMode: "total" });
       assert.equal((await internals.readPromptCacheKeyConfigReceipt(receiptPath))?.status, "rolled_back");
+    } finally {
+      await rm(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  test("fix and rollback keep v3 feature settings intact", async () => {
+    const tempDir = await mkdtemp(join(tmpdir(), "pi-cache-key-config-v3-test-"));
+    const configPath = join(tempDir, "pi-cache-optimizer-config.json");
+    const receiptPath = join(tempDir, "pi-cache-optimizer-config-receipt.json");
+    const original = JSON.stringify({ version: 3, footerMode: "total", features: { promptRewrite: false, toolOrder: true } }, null, 2) + "\n";
+    try {
+      await writeFile(configPath, original, { encoding: "utf8", mode: 0o600 });
+      await internals.applyPromptCacheKeyConfigFix(model, configPath, receiptPath);
+      // The fixed file must still parse: every persisted setting survives next to the new opt-out.
+      assert.deepEqual(internals.readPersistedCacheOptimizerConfig(configPath), {
+        version: 3,
+        footerMode: "total",
+        promptCacheKey: { omit: ["proxy/gpt-5.5"] },
+        features: { promptRewrite: false, toolOrder: true },
+      });
+      const snapshot = await internals.readPromptCacheKeyConfigReceiptSnapshot(receiptPath);
+      assert.ok(snapshot);
+      await internals.rollbackPromptCacheKeyConfig(snapshot, configPath, receiptPath);
+      assert.equal(await readFile(configPath, "utf8"), original);
+    } finally {
+      await rm(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  test("feature toggles refuse to overwrite an unreadable config", async () => {
+    const tempDir = await mkdtemp(join(tmpdir(), "pi-cache-feature-config-test-"));
+    const configPath = join(tempDir, "pi-cache-optimizer-config.json");
+    const unreadable = "{\"version\": 9, \"footerMode\": \"total\", \"promptCacheKey\": {\"omit\": [\"proxy/gpt-5.5\"]}}\n";
+    try {
+      await writeFile(configPath, unreadable, "utf8");
+      await assert.rejects(internals.writePersistedFeature("toolOrder", true, configPath), /invalid|refus/i);
+      assert.equal(await readFile(configPath, "utf8"), unreadable, "user config left untouched");
+      await writeFile(configPath, "{ not json", "utf8");
+      await assert.rejects(internals.writePersistedFeature("toolOrder", true, configPath), /invalid|refus/i);
+      assert.equal(await readFile(configPath, "utf8"), "{ not json");
+      // A valid config is updated in place, keeping unrelated settings.
+      await writeFile(configPath, JSON.stringify({ version: 2, footerMode: "total", promptCacheKey: { omit: ["proxy/gpt-5.5"] } }), "utf8");
+      await internals.writePersistedFeature("toolOrder", true, configPath);
+      assert.deepEqual(internals.readPersistedCacheOptimizerConfig(configPath), {
+        version: 3, footerMode: "total", promptCacheKey: { omit: ["proxy/gpt-5.5"] }, features: { toolOrder: true },
+      });
     } finally {
       await rm(tempDir, { recursive: true, force: true });
     }
