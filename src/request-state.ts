@@ -91,6 +91,10 @@ export function pruneProviderRequestStates<T extends { responseReceived: boolean
 
 export type ProviderRequestState = {
   model: PiModel;
+  /** Model selection visible to Pi when this request was dispatched. */
+  selectionModelKey: string;
+  /** Whether that selection routed to a physical model for this request. */
+  virtualSelection: boolean;
   responseReceived: boolean;
   correlationAmbiguous: boolean;
   // A native virtual request whose dispatched id matched several providers.

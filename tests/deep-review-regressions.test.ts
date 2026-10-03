@@ -17,6 +17,10 @@ function model(id = "gpt-a", provider = "proxy", baseUrl = "https://example.inva
   };
 }
 
+function virtualModel(id = "auto", provider = "router") {
+  return { ...model(id, provider, ""), api: "pi-virtual" };
+}
+
 type Hook = (event: unknown, ctx: ExtensionContext) => unknown;
 
 async function withExtension(run: (h: Awaited<ReturnType<typeof loadHarness>>) => Promise<void>) {
@@ -239,6 +243,40 @@ test("a same-provider same-family model switch cannot retarget response stats or
       assert.match(reloaded.notices.at(-1) ?? "", /proxy\/gpt-a/);
       assert.match(reloaded.statuses.at(-1) ?? "", /0\/0/);
     } finally { await reloaded.close(); }
+  });
+});
+
+test("a late direct response cannot become the routed model after switching to a virtual selection", async () => {
+  await withExtension(async (h) => {
+    const requested = h.ctx.model;
+    await h.hook("before_provider_request", { payload: { model: requested.id } });
+    h.ctx.model = virtualModel();
+    await h.hook("model_select", { model: h.ctx.model });
+    await h.hook("message_end", { message: assistant("proxy", "gpt-a") });
+    await h.close();
+    const shards = await h.I.readValidStatsShardsV7();
+    assert.equal(shards.length, 1);
+    assert.equal(shards[0].models["proxy/gpt-a"]?.stats.totalRequests, 1);
+    assert.equal(shards[0].lastRoutedModel, undefined);
+  });
+});
+
+test("a late routed response cannot replace a direct model selected afterwards", async () => {
+  await withExtension(async (h) => {
+    const routed = model("gpt-a", "proxy");
+    h.catalog.set("proxy/gpt-a", routed);
+    h.ctx.model = virtualModel();
+    await h.hook("before_provider_request", { payload: { model: "gpt-a" } });
+    h.ctx.model = model("gpt-b", "proxy");
+    await h.hook("model_select", { model: h.ctx.model });
+    const before = h.statuses.at(-1);
+    await h.hook("message_end", { message: assistant("proxy", "gpt-a") });
+    assert.equal(h.statuses.at(-1), before);
+    await h.close();
+    const shards = await h.I.readValidStatsShardsV7();
+    assert.equal(shards.length, 1);
+    assert.equal(shards[0].models["proxy/gpt-a"]?.stats.totalRequests, 1);
+    assert.deepEqual(shards[0].lastRoutedModel, { provider: "proxy", id: "gpt-a", name: "gpt-a" });
   });
 });
 

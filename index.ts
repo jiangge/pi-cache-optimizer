@@ -1161,6 +1161,8 @@ export default function (pi: ExtensionAPI) {
     if (snapshot) {
       providerRequestStates.push({
         model: snapshot,
+        selectionModelKey: ctx.model ? modelKey(ctx.model) : modelKey(snapshot),
+        virtualSelection: isVirtualRoutingModel(ctx.model, ctx),
         responseReceived: false,
         correlationAmbiguous: false,
         identityAmbiguous: isNativeVirtualModel(ctx.model) && (!nativeVirtualRequest || nativeVirtualRequest.identityAmbiguous),
@@ -1359,7 +1361,7 @@ export default function (pi: ExtensionAPI) {
         const completedIndex = providerRequestStates.findIndex((state) => state.responseReceived);
         const index = explicitIndex >= 0 ? explicitIndex : (completedIndex >= 0 ? completedIndex : 0);
         const state = providerRequestStates.splice(index, 1)[0];
-        if (!state) return { model: undefined, ambiguous: false };
+        if (!state) return { model: undefined, ambiguous: false, virtualSelection: undefined, selectionModelKey: undefined };
         // A current selection cannot correlate an unknown echoed alias. Even
         // before response headers arrive, different outstanding models make
         // that fallback ambiguous; keep the message's own identity instead.
@@ -1370,9 +1372,11 @@ export default function (pi: ExtensionAPI) {
         return {
           model: ambiguous ? undefined : state.model,
           ambiguous,
+          virtualSelection: state.virtualSelection,
+          selectionModelKey: state.selectionModelKey,
         };
       })()
-      : { model: undefined, ambiguous: false };
+      : { model: undefined, ambiguous: false, virtualSelection: undefined, selectionModelKey: undefined };
     const requestModelForMessage = requestCorrelationForMessage.model;
     const contextualFallbackForMessage = requestCorrelationForMessage.ambiguous
       ? undefined
@@ -1468,7 +1472,9 @@ export default function (pi: ExtensionAPI) {
       ? nativeVirtualDispatchToModel(nativeVirtualDispatch, ctx)
       : undefined;
 
-    const directSelection = !isVirtualRoutingModel(ctx.model, ctx);
+    const currentSelectionIsVirtual = isVirtualRoutingModel(ctx.model, ctx);
+    const requestSelectionIsVirtual = requestCorrelationForMessage.virtualSelection ?? currentSelectionIsVirtual;
+    const directSelection = !requestSelectionIsVirtual;
     const statsFallback = requestModelForMessage ?? ctx.model;
     let statsModel = modelFromAssistantMessage(event.message, statsFallback, directSelection) ?? statsFallback;
     if (nativeVirtualMessageModel) {
@@ -1499,7 +1505,7 @@ export default function (pi: ExtensionAPI) {
     const usage = adapter.normalizeUsage(event.message);
 
     let routedModelChanged = false;
-    if (isVirtualRoutingModel(ctx.model, ctx) && statsModel && !isVirtualRoutingModel(statsModel, ctx)) {
+    if (requestSelectionIsVirtual && statsModel && !isVirtualRoutingModel(statsModel, ctx)) {
       const nextRoutedModel: PersistedRoutedModelRef = {
         provider: statsModel.provider,
         id: statsModel.id,
@@ -1559,9 +1565,17 @@ export default function (pi: ExtensionAPI) {
 
     schedulePersistCacheStats(ctx);
     await refreshShardAggregate();
-    // A response from a previous direct selection must not replace the active
-    // model's footer. Routed selections continue following physical responses.
-    await publishStatus(ctx, directSelection ? ctx.model : statsModel);
+    // A late response from an older selection must not replace the active
+    // footer. Only a routed response that still belongs to the currently
+    // selected virtual/router model may publish its physical model directly.
+    const responseBelongsToCurrentSelection =
+      requestCorrelationForMessage.selectionModelKey !== undefined &&
+      ctx.model !== undefined &&
+      requestCorrelationForMessage.selectionModelKey === modelKey(ctx.model);
+    await publishStatus(
+      ctx,
+      requestSelectionIsVirtual && responseBelongsToCurrentSelection ? statsModel : ctx.model,
+    );
   });
 
   // ────────────────────────────────────────────────────────────────

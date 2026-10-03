@@ -513,43 +513,11 @@ Then run `/reload` or restart Pi. Optional local state cleanup (if you use `PI_C
 
 Do not delete `models.json` during cleanup; it contains your Pi model/provider configuration and is not owned by this package.
 
-## Verify effect
+## Optional: inspect cache stats
 
-1. Select a model whose provider exposes cache usage.
-2. Send several similar turns in the same Pi session.
-3. Watch the footer or run `/cache-optimizer stats`.
-4. For third-party proxies, also run `/cache-optimizer doctor` and confirm sticky routing / session affinity on the proxy side.
+No validation step is required after installation. If you want to inspect what the provider reports, watch the footer or run `/cache-optimizer stats`. `/cache-optimizer doctor` is available when diagnosing a third-party proxy configuration.
 
-### Provider usage comparison
-
-For a real, offline comparison with a provider such as `xiaojimao/gpt-6-sol`, first capture two separate windows in the same model and session. Do not treat an existing aggregate shard as a baseline: it does not record which optimizer features were enabled.
-
-Capture the current optimized/default window:
-
-```bash
-node --import jiti/register benchmarks/snapshot-provider-usage.ts \\
-  optimized xiaojimao gpt-6-sol YYYY-MM-DD > optimized.jsonl
-```
-
-For a baseline window, start a fresh Pi session with prompt mutations disabled, then send the same kind of repeated turns:
-
-```bash
-PI_CACHE_OPTIMIZER_NO_PROMPT_REWRITE=1 \\
-PI_CACHE_OPTIMIZER_NO_SKILL_COMPRESSION=1 \\
-PI_CACHE_OPTIMIZER_TOOL_ORDER=0 \\
-pi
-```
-
-After the baseline window, take a dated snapshot using the same model and agent directory:
-
-```bash
-node --import jiti/register benchmarks/snapshot-provider-usage.ts \\
-  baseline xiaojimao gpt-6-sol YYYY-MM-DD > baseline.jsonl
-cat baseline.jsonl optimized.jsonl > provider-usage.jsonl
-npm run benchmark:provider -- provider-usage.jsonl
-```
-
-This compares real provider-reported `cacheRead`, `cacheWrite`, request hit rate, and input-token ratios. It is still observational: snapshots are aggregate counters, so they cannot prove feature-level causality. For feature isolation, repeat the window with only one of prompt rewrite, skill compression, or tool ordering enabled. The scripts never send provider requests and never claim cache hits when usage fields are absent.
+The repository also contains maintainer-only benchmark and A/B research tools under `benchmarks/`. They are not part of the published package and are not required for normal use.
 
 ## License
 
