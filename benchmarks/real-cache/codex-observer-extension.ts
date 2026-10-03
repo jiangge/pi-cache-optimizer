@@ -44,6 +44,7 @@ export default function codexObserver(pi: ExtensionAPI) {
   const file = process.env.BENCH_OBSERVER_FILE;
   const label = process.env.BENCH_LABEL;
   const namespace = process.env.BENCH_NAMESPACE;
+  const skipPromptNamespace = process.env.BENCH_NO_PROMPT_NAMESPACE === "1";
   if (!file || !label) return;
   mkdirSync(dirname(file), { recursive: true });
   const pending: Pending[] = [];
@@ -51,7 +52,7 @@ export default function codexObserver(pi: ExtensionAPI) {
   // Loaded last. This keeps each session in a disjoint cache prefix while preserving
   // the treatment's final prompt byte-for-byte after this one stable line.
   pi.on("before_agent_start", (event) => {
-    if (!namespace) return {};
+    if (!namespace || skipPromptNamespace) return {};
     return { systemPrompt: `[bench-run:${namespace}]\n${event.systemPrompt}` };
   });
 

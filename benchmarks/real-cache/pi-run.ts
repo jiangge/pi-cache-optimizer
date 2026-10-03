@@ -49,6 +49,8 @@ export function runPi(options: {
   thinking?: string;
   appendSystemPromptFile?: string;
   noTools?: boolean;
+  /** Explicit tool allowlist; useful for causal benchmarks that must exclude sub-agents/custom tools. */
+  tools?: string[];
   /** Extra extension files loaded with -e (e.g. the workspace's own Trellis extension). */
   extensions?: string[];
   /** Extra extension files that must run after this repo's extension. */
@@ -72,6 +74,7 @@ export function runPi(options: {
     "--session-dir", join(agentDir, "sessions"),
     "--thinking", options.thinking || "low",
     ...(options.noTools === false ? [] : ["--no-tools"]),
+    ...(options.tools?.length ? ["--tools", options.tools.join(",")] : []),
     ...(options.appendSystemPromptFile ? ["--append-system-prompt", options.appendSystemPromptFile] : []),
     options.prompt,
   ];

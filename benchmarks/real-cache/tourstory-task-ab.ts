@@ -20,6 +20,7 @@ const PROVIDER = process.env.BENCH_PROVIDER || "openai-codex";
 const MODEL = process.env.BENCH_MODEL || "gpt-6-luna";
 const REPLICATES = Number(process.env.BENCH_REPLICATES || 1);
 const START_BLOCK = Number(process.env.BENCH_START_BLOCK || 0);
+const EXPERIMENT = process.env.BENCH_EXPERIMENT || "release";
 const PROJECT = resolve(process.env.BENCH_PROJECT_DIR || join(BENCH_DIR, "..", "..", "..", "idea", "tourstory"));
 const SEED = Number(process.env.BENCH_SEED || 20261003);
 const observerExtension = fileURLToPath(new URL("./codex-observer-extension.ts", import.meta.url));
@@ -38,11 +39,30 @@ mkdirSync(oldDir, { recursive: true });
 const oldExtension = join(oldDir, "index.ts");
 writeFileSync(oldExtension, execFileSync("git", ["show", "v2.8.16:index.ts"], { cwd: resolve(BENCH_DIR, "..", ".."), encoding: "utf8" }));
 
-const arms: Arm[] = [
-  { name: "CORE", extension: false, description: "Pi core only" },
-  { name: "OLD", extension: false, extensionPath: oldExtension, description: "exact pi-cache-optimizer v2.8.16" },
-  { name: "CURRENT", extension: false, extensionPath: currentExtension, description: "current pi-cache-optimizer checkout" },
-];
+const arms: Arm[] = EXPERIMENT === "skill"
+  ? [
+      {
+        name: "SKILL_ON",
+        extension: false,
+        extensionPath: currentExtension,
+        env: { PI_CACHE_RETENTION: "long" },
+        description: "current optimizer with skill compression enabled",
+      },
+      {
+        name: "SKILL_OFF",
+        extension: false,
+        extensionPath: currentExtension,
+        env: { PI_CACHE_RETENTION: "long", PI_CACHE_OPTIMIZER_NO_SKILL_COMPRESSION: "1" },
+        description: "same current optimizer with only skill compression disabled",
+      },
+    ]
+  : [
+      { name: "CORE", extension: false, description: "Pi core only" },
+      { name: "OLD", extension: false, extensionPath: oldExtension, description: "exact pi-cache-optimizer v2.8.16" },
+      { name: "CURRENT", extension: false, extensionPath: currentExtension, description: "current pi-cache-optimizer checkout" },
+    ];
+
+if (EXPERIMENT !== "release" && EXPERIMENT !== "skill") throw new Error("BENCH_EXPERIMENT must be release or skill");
 
 if (!Number.isInteger(REPLICATES) || REPLICATES < 1) throw new Error("BENCH_REPLICATES must be a positive integer");
 if (!Number.isInteger(START_BLOCK) || START_BLOCK < 0) throw new Error("BENCH_START_BLOCK must be a non-negative integer");
@@ -79,6 +99,7 @@ const observerFile = join(outDir, "requests.jsonl");
 writeFileSync(join(outDir, "manifest.json"), JSON.stringify({
   benchmark: "tourstory-task-ab",
   version: 1,
+  experiment: EXPERIMENT,
   provider: PROVIDER,
   model: MODEL,
   project: "tourstory",
@@ -111,9 +132,13 @@ try {
           prompt: taskPrompt,
           cwd: clone,
           noTools: false,
+          tools: ["read", "bash", "edit", "write"],
           extensions: extensionArgs,
           postExtensions: [observerExtension],
-          benchmarkNamespace: randomUUID(),
+          // Codex already sends a distinct Pi-owned prompt_cache_key per session.
+          // Do not perturb the semantic prompt with a random benchmark prefix there;
+          // it can change the model's tool trajectory and confound task-cost comparisons.
+          benchmarkNamespace: PROVIDER === "openai-codex" ? undefined : randomUUID(),
           benchmarkObserverFile: observerFile,
           thinking: "low",
           timeoutMs: 1_200_000,
