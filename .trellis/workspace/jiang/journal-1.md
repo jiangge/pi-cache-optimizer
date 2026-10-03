@@ -749,3 +749,38 @@ Completed and merged the 2.8.9 prompt-cache-key security review: fixed five P1/P
 ### Next Steps
 
 - None - task complete
+
+
+## Session 14: 补归档两项已完成的 Pi 升级任务
+
+**Date**: 2026-10-03
+**Task**: 补归档两项已完成的 Pi 升级任务
+**Branch**: `release/2.8.17`
+
+### Summary
+
+用户回复 y 确认清理两项已完成历史任务。0.87.0 活动副本与原 archive/2026-10 完成记录的 PRD 完全相同，元数据仅 status/completedAt 不同；保留原归档、移除重复活动入口并清除 session 指针。0.99.2/native virtual 升级代码已在 HEAD，npm 查询确认 2.8.12 已发布，补齐最后验收并归档该任务。归档 helper 使用限定任务路径，包含源路径移除；日志提交仅更新已跟踪文件，不 force-add、不修改忽略规则/脚本/运行时代码。此轮只本地收尾，不推送、不改已发布标签。
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `1acb73b` | (see git log) |
+| `e8abd6e` | (see git log) |
+| `d70e963` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
