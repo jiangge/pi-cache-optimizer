@@ -591,7 +591,11 @@ describe("native virtual model hooks", () => {
       const out = result.systemPrompt ?? "";
       assert.ok(out.startsWith("You are a coding assistant.\n<project_context>"), `${codex.api}: section order kept`);
       assert.ok(out.includes(`<project_instructions path="/repo/AGENTS.md">\n${agents}`), `${codex.api}: AGENTS.md stays in its section`);
-      assert.ok(!out.includes("<available_skills>") && out.includes("- alpha: alpha skill description"), `${codex.api}: skills compressed`);
+      if (codex.api === "openai-codex-responses") {
+        assert.ok(out.includes("<available_skills>") && !out.includes("- alpha: alpha skill description"), `${codex.api}: native Pi skill index preserved`);
+      } else {
+        assert.ok(!out.includes("<available_skills>") && out.includes("- alpha: alpha skill description"), `${codex.api}: skills compressed`);
+      }
       assert.ok(!out.includes("RECENT COMMITS"), `${codex.api}: churn stripped`);
     }
 
@@ -603,6 +607,43 @@ describe("native virtual model hooks", () => {
     assert.ok(!out.includes("<available_skills>") && out.includes("- alpha: alpha skill description"), "completions: skills compressed");
     assert.ok(!out.includes("RECENT COMMITS"), "completions: churn stripped");
     assert.ok(!/<skills>\n\s*\n<\/skills>/.test(out), "completions: no empty section shells");
+  });
+
+  test("OpenAI Codex keeps Pi's native skill index while other APIs may compress it", async () => {
+    const { hooks } = setup();
+    const codex = physical("openai-codex", "gpt-6-luna", { api: "openai-codex-responses", baseUrl: "https://chatgpt.com/backend-api" });
+    const openai = physical("openai", "gpt-6-luna", { api: "openai-completions", baseUrl: "https://api.openai.com/v1" });
+    const sourceInfo = { path: "", source: "local", scope: "user", origin: "top-level" };
+    const skills = Array.from({ length: 4 }, (_, index) => ({
+      name: `skill-${index}`,
+      description: `description ${index}`,
+      filePath: `/tmp/skills/skill-${index}/SKILL.md`,
+      baseDir: `/tmp/skills/skill-${index}`,
+      sourceInfo,
+      disableModelInvocation: false,
+    }));
+
+    const run = async (selectedModel: TestModel) => {
+      const verbose = t.formatSkillsForPrompt(skills as any, "read").trim();
+      const event = {
+        systemPrompt: `prefix\n${verbose}\nsuffix`,
+        systemPromptOptions: {
+          skills,
+          selectedTools: ["read", "bash", "edit", "write"],
+        },
+      } as any;
+      const result = await hooks.get("before_agent_start")!(event, context(selectedModel)) as { systemPrompt?: string };
+      return { result, event, verbose };
+    };
+
+    const codexRun = await run(codex);
+    assert.equal(codexRun.result?.systemPrompt, undefined);
+    assert.ok(codexRun.event.systemPrompt.includes(codexRun.verbose));
+    assert.match(t.getLastSkillCompressionOutcome()?.reason ?? "", /native skill index/);
+
+    const openaiRun = await run(openai);
+    assert.ok(openaiRun.result?.systemPrompt?.includes("- skill-0: description 0"));
+    assert.ok(!openaiRun.result?.systemPrompt?.includes("<available_skills>"));
   });
 
   describe("skill compression as a section edit", () => {

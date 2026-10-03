@@ -56,13 +56,41 @@ const arms: Arm[] = EXPERIMENT === "skill"
         description: "same current optimizer with only skill compression disabled",
       },
     ]
+  : EXPERIMENT === "isolation"
+    ? [
+        {
+          name: "CORE_LONG",
+          extension: false,
+          env: { PI_CACHE_RETENTION: "long" },
+          description: "Pi core only with PI_CACHE_RETENTION=long",
+        },
+        {
+          name: "NO_REWRITE",
+          extension: false,
+          extensionPath: currentExtension,
+          env: { PI_CACHE_RETENTION: "long", PI_CACHE_OPTIMIZER_NO_PROMPT_REWRITE: "1" },
+          description: "current optimizer with prompt rewrite disabled and long retention",
+        },
+        {
+          name: "CURRENT",
+          extension: false,
+          extensionPath: currentExtension,
+          env: { PI_CACHE_RETENTION: "long" },
+          description: "current optimizer with prompt rewrite enabled and long retention",
+        },
+      ]
+  : EXPERIMENT === "trajectory"
+    ? [
+        { name: "CORE", extension: false, description: "Pi core only" },
+        { name: "CURRENT", extension: false, extensionPath: currentExtension, description: "current pi-cache-optimizer checkout" },
+      ]
   : [
       { name: "CORE", extension: false, description: "Pi core only" },
       { name: "OLD", extension: false, extensionPath: oldExtension, description: "exact pi-cache-optimizer v2.8.16" },
       { name: "CURRENT", extension: false, extensionPath: currentExtension, description: "current pi-cache-optimizer checkout" },
     ];
 
-if (EXPERIMENT !== "release" && EXPERIMENT !== "skill") throw new Error("BENCH_EXPERIMENT must be release or skill");
+if (!["release", "skill", "trajectory", "isolation"].includes(EXPERIMENT)) throw new Error("BENCH_EXPERIMENT must be release, skill, trajectory, or isolation");
 
 if (!Number.isInteger(REPLICATES) || REPLICATES < 1) throw new Error("BENCH_REPLICATES must be a positive integer");
 if (!Number.isInteger(START_BLOCK) || START_BLOCK < 0) throw new Error("BENCH_START_BLOCK must be a non-negative integer");

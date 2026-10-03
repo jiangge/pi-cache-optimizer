@@ -1072,9 +1072,16 @@ export default function (pi: ExtensionAPI) {
       return {};
     }
 
+    // OpenAI Codex/Responses is unusually sensitive to skill-index shape: real
+    // TourStory task benchmarks showed the compressed Markdown index could
+    // lengthen the Pi tool trajectory enough to increase total task cost even
+    // though each request became shorter. Keep Pi's native skill block for the
+    // Codex transport; other providers retain the compression optimization.
+    const codexSkillCompressionBypass = model?.api === "openai-codex-responses";
+
     // Skill compression first, as a section edit when Pi supports it (see
     // compressSkillsViaSection); the string path below is the fallback.
-    const skillsViaSection = compressSkillsViaSection(event);
+    const skillsViaSection = codexSkillCompressionBypass ? false : compressSkillsViaSection(event);
 
     // Strip per-turn churn from <session-overview>.
     // Removing RECENT COMMITS, Working directory status, and
@@ -1088,14 +1095,18 @@ export default function (pi: ExtensionAPI) {
     // (Pi < 0.86, or a forced prompt from an earlier handler). Deterministic from the same `event.systemPromptOptions.skills`,
     // so cache stability is unchanged. No-op if opted out, below
     // SKILL_COMPRESSION_MIN_COUNT, or if pi emitted a format we don't recognize.
-    const compressedPrompt = compressSkillsInSystemPrompt(
-      strippedPrompt,
-      event.systemPromptOptions,
-    );
+    const compressedPrompt = codexSkillCompressionBypass
+      ? strippedPrompt
+      : compressSkillsInSystemPrompt(
+          strippedPrompt,
+          event.systemPromptOptions,
+        );
     // With a section edit and nothing to strip, Pi renders the compressed prompt
     // itself and no forced prompt is returned.
     recordSkillCompressionOutcome(
-      skillsViaSection
+      codexSkillCompressionBypass
+        ? { applied: false, reason: "OpenAI Codex uses Pi's native skill index to preserve task trajectory", visibleSkills, at: Date.now() }
+        : skillsViaSection
         ? { applied: "section", visibleSkills, at: Date.now() }
         : compressedPrompt !== strippedPrompt
           ? { applied: "string", visibleSkills, at: Date.now() }

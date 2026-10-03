@@ -110,6 +110,8 @@ Doctor 显示的 endpoint URL 会移除用户名/密码、查询参数和 fragme
 /cache-optimizer config reset
 ```
 
+对于 `openai-codex-responses`，即使开启 skill compression，也会保留 Pi 原生 skill index。真实 `openai-codex/gpt-6-luna` 任务级 benchmark 表明，较短的 Markdown skill index 虽然减少了单次 prompt，但可能增加模型的工具调用轨迹和最终任务总成本；因此 Codex 保留 Pi 原生 XML skill 列表，同时继续使用本扩展的其他缓存与运行时优化。
+
 `config reset` 在共享事务锁内读取最新磁盘配置，只移除持久化 feature 覆盖，保留最新 footer mode、按模型配置的 prompt-cache-key 设置和文件权限。JSON/schema 无效、symlink、非普通文件或并发手动修改时会拒绝覆盖。这些命令不会修改 shell 启动文件或 `PI_CACHE_RETENTION`；`enable` 和 `disable` 仍然是当前进程的运行时开关。
 
 ## Opt-in 确定性工具排序

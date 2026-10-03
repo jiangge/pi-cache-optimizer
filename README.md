@@ -110,6 +110,8 @@ Persistent feature settings are managed under the Pi agent directory by the nati
 /cache-optimizer config reset
 ```
 
+`openai-codex-responses` keeps Pi's native skill index even when skill compression is enabled. Real task-level benchmarks with `openai-codex/gpt-6-luna` showed that the shorter Markdown skill index could increase the model's tool-call trajectory and total task cost; Codex therefore keeps the native Pi XML skill list while still benefiting from the optimizer's other cache/runtime features.
+
 `config reset` reads the latest disk configuration under the shared transaction lock and removes only persistent feature overrides, preserving the latest footer mode, model-specific prompt-cache-key settings, and file permissions. Invalid JSON/schema, symlinks, non-regular targets, and concurrent manual changes are refused rather than overwritten. These commands do not modify shell startup files or `PI_CACHE_RETENTION`; `enable` and `disable` remain current-process runtime switches.
 
 ## Opt-in deterministic tool ordering
