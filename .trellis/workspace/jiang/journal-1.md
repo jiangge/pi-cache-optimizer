@@ -716,3 +716,36 @@ Completed and merged the 2.8.9 prompt-cache-key security review: fixed five P1/P
 ### Next Steps
 
 - None - task complete
+
+
+## Session 13: 发布 pi-cache-optimizer 2.8.17
+
+**Date**: 2026-10-03
+**Task**: 发布 pi-cache-optimizer 2.8.17
+**Branch**: `release/2.8.17`
+
+### Summary
+
+仅将根 package 版本更新为 2.8.17；完整 npm run check 与独立复核通过，171 测试全部通过，31 个打包文件符合预期。先推送 release/2.8.17，再推送注解 v2.8.17 标签；GitHub OIDC publish 工作流 37087625824 成功，npm latest 经 registry 传播后确认是 2.8.17，并附 SLSA provenance。发布 intent int_7ef62d57 已 sealed/published。归档当前发布任务并补齐验收/交付证据；两个旧升级任务默认保留，待用户确认额外归档。未推送 master，未强推或改认证；本次收尾提交只保留本地。
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `52c91c4` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
