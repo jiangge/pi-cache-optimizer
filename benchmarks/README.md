@@ -23,7 +23,7 @@ The TourStory task benchmark explicitly allowlists only Pi's built-in `read,bash
 
 `BENCH_EXPERIMENT=isolation` is the next causal layer for Codex trajectory regressions: `CORE_LONG` runs Pi core with `PI_CACHE_RETENTION=long`; `NO_REWRITE` loads the current optimizer with prompt rewriting disabled; `CURRENT` enables the full current optimizer. All three share long retention, real discovered skills, the same tool allowlist, and no benchmark text namespace on `openai-codex`. This separates prompt rewriting from the optimizer's non-prompt runtime behavior.
 
-`BENCH_EXPERIMENT=codex-skill-counterfactual` compares the patched Codex behavior (`NATIVE_SKILLS`) with a benchmark-only forced compressed skill index (`COMPRESSED_SKILLS`). This does not change product behavior; it exists to test whether different Codex models have different trajectory sensitivity to the same skill-index transformation.
+`BENCH_EXPERIMENT=skill-counterfactual` compares `NATIVE_SKILLS` (skill compression explicitly disabled) with `COMPRESSED_SKILLS` (compression enabled/forced). This does not change product behavior; it is used to measure model/provider sensitivity to the same skill-index transformation. `codex-skill-counterfactual` remains as a compatibility alias for older benchmark commands.
 
 `real-cache/tourstory-task-ab.ts` is the task-level reality check: it clones the committed TourStory project into throwaway worktrees and asks each arm to implement the same end-to-end conversation-history feature. `OLD` loads the exact v2.8.16 extension, `CURRENT` loads this checkout, and `CORE` uses Pi alone. `real-cache/analyze-tourstory-task.ts` treats Pi-normalized total dollar cost as the primary comparison and reports cached/input tokens only as a diagnostic.
 

@@ -25,6 +25,7 @@ const PROJECT = resolve(process.env.BENCH_PROJECT_DIR || join(BENCH_DIR, "..", "
 const SEED = Number(process.env.BENCH_SEED || 20261003);
 const observerExtension = fileURLToPath(new URL("./codex-observer-extension.ts", import.meta.url));
 const forceCodexSkillCompressionExtension = fileURLToPath(new URL("./force-codex-skill-compression-extension.ts", import.meta.url));
+const forceNativeSkillIndexExtension = fileURLToPath(new URL("./force-native-skill-index-extension.ts", import.meta.url));
 const currentExtension = resolve(BENCH_DIR, "..", "..", "index.ts");
 
 type Arm = PiGroup & { description: string; extensionPath?: string; postExtensions?: string[] };
@@ -85,20 +86,21 @@ const arms: Arm[] = EXPERIMENT === "skill"
         { name: "CORE", extension: false, description: "Pi core only" },
         { name: "CURRENT", extension: false, extensionPath: currentExtension, description: "current pi-cache-optimizer checkout" },
       ]
-  : EXPERIMENT === "codex-skill-counterfactual"
+  : EXPERIMENT === "skill-counterfactual" || EXPERIMENT === "codex-skill-counterfactual"
     ? [
         {
           name: "NATIVE_SKILLS",
           extension: false,
           extensionPath: currentExtension,
-          env: { PI_CACHE_RETENTION: "long" },
+          env: { PI_CACHE_RETENTION: "long", PI_CACHE_OPTIMIZER_NO_SKILL_COMPRESSION: "1" },
+          postExtensions: PROVIDER === "openai-codex" ? [] : [forceNativeSkillIndexExtension],
           description: "patched current optimizer with Pi native Codex skill index",
         },
         {
           name: "COMPRESSED_SKILLS",
           extension: false,
           extensionPath: currentExtension,
-          postExtensions: [forceCodexSkillCompressionExtension],
+          postExtensions: PROVIDER === "openai-codex" ? [forceCodexSkillCompressionExtension] : [],
           env: { PI_CACHE_RETENTION: "long" },
           description: "benchmark-only counterfactual forcing the compressed skill index on Codex",
         },
@@ -109,7 +111,7 @@ const arms: Arm[] = EXPERIMENT === "skill"
       { name: "CURRENT", extension: false, extensionPath: currentExtension, description: "current pi-cache-optimizer checkout" },
     ];
 
-if (!["release", "skill", "trajectory", "isolation", "codex-skill-counterfactual"].includes(EXPERIMENT)) throw new Error("BENCH_EXPERIMENT must be release, skill, trajectory, isolation, or codex-skill-counterfactual");
+if (!["release", "skill", "trajectory", "isolation", "skill-counterfactual", "codex-skill-counterfactual"].includes(EXPERIMENT)) throw new Error("BENCH_EXPERIMENT must be release, skill, trajectory, isolation, skill-counterfactual, or codex-skill-counterfactual");
 
 if (!Number.isInteger(REPLICATES) || REPLICATES < 1) throw new Error("BENCH_REPLICATES must be a positive integer");
 if (!Number.isInteger(START_BLOCK) || START_BLOCK < 0) throw new Error("BENCH_START_BLOCK must be a non-negative integer");
