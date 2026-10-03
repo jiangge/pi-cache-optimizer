@@ -1,0 +1,5 @@
+{"file":".trellis/spec/frontend/quality-guidelines.md","reason":"核验完整质量门禁、包内容与 Trellis 任务验证"}
+{"file":".trellis/spec/frontend/type-safety.md","reason":"核验 0.99.1 官方声明下无类型遮蔽或宽泛规避"}
+{"file":".trellis/spec/frontend/hook-guidelines.md","reason":"核验升级后现有 Pi 钩子行为与 llama.cpp 豁免保持兼容"}
+{"file":".trellis/spec/frontend/cache-adapter-footer-stats.md","reason":"核验 llama.cpp 指纹规范已同步 Pi 0.83+ 实际形状"}
+{"file":".trellis/spec/guides/index.md","reason":"核验版本引用与相关配置均已一致更新"}
