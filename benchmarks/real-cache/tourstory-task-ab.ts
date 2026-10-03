@@ -18,6 +18,8 @@ import { runPi, type PiGroup } from "./pi-run.ts";
 
 const PROVIDER = process.env.BENCH_PROVIDER || "openai-codex";
 const MODEL = process.env.BENCH_MODEL || "gpt-6-luna";
+const REPLICATES = Number(process.env.BENCH_REPLICATES || 1);
+const START_BLOCK = Number(process.env.BENCH_START_BLOCK || 0);
 const PROJECT = resolve(process.env.BENCH_PROJECT_DIR || join(BENCH_DIR, "..", "..", "..", "idea", "tourstory"));
 const SEED = Number(process.env.BENCH_SEED || 20261003);
 const observerExtension = fileURLToPath(new URL("./codex-observer-extension.ts", import.meta.url));
@@ -41,6 +43,9 @@ const arms: Arm[] = [
   { name: "OLD", extension: false, extensionPath: oldExtension, description: "exact pi-cache-optimizer v2.8.16" },
   { name: "CURRENT", extension: false, extensionPath: currentExtension, description: "current pi-cache-optimizer checkout" },
 ];
+
+if (!Number.isInteger(REPLICATES) || REPLICATES < 1) throw new Error("BENCH_REPLICATES must be a positive integer");
+if (!Number.isInteger(START_BLOCK) || START_BLOCK < 0) throw new Error("BENCH_START_BLOCK must be a non-negative integer");
 
 const taskPrompt = `Improve this real TourStory project by implementing conversation-history support end to end.
 
@@ -80,6 +85,8 @@ writeFileSync(join(outDir, "manifest.json"), JSON.stringify({
   projectHead,
   task: taskPrompt,
   seed: SEED,
+  replicates: REPLICATES,
+  startBlock: START_BLOCK,
   arms: arms.map(({ name, description }) => ({ name, description })),
 }, null, 2));
 
@@ -87,36 +94,39 @@ const cleanupAgents = () => rmSync(process.env.BENCH_AGENTS_DIR!, { recursive: t
 for (const signal of ["SIGINT", "SIGTERM"] as const) process.on(signal, () => { cleanupAgents(); process.exit(130); });
 
 try {
-  for (const arm of shuffle(arms)) {
-    const label = arm.name;
-    const clone = mkdtempSync(join(tmpdir(), `tourstory-bench-${arm.name.toLowerCase()}-`));
-    try {
-      execFileSync("git", ["clone", "-q", "--no-hardlinks", PROJECT, clone]);
-      execFileSync("git", ["checkout", "-q", projectHead], { cwd: clone });
-      const extensionArgs = arm.extensionPath ? [arm.extensionPath] : [];
-      const result = await runPi({
-        config,
-        group: arm,
-        label,
-        sessionId: randomUUID(),
-        prompt: taskPrompt,
-        cwd: clone,
-        noTools: false,
-        extensions: extensionArgs,
-        postExtensions: [observerExtension],
-        benchmarkNamespace: randomUUID(),
-        benchmarkObserverFile: observerFile,
-        thinking: "low",
-        timeoutMs: 1_200_000,
-      });
-      writeFileSync(join(outDir, `${arm.name}.stdout.txt`), result.stdout);
-      writeFileSync(join(outDir, `${arm.name}.stderr.txt`), result.stderr);
-      writeFileSync(join(outDir, `${arm.name}.diff.patch`), execFileSync("git", ["diff", "--binary"], { cwd: clone }));
-      writeFileSync(join(outDir, `${arm.name}.status.txt`), execFileSync("git", ["status", "--short"], { cwd: clone }));
-      console.log(`${arm.name}: exit=${result.code}`);
-    } finally {
-      rmSync(join(process.env.BENCH_AGENTS_DIR!, label), { recursive: true, force: true });
-      rmSync(clone, { recursive: true, force: true });
+  for (let offset = 0; offset < REPLICATES; offset++) {
+    const block = START_BLOCK + offset;
+    for (const arm of shuffle(arms)) {
+      const label = `${arm.name}.s${block}`;
+      const clone = mkdtempSync(join(tmpdir(), `tourstory-bench-${arm.name.toLowerCase()}-${block}-`));
+      try {
+        execFileSync("git", ["clone", "-q", "--no-hardlinks", PROJECT, clone]);
+        execFileSync("git", ["checkout", "-q", projectHead], { cwd: clone });
+        const extensionArgs = arm.extensionPath ? [arm.extensionPath] : [];
+        const result = await runPi({
+          config,
+          group: arm,
+          label,
+          sessionId: randomUUID(),
+          prompt: taskPrompt,
+          cwd: clone,
+          noTools: false,
+          extensions: extensionArgs,
+          postExtensions: [observerExtension],
+          benchmarkNamespace: randomUUID(),
+          benchmarkObserverFile: observerFile,
+          thinking: "low",
+          timeoutMs: 1_200_000,
+        });
+        writeFileSync(join(outDir, `${label}.stdout.txt`), result.stdout);
+        writeFileSync(join(outDir, `${label}.stderr.txt`), result.stderr);
+        writeFileSync(join(outDir, `${label}.diff.patch`), execFileSync("git", ["diff", "--binary"], { cwd: clone }));
+        writeFileSync(join(outDir, `${label}.status.txt`), execFileSync("git", ["status", "--short"], { cwd: clone }));
+        console.log(`${label}: exit=${result.code}`);
+      } finally {
+        rmSync(join(process.env.BENCH_AGENTS_DIR!, label), { recursive: true, force: true });
+        rmSync(clone, { recursive: true, force: true });
+      }
     }
   }
 } finally {
@@ -124,4 +134,3 @@ try {
 }
 
 console.log(`done: ${outDir}`);
-
