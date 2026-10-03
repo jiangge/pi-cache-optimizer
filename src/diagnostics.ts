@@ -6,6 +6,7 @@ import { type FixSuggestion } from "./fix-types.ts";
 import { getCompat, isKnownThirdPartyOpenAIEndpoint, isMistralConversationsApi, isNativeVirtualModel, isOfficialOpenAIBaseUrl, isOpenAICompatibleApi, isOpenAICompatibleProxyApi, isPiBuiltInLlamaCppModel, modelKey } from "./model-identity.ts";
 import { type CacheUsageSample, formatRecentTrendSummary } from "./stats-report.ts";
 import { type CacheStats, emptyCacheStats } from "./stats-store.ts";
+import { snapshotBaseUrlForDiagnostics } from "./request-state.ts";
 
 export function buildAdaptiveThinkingCompatSuggestion(missing: string[]): Record<string, unknown> {
   const suggestion: Record<string, unknown> = {};
@@ -413,7 +414,8 @@ export function buildDoctorDiagnosis(model: PiModel, options: { promptCacheReten
   lines.push(`Model:    ${model.id}`);
   if (model.name && model.name !== model.id) lines.push(`Name:     ${model.name}`);
   lines.push(`API:      ${model.api}`);
-  lines.push(`Base URL: ${model.baseUrl || "(default)"}`);
+  const endpoint = snapshotBaseUrlForDiagnostics(model.baseUrl);
+  lines.push(`Base URL: ${endpoint || (isNonEmptyString(model.baseUrl) ? "(unavailable)" : "(default)")}`);
 
   const compat = getCompat(model);
   lines.push(`Compat:   ${JSON.stringify(compat)}`);

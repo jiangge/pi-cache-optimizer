@@ -445,7 +445,15 @@ export async function cleanupStatsShardsV7(now = Date.now(), directory: string =
       if (isTemp) {
         if (now - info.mtimeMs < SHARD_TEMP_RETENTION_MS) continue;
       } else {
-        const parsed = parsePersistedStatsShardV7(JSON.parse(await readFile(path, "utf8")));
+        const text = await readFile(path, "utf8");
+        let parsed: PersistedStatsShardV7 | undefined;
+        try {
+          parsed = parsePersistedStatsShardV7(JSON.parse(text));
+        } catch {
+          // A corrupt JSON shard has no usable lifecycle metadata. Apply the
+          // same mtime retention as schema-invalid shards instead of keeping
+          // it forever; read failures still leave the file untouched.
+        }
         if (parsed?.day === today) continue;
         const updatedAt = parsed?.lifecycle.updatedAt ?? info.mtimeMs;
         if (now - updatedAt < SHARD_RETENTION_MS) continue;

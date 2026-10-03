@@ -7,7 +7,7 @@ import { FEATURE_COMMAND_MAP } from "./command-completion.ts";
 import { type PiModel, asRecord } from "./common.ts";
 import { describeMissingCacheCompatForModel, getModelsJsonDisplayPath, isAdaptiveThinkingCompatApplicable } from "./compat-advice.ts";
 import { resolveEffectiveCompatFromConfig } from "./compat-config.ts";
-import { FOOTER_MODE_ENV, type FooterStatsMode, formatOptimizerRuntimeMode, formatPersistentFeatureConfig, persistedCacheOptimizerConfig, persistedFooterStatsMode, readPersistedCacheOptimizerConfig, resolveFooterStatsMode, setPersistedCacheOptimizerConfig, setRuntimeOptimizerEnabled, writePersistedCacheOptimizerConfig, writePersistedFeature, writePersistedFooterMode } from "./config.ts";
+import { FOOTER_MODE_ENV, type FooterStatsMode, formatOptimizerRuntimeMode, formatPersistentFeatureConfig, persistedFooterStatsMode, readPersistedCacheOptimizerConfig, resetPersistedFeatures, resolveFooterStatsMode, setPersistedCacheOptimizerConfig, setRuntimeOptimizerEnabled, writePersistedFeature, writePersistedFooterMode } from "./config.ts";
 import { buildCompatDiagnosis, buildDoctorDiagnosis, buildLowHitDiagnosis, getCompatCheckNotApplicableLines, isCompatCheckApplicable, isDeepSeekCompatCheckApplicable, isPromptCacheKeyUnsupportedApplicable } from "./diagnostics.ts";
 import { locateModelOverrideInJsonc, parseJsonc } from "./jsonc.ts";
 import { invalidateModelsConfigCache, isValidModelsConfigForEffectiveCompat, modelKey } from "./model-identity.ts";
@@ -142,8 +142,9 @@ export function createCacheOptimizerCommandHandler(runtime: CommandRuntime) {
         }
         if (configKey === "reset") {
           try {
-            await writePersistedCacheOptimizerConfig({ version: 2, footerMode: persistedFooterStatsMode, promptCacheKey: persistedCacheOptimizerConfig.promptCacheKey });
-            setPersistedCacheOptimizerConfig(readPersistedCacheOptimizerConfig());
+            await resetPersistedFeatures();
+            clearLastStatusText();
+            await publishStatus(cmdCtx, model);
             cmdCtx.ui.notify("✅ Feature configuration reset. Environment variables now apply again.", "info");
           } catch (error) {
             cmdCtx.ui.notify(`❌ Could not reset feature configuration: ${error instanceof Error ? error.message : String(error)}`, "error");

@@ -1352,21 +1352,21 @@ export default function (pi: ExtensionAPI) {
     const msgRecord = asRecord(event.message);
     const requestCorrelationForMessage = msgRecord?.role === "assistant"
       ? (() => {
-        const explicitModel = modelFromAssistantMessage(event.message, undefined);
+        const explicitModel = modelFromAssistantMessage(event.message, undefined, true);
         const explicitIndex = explicitModel
           ? providerRequestStates.findIndex((state) => modelKey(state.model) === modelKey(explicitModel))
           : -1;
         const completedIndex = providerRequestStates.findIndex((state) => state.responseReceived);
-        const contextModel = resolveRouteModel(ctx.model, ctx) ?? ctx.model;
-        const contextIndex = contextModel && !providerRequestStates.some((state) => state.correlationAmbiguous)
-          ? providerRequestStates.findIndex((state) => modelKey(state.model) === modelKey(contextModel))
-          : -1;
-        const index = explicitIndex >= 0
-          ? explicitIndex
-          : (completedIndex >= 0 ? completedIndex : (contextIndex >= 0 ? contextIndex : 0));
+        const index = explicitIndex >= 0 ? explicitIndex : (completedIndex >= 0 ? completedIndex : 0);
         const state = providerRequestStates.splice(index, 1)[0];
         if (!state) return { model: undefined, ambiguous: false };
-        const ambiguous = (state.correlationAmbiguous || state.identityAmbiguous === true) && explicitIndex < 0;
+        // A current selection cannot correlate an unknown echoed alias. Even
+        // before response headers arrive, different outstanding models make
+        // that fallback ambiguous; keep the message's own identity instead.
+        const ambiguous = explicitIndex < 0 && (
+          state.correlationAmbiguous || state.identityAmbiguous === true ||
+          providerRequestStates.some((other) => modelKey(other.model) !== modelKey(state.model))
+        );
         return {
           model: ambiguous ? undefined : state.model,
           ambiguous,
@@ -1468,7 +1468,21 @@ export default function (pi: ExtensionAPI) {
       ? nativeVirtualDispatchToModel(nativeVirtualDispatch, ctx)
       : undefined;
 
-    const adapter = selectAdapterForAssistantMessage(event.message, nativeVirtualMessageModel ?? ctx.model);
+    const directSelection = !isVirtualRoutingModel(ctx.model, ctx);
+    const statsFallback = requestModelForMessage ?? ctx.model;
+    let statsModel = modelFromAssistantMessage(event.message, statsFallback, directSelection) ?? statsFallback;
+    if (nativeVirtualMessageModel) {
+      statsModel = nativeVirtualMessageModel;
+    } else if (directSelection && statsModel) {
+      // Catalog identity wins over an echoed response alias. Older/custom
+      // transports can still echo an unknown id; consolidate those only with
+      // the request-local snapshot, never a newly selected same-family model.
+      const catalogModel = findModelInRegistry(ctx.modelRegistry, statsModel.provider, statsModel.id);
+      statsModel = catalogModel && !isVirtualRoutingModel(catalogModel, ctx)
+        ? catalogModel
+        : consolidateDirectProviderStatsModel(statsModel, requestModelForMessage, ctx);
+    }
+    const adapter = selectAdapterForModel(statsModel) ?? selectAdapterForAssistantMessage(event.message, statsModel);
     if (!adapter) return;
 
     // Skip stats for error/aborted messages (network retries, user aborts).
@@ -1484,21 +1498,6 @@ export default function (pi: ExtensionAPI) {
 
     const usage = adapter.normalizeUsage(event.message);
 
-    // Completed message metadata is request-local and authoritative for virtual
-    // routing providers. Use it whenever it supplies provider/model identity;
-    // fall back to the active context model for direct providers.
-    let statsModel = modelFromAssistantMessage(event.message, ctx.model) ?? ctx.model;
-    // For direct (non-virtual-routing) providers, the upstream API may echo a
-    // normalized/renamed model id in its response (e.g. request
-    // `zai-org/GLM-5.2-FP8` but the message carries `GLM5.2-FP8`). Writing
-    // stats under the echoed name fragments the bucket away from the
-    // active-model key the footer reads, showing 0% even when the backend is
-    // hitting cache. When the response model drifts from the active model only
-    // in name (same provider, same cache adapter), consolidate stats back to
-    // the active model id. Virtual routing providers keep message-local
-    // identity (router correctness).
-    statsModel = consolidateDirectProviderStatsModel(statsModel, ctx.model, ctx);
-    if (nativeVirtualMessageModel) statsModel = nativeVirtualMessageModel;
     let routedModelChanged = false;
     if (isVirtualRoutingModel(ctx.model, ctx) && statsModel && !isVirtualRoutingModel(statsModel, ctx)) {
       const nextRoutedModel: PersistedRoutedModelRef = {
@@ -1560,7 +1559,9 @@ export default function (pi: ExtensionAPI) {
 
     schedulePersistCacheStats(ctx);
     await refreshShardAggregate();
-    await publishStatus(ctx, statsModel);
+    // A response from a previous direct selection must not replace the active
+    // model's footer. Routed selections continue following physical responses.
+    await publishStatus(ctx, directSelection ? ctx.model : statsModel);
   });
 
   // ────────────────────────────────────────────────────────────────

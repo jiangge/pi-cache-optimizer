@@ -34,7 +34,8 @@ export function snapshotBaseUrlForDiagnostics(value: unknown): string {
   if (!isNonEmptyString(value)) return "";
   try {
     const url = new URL(value);
-    // Request correlation only needs endpoint identity. Strip userinfo and
+    if ((url.protocol !== "http:" && url.protocol !== "https:") || !url.hostname) return "";
+    // Request correlation and doctor only need endpoint identity. Strip userinfo and
     // query/fragment material so a provider URL cannot carry credentials into
     // the process-local snapshot.
     url.username = "";
@@ -43,9 +44,9 @@ export function snapshotBaseUrlForDiagnostics(value: unknown): string {
     url.hash = "";
     return url.toString();
   } catch {
-    // Invalid endpoint strings are not useful for applicability checks. Keep
-    // only a conservative path-free origin-like prefix without userinfo.
-    return value.replace(new RegExp("//[^/?#\\s@]+@"), "//").split(/[?#]/, 1)[0];
+    // Never echo malformed/opaque input: a best-effort string fallback can
+    // retain credentials when the URL could not be parsed.
+    return "";
   }
 }
 

@@ -86,6 +86,8 @@ Pi 0.79.7 及之后，`pi update` 默认只更新 Pi 本体。若要更新已安
 
 交互式 `/cache-optimizer` 菜单包含 `Footer mode`，可以选择 `total`、`session` 或 `process`。`enable` / `disable` 是当前进程内开关。若要持久关闭某些能力，请使用下面的环境变量。
 
+Doctor 显示的 endpoint URL 会移除用户名/密码、查询参数和 fragment。无效 URL 显示为不可用；实际 transport URL 不会被修改。
+
 ## 持久 Opt-out
 
 | 环境变量 | 作用 |
@@ -96,7 +98,7 @@ Pi 0.79.7 及之后，`pi update` 默认只更新 Pi 本体。若要更新已安
 | `PI_CACHE_OPTIMIZER_NO_OPENAI_CACHE_KEY=1` | 关闭 OpenAI-compatible `prompt_cache_key` fallback。推荐使用这个显式 opt-out。 |
 | `PI_CACHE_OPTIMIZER_OPENAI_CACHE_KEY=0` | 通过旧的反向开关关闭同一个 fallback。取值 `0`、`false`、`no`、`off` 时关闭。 |
 
-持久化 feature 配置由 Pi agent 目录中的原生命令管理，并且优先于对应环境变量：
+持久化 feature 配置由 Pi agent 目录中的原生命令管理，并且优先于对应环境变量，包括上面的两个 OpenAI cache-key 开关。运行时 `disable` 仍会抑制优化，不受持久配置影响：
 
 ```text
 /cache-optimizer config prompt-rewrite on|off
@@ -108,7 +110,7 @@ Pi 0.79.7 及之后，`pi update` 默认只更新 Pi 本体。若要更新已安
 /cache-optimizer config reset
 ```
 
-`config reset` 会移除持久化 feature 覆盖，同时保留现有 footer mode 和按模型配置的 prompt-cache-key 设置。这些命令不会修改 shell 启动文件或 `PI_CACHE_RETENTION`；`enable` 和 `disable` 仍然是当前进程的运行时开关。
+`config reset` 在共享事务锁内读取最新磁盘配置，只移除持久化 feature 覆盖，保留最新 footer mode、按模型配置的 prompt-cache-key 设置和文件权限。JSON/schema 无效、symlink、非普通文件或并发手动修改时会拒绝覆盖。这些命令不会修改 shell 启动文件或 `PI_CACHE_RETENTION`；`enable` 和 `disable` 仍然是当前进程的运行时开关。
 
 ## Opt-in 确定性工具排序
 
@@ -129,6 +131,8 @@ bun .trellis/tasks/09-03-context-epoch-tool-ordering/verify.ts
 ## Footer 缓存统计模式
 
 当前版本把统计保存在 Pi agent 目录的 `pi-cache-optimizer-stats.d/shards/` 下。每个已加载的 extension instance 独占一个 UUID 命名 shard，并通过临时文件 + 原子 rename 写入，因此父/子/并行 Pi 进程不会互相覆盖。旧 v6 单文件统计在升级时直接删除，本地 footer 计数从零开始；不会影响上游 provider 的实际缓存。
+
+即使等待响应时切换到同一 provider 的另一个模型，响应统计仍归属于实际请求的 catalog/request-local 模型。旧 transport 的响应别名只根据请求快照处理，不使用新选择的模型；footer 继续显示当前选择的 direct 模型。损坏 JSON/schema 的旧 shard 按文件修改时间在 48 小时后清理；较新的损坏文件、有效的当天 shard、仍存活的旧 instance 和 symlink 目标均受保护。
 
 Footer 默认使用 `session`，避免另一个并行 Pi 终端使用相同 provider/model 时污染当前窗口。可以通过命令或环境变量切换显示范围：
 

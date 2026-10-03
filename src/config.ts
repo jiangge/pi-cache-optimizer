@@ -1,8 +1,8 @@
-import { atomicCreateTextFileNoReplace, atomicReplaceTextFilePreservingMode, hashText, withModelsJsonTransactionLock } from "./atomic-fs.ts";
+import { type AtomicTargetGuard, atomicCreateTextFileNoReplace, atomicReplaceTextFilePreservingMode, hashText, withModelsJsonTransactionLock } from "./atomic-fs.ts";
 import { LOG_PREFIX, type MutableEnv, asRecord, getErrorCode, isNonEmptyString } from "./common.ts";
 import { STATE_DIR } from "./paths.ts";
 import { PI_CACHE_RETENTION_ENV, STARTUP_CACHE_RETENTION_ENV, requestLongCacheRetention, restoreCacheRetentionEnv } from "./retention.ts";
-import { readFileSync } from "node:fs";
+import { type Stats, readFileSync } from "node:fs";
 import { lstat, mkdir, readFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 
@@ -63,7 +63,10 @@ export function featureEnabled(
   const configured = config.features?.[feature];
   if (configured !== undefined) return configured;
   if (feature === "virtualRewrite") return isEnabledEnv(env[envName]);
-  if (feature === "promptRewrite" || feature === "skillCompression" || feature === "openAICacheKey") {
+  if (feature === "openAICacheKey") {
+    return !isEnabledEnv(env[envName]) && !isDisabledEnv(env[OPENAI_CACHE_KEY_ENV]);
+  }
+  if (feature === "promptRewrite" || feature === "skillCompression") {
     return !isEnabledEnv(env[envName]);
   }
   return isEnabledEnv(env[envName]) || defaultValue;
@@ -133,6 +136,7 @@ export function readPersistedCacheOptimizerConfig(configPath: string = CONFIG_FI
 export async function writePersistedCacheOptimizerConfigUnlocked(
   config: PersistedCacheOptimizerConfig | PersistedCacheOptimizerConfigV3,
   configPath: string,
+  expectedTarget?: AtomicTargetGuard | null,
 ): Promise<void> {
   await mkdir(dirname(configPath), { recursive: true });
   const payloadText = JSON.stringify(normalizePersistedCacheOptimizerConfig(config), null, 2) + "\n";
@@ -148,8 +152,14 @@ export async function writePersistedCacheOptimizerConfigUnlocked(
   } catch (error) {
     if (getErrorCode(error) !== "ENOENT") throw error;
   }
+  // Feature mutations bind the original read, not a newer snapshot taken by
+  // this writer. The lease serializes extension writers; this guard also
+  // rejects a manual edit/replacement between the read and atomic commit.
+  if ((expectedTarget === null && targetInfo) || (expectedTarget && !targetInfo)) {
+    throw new Error("optimizer config changed during the update; refusing to overwrite user changes");
+  }
   if (targetInfo) {
-    await atomicReplaceTextFilePreservingMode(configPath, payloadText, targetMode, "config", {
+    await atomicReplaceTextFilePreservingMode(configPath, payloadText, targetMode, "config", expectedTarget ?? {
       identity: targetInfo,
       hash: targetHash,
       mode: targetMode,
@@ -211,21 +221,29 @@ export async function writePersistedFooterMode(
   await withModelsJsonTransactionLock(() => writePersistedFooterModeUnlocked(mode, configPath));
 }
 
-export async function writePersistedFeature(
-  feature: PersistedCacheOptimizerFeature,
-  enabled: boolean,
-  configPath: string = CONFIG_FILE_PATH,
+async function updatePersistedFeatures(
+  update: (features: Partial<Record<PersistedCacheOptimizerFeature, boolean>>) => PersistedCacheOptimizerConfigV3["features"],
+  configPath: string,
 ): Promise<void> {
   await withModelsJsonTransactionLock(async () => {
-    // Read under the same lock as the write, and never replace a file we cannot parse:
-    // readPersistedCacheOptimizerConfig() falls back to defaults, which would erase the
-    // user's footer mode and prompt-cache-key opt-outs.
-    let raw: PersistedCacheOptimizerConfig | undefined;
+    let targetInfo: Stats | undefined;
     try {
-      raw = parsePersistedCacheOptimizerConfig(JSON.parse(await readFile(configPath, "utf8")));
-      if (!raw) throw new Error("optimizer config is invalid; refusing to overwrite user changes");
+      targetInfo = await lstat(configPath);
     } catch (error) {
-      if (getErrorCode(error) !== "ENOENT") {
+      if (getErrorCode(error) !== "ENOENT") throw error;
+    }
+    let raw: PersistedCacheOptimizerConfig | undefined;
+    let guard: AtomicTargetGuard | null = null;
+    if (targetInfo) {
+      if (targetInfo.isSymbolicLink() || !targetInfo.isFile()) {
+        throw new Error("optimizer config is not a regular file; no changes were made");
+      }
+      try {
+        const text = await readFile(configPath, "utf8");
+        raw = parsePersistedCacheOptimizerConfig(JSON.parse(text));
+        if (!raw) throw new Error("invalid optimizer config schema");
+        guard = { identity: targetInfo, hash: hashText(text), mode: targetInfo.mode & 0o7777 };
+      } catch {
         throw new Error(`optimizer config ${configPath} is invalid or unreadable; refusing to overwrite user changes. Fix or remove it, then retry.`);
       }
     }
@@ -233,10 +251,22 @@ export async function writePersistedFeature(
     await writePersistedCacheOptimizerConfigUnlocked({
       ...current,
       version: 3,
-      features: { ...(current.features ?? {}), [feature]: enabled },
-    }, configPath);
+      features: update(current.features ?? {}),
+    }, configPath, guard);
   });
   if (configPath === CONFIG_FILE_PATH) setPersistedCacheOptimizerConfig(readPersistedCacheOptimizerConfig());
+}
+
+export async function writePersistedFeature(
+  feature: PersistedCacheOptimizerFeature,
+  enabled: boolean,
+  configPath: string = CONFIG_FILE_PATH,
+): Promise<void> {
+  await updatePersistedFeatures((features) => ({ ...features, [feature]: enabled }), configPath);
+}
+
+export async function resetPersistedFeatures(configPath: string = CONFIG_FILE_PATH): Promise<void> {
+  await updatePersistedFeatures(() => undefined, configPath);
 }
 
 export function resolveFooterStatsMode(
@@ -266,10 +296,7 @@ export function isDisabledEnv(value: string | undefined): boolean {
 }
 
 export function shouldInjectOpenAIPromptCacheKey(): boolean {
-  if (!runtimeOptimizerEnabled) return false;
-  if (!featureEnabled("openAICacheKey", NO_OPENAI_CACHE_KEY_ENV, true)) return false;
-  if (isDisabledEnv(process.env[OPENAI_CACHE_KEY_ENV])) return false;
-  return true;
+  return runtimeOptimizerEnabled && featureEnabled("openAICacheKey", NO_OPENAI_CACHE_KEY_ENV, true);
 }
 
 export function setPersistedCacheOptimizerConfig(config: PersistedCacheOptimizerConfig | PersistedCacheOptimizerConfigV3): void {
@@ -313,7 +340,7 @@ export function getOptimizerRuntimeModeLines(): string[] {
   if (!runtimeOptimizerEnabled) {
     lines.push("This is a current-process switch. Run /reload or restart Pi to return to startup behavior.");
   } else if (!featureEnabled("promptRewrite", NO_PROMPT_REWRITE_ENV, true) || !shouldInjectOpenAIPromptCacheKey()) {
-    lines.push("Some features are still disabled by environment variables.");
+    lines.push("Some features are disabled by persistent configuration or environment variables.");
   }
   return lines;
 }
@@ -329,7 +356,8 @@ export function formatPersistentFeatureConfig(): string {
     ["Tool ordering", "toolOrder", TOOL_ORDER_ENV, false],
   ];
   for (const [label, feature, envName, defaultValue] of entries) {
-    const source = features[feature] !== undefined ? "config" : process.env[envName] !== undefined ? "env" : "default";
+    const hasEnv = process.env[envName] !== undefined || (feature === "openAICacheKey" && process.env[OPENAI_CACHE_KEY_ENV] !== undefined);
+    const source = features[feature] !== undefined ? "config" : hasEnv ? "env" : "default";
     lines.push(`• ${label}: ${featureEnabled(feature, envName, defaultValue) ? "on" : "off"} (${source})`);
   }
   return lines.join("\n");

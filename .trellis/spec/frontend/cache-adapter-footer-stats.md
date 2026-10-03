@@ -29,13 +29,28 @@ metadata for selection. Generic OpenAI-compatible proxies are NOT treated as
 OpenAI-family just because they use an OpenAI-shaped API.
 
 When `message_end` echoes the same direct, non-virtual provider and exact model
-id as the active model, `modelFromAssistantMessage()` preserves the active model's
-non-empty display name for id/name adapter selection. This covers short wire ids
+id as its fallback model, `modelFromAssistantMessage()` preserves that model's
+non-empty display name for id/name adapter selection. Prefer the request-local
+snapshot over the current selection, which is a dynamic getter and can change
+while the request is in flight. This covers short wire ids
 whose display name carries the family token (for example `kimi-coding/k3` named
 `Kimi K3`). If response provider or model id differs, the response id remains
 the derived name so routed/upstream identity stays authoritative and a stale
 fallback display name cannot affect classification. Bare `k3` is not a Kimi
 adapter token.
+
+For direct response stats, `modelFromAssistantMessage(message, fallback, true)`
+prefers Pi's dispatched catalog `message.model` over `responseModel`. An exact
+physical registry match is authoritative; only unknown legacy echoed ids may
+use `consolidateDirectProviderStatsModel(statsModel, requestModel, ctx)` with a
+verified lifecycle snapshot. Same provider and adapter are sanity checks, never
+alias evidence by themselves. With no safely correlated request snapshot, retain
+message identity. Unknown echoes with different outstanding model keys remain
+ambiguous even before response headers arrive; the current selection cannot
+choose a lifecycle record for alias attribution.
+A late response updates its own bucket but republishes the current direct
+selection's footer, not the completed request's model. Legacy routing retains
+message-local physical `responseModel`; native routing uses its catalog dispatch.
 
 | Adapter | Detection token (case-insensitive substring on id/name) | Footer label |
 |---|---|---|
@@ -569,7 +584,9 @@ per six hours. A lease older than one hour is recoverable.
 * Delete eligible non-current-day shards after 48 hours. If an old shard is marked
   active and its PID is still alive, conservatively retain it.
 * Delete extension-owned temp files after 24 hours.
-* Ignore malformed shards during aggregation; delete them only after retention.
+* Ignore malformed shards during aggregation. JSON syntax failures and schema-invalid
+  shards both expire by `lstat().mtimeMs` after 48 hours; an unreadable file is
+  retained. Parsing failures MUST NOT bypass retention cleanup.
 * Operate only on direct children with recognized extension filenames, require regular
   files from `lstat`, and never follow symlinks.
 * Global epoch is one replaceable file. Model epoch files are one per hashed exact
@@ -610,6 +627,74 @@ per six hours. A lease older than one hour is recoverable.
   pack, and diff checks remain green.
 
 ---
+
+## Scenario: persistent feature settings and reset
+
+### 1. Scope / Trigger
+
+Feature commands and request-hook environment resolution share the same config
+contract; another Pi instance or the user may update the file after startup.
+
+### 2. Signatures
+
+```ts
+writePersistedFeature(feature, enabled, configPath?): Promise<void>;
+resetPersistedFeatures(configPath?): Promise<void>;
+writePersistedCacheOptimizerConfigUnlocked(config, configPath, expectedTarget?): Promise<void>;
+featureEnabled(feature, envName, defaultValue, env?): boolean;
+```
+
+`expectedTarget` is an `AtomicTargetGuard` binding identity/hash/mode, `null`
+means the original target was absent, and `undefined` keeps the generic writer's
+current-target guard behavior. `/cache-optimizer config reset` resets features,
+not stats, footer mode, or model-scoped prompt-cache-key opt-outs.
+
+### 3. Contracts
+
+* Both feature writes and reset read/strictly validate the latest disk config
+  under `withModelsJsonTransactionLock`; never build reset from startup caches
+  or use the fallback-to-default reader for read-modify-write.
+* Preserve all supported unrelated fields and existing access mode. Bind the
+  original read's identity/hash/mode through atomic commit; absent targets use
+  no-replace creation. Refresh cached configuration/footer only after success.
+* Persistent `features.openAICacheKey` overrides both
+  `PI_CACHE_OPTIMIZER_NO_OPENAI_CACHE_KEY` and legacy
+  `PI_CACHE_OPTIMIZER_OPENAI_CACHE_KEY`. Without that setting, either environment
+  opt-out disables fallback. `featureEnabled()` is shared by command output,
+  runtime diagnostics, and request policy; runtime disable still gates injection.
+
+### 4. Validation & Error Matrix
+
+| Condition | Behavior |
+|---|---|
+| Config changed since startup | Reset reads and preserves latest footer/key policies. |
+| Invalid JSON/schema, symlink, directory, unreadable target | Refuse without replacement; explain how to fix the config. |
+| Manual edit/replacement/mode/existence change after read | Guard rejects commit; do not overwrite user changes. |
+| Config absent | Atomically create normalized v2 config without features. |
+| Persistent cache-key `true` with either env opt-out | Setting/diagnosis on; enabled request gets session fallback. |
+| Runtime disabled | No injection even when persistent setting is on. |
+
+### 5. Good / Base / Bad Cases
+
+* Good: reset preserves a concurrently written `footerMode: "total"` and omit list.
+* Base: no persistent cache-key setting retains existing environment opt-outs.
+* Bad: reset writes `{version: 2}` from stale memory over newer disk policies.
+
+### 6. Tests Required
+
+`tests/deep-review-regressions.test.ts` covers stale caches, strict validation,
+leases, permissions, target guards, missing config/idempotence, cache-key
+precedence, diagnostic agreement, request hooks, and runtime disable. It also
+pins switched-model/catalog attribution with reload and corrupt-shard retention.
+
+### 7. Wrong vs Correct
+
+```ts
+// Wrong: cached fields may erase another instance's current policies.
+await writePersistedCacheOptimizerConfig(cachedConfigWithoutFeatures);
+// Correct: locked, strict, original-read-bound feature-only mutation.
+await resetPersistedFeatures();
+```
 
 ## System prompt rewrite invariants
 

@@ -86,6 +86,8 @@ This extension requires Pi 0.82+ and is validated against Pi 1.0.0. It uses the 
 
 The interactive `/cache-optimizer` menu includes `Footer mode`, where you can choose `total`, `session`, or `process`. `enable` / `disable` are current-process switches. For a persistent opt-out, use environment variables below.
 
+Doctor displays endpoint URLs without username/password, query parameters, or fragments. Invalid URLs are shown as unavailable; the actual transport URL is never changed.
+
 ## Persistent opt-out
 
 | Env var | Effect |
@@ -96,7 +98,7 @@ The interactive `/cache-optimizer` menu includes `Footer mode`, where you can ch
 | `PI_CACHE_OPTIMIZER_NO_OPENAI_CACHE_KEY=1` | Disable the OpenAI-compatible `prompt_cache_key` fallback. Preferred explicit opt-out. |
 | `PI_CACHE_OPTIMIZER_OPENAI_CACHE_KEY=0` | Disable the same fallback via the legacy inverse switch. Values `0`, `false`, `no`, or `off` disable it. |
 
-Persistent feature settings are managed under the Pi agent directory by the native command interface. They take precedence over their corresponding environment variables:
+Persistent feature settings are managed under the Pi agent directory by the native command interface. They take precedence over their corresponding environment variables, including both OpenAI cache-key switches above. Runtime `disable` still suppresses optimization regardless of persistent settings:
 
 ```text
 /cache-optimizer config prompt-rewrite on|off
@@ -108,7 +110,7 @@ Persistent feature settings are managed under the Pi agent directory by the nati
 /cache-optimizer config reset
 ```
 
-`config reset` removes persistent feature overrides while preserving the existing footer mode and model-specific prompt-cache-key settings. These commands do not modify shell startup files or `PI_CACHE_RETENTION`; `enable` and `disable` remain current-process runtime switches.
+`config reset` reads the latest disk configuration under the shared transaction lock and removes only persistent feature overrides, preserving the latest footer mode, model-specific prompt-cache-key settings, and file permissions. Invalid JSON/schema, symlinks, non-regular targets, and concurrent manual changes are refused rather than overwritten. These commands do not modify shell startup files or `PI_CACHE_RETENTION`; `enable` and `disable` remain current-process runtime switches.
 
 ## Opt-in deterministic tool ordering
 
@@ -129,6 +131,8 @@ The fixture verifier reports numeric tool-order changes and confirms cache-marke
 ## Footer cache stats mode
 
 Current versions store stats under `pi-cache-optimizer-stats.d/shards/` in Pi's agent directory. Each loaded extension instance owns one UUID-named shard and writes it through temp-file + atomic rename. This prevents parent/child/parallel Pi processes from overwriting one another. Upgrading from the old v6 single-file format deletes the old local stats files and starts footer counters from zero; upstream provider caches are not affected.
+
+Response stats stay with the dispatched catalog/request-local model even if you switch to another model on the same provider while waiting. Legacy response aliases use the request snapshot, not the new selection; the footer continues showing the selected direct model. Old corrupt JSON/schema shards expire by file modification time after 48 hours; young corrupt files, valid current-day shards, live old instances, and symlink targets remain protected.
 
 The footer defaults to `session`, which reflects the current Pi conversation rather than another parallel Pi terminal using the same provider/model. Use either the command or environment variable to select the scope:
 

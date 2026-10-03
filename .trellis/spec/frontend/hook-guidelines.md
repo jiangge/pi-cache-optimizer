@@ -100,7 +100,8 @@ Primary hooks/events:
 - Before the normal error/aborted stats early return, detect only Anthropic's explicit mixed-TTL ordering error and record a process-local provider/model fallback for the next subsequent request. This is a non-retryable 400 in Pi 0.82.1; do not promise built-in automatic retry. Do not classify generic 400 or prompt-too-long errors.
 - Inspect finalized assistant errors for an explicit HTTP 400 unsupported `prompt_cache_key` / `promptCacheKey` signal and record only the exact request-local provider/model category for a later confirmed fix. Status parsing is limited to known HTTP-status fields or status-shaped error prefixes; arbitrary numbers are not treated as HTTP status. If concurrent request correlation is ambiguous and the message has no exact provider/model identity, discard the evidence rather than falling back to the current active model.
 - Also inspect finalized assistant errors for the same narrow reasoning-protocol rejection (`thinking` rejected in favor of `reasoning_effort`) and use request-local provider/model identity. Keep only the model-scoped category in process memory; never persist or display the raw error and never auto-edit configuration.
-- Assistant message metadata is authoritative for final stats identity.
+- Assistant message metadata is authoritative for final stats identity. Direct selections prefer the dispatched catalog `message.model` and exact registry metadata over `responseModel`; unknown legacy echoes may consolidate only with a safely correlated request snapshot. Never use current `ctx.model` or shared provider/adapter as alias evidence. Different outstanding models make an unknown echo ambiguous even before response headers arrive; retain its message identity rather than guessing.
+- Late direct responses update their own model buckets but publish the currently selected direct model's footer; routed selections keep following physical responses.
 - For a native virtual selection, resolve the message's dispatched catalog model (`message.model`) through the registry and use it for adapter tokens, the stats key, and the footer compat marker, so they match the pre-request UX that follows the latest physical response on the session branch.
 - Use message-local provider/model/api/usage when available; do not use global route state for final stats.
 - Update current-instance stats and recent samples only with numeric counters, then atomically persist the instance-owned shard.
@@ -117,7 +118,7 @@ Primary hooks/events:
 
 ## Common Mistakes
 
-- Doing final stats attribution from live/global router state instead of assistant message metadata.
+- Doing final stats attribution from live/global router state or a changed direct selection instead of catalog/message metadata and safely correlated lifecycle records.
 - Injecting OpenAI cache keys or affinity headers into custom transports such as `kiro-api`, or implementing the per-model prompt-cache-key opt-out through an unsupported Pi compat field instead of the extension-owned configuration.
 - Treating `ctx.model.compat` as the only effective compat source for extension providers; `registerProvider()` model replacement can omit provider/custom-model compat even though exact `models.json` configuration remains authoritative.
 - Normalizing Anthropic TTLs by provider/model name instead of validating the effective API and final wire-order payload.

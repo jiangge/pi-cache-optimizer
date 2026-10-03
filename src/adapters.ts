@@ -22,11 +22,16 @@ export function isVirtualRoutingModel(model: PiModel | undefined, ctx?: Pick<Ext
   return isNativeVirtualModel(model) || isRouterModel(model) || !!getRoutingRegistry()?.getRouter(model.provider) || !!resolveActiveRouteSnapshot(model, ctx);
 }
 
-export function modelFromAssistantMessage(message: unknown, fallback: PiModel | undefined): PiModel | undefined {
+export function modelFromAssistantMessage(message: unknown, fallback: PiModel | undefined, preferCatalogId = false): PiModel | undefined {
   const record = getAssistantRecord(message);
   if (!record) return fallback;
 
-  const id = firstNonEmptyString(record.responseModel, record.model, fallback?.id);
+  // Pi's model field is the dispatched catalog id. Legacy routing adapters
+  // can still use responseModel as their only physical identity, so callers
+  // that need catalog attribution opt in rather than changing that protocol.
+  const id = preferCatalogId
+    ? firstNonEmptyString(record.model, record.responseModel, fallback?.id)
+    : firstNonEmptyString(record.responseModel, record.model, fallback?.id);
   const provider = firstNonEmptyString(record.provider, fallback?.provider);
   const api = firstNonEmptyString(record.api, fallback?.api) ?? "";
   if (!id || !provider) return fallback;
