@@ -22,7 +22,7 @@ Fix all five reproduced review findings on the integrated 2.8.16 / Pi 1.0 baseli
 - [x] Cleanup tests cover malformed old/young files, invalid schema, current-day and live-PID protection, symlinks, and unrelated names.
 - [x] npm run check and Trellis task validation pass.
 - [x] README translations and binding specs describe the repaired contracts.
-- [ ] Changes committed and merged to local master; no remote writes or release.
+- [x] Changes committed and merged to local master; no remote writes or release.
 
 ## Prior Integration
 
@@ -35,6 +35,12 @@ Local master is 76f1763. It contains origin/master and the previously unmerged l
 - Final `npm run check`: 169 tests / 169 passed / 0 failed / 0 skipped; typecheck and diff checks pass; 26 source modules have no import cycles; every relative import in 27 source files resolves in the 31-file package dry run.
 - `python3 .trellis/scripts/task.py validate .trellis/tasks/10-03-fix-five-review-findings` passes.
 - All verification uses isolated temporary Pi agent directories and local fixtures. No real provider requests or provider-cache performance claims.
+
+## Local Closeout
+
+- Implementation commit: `a6b6a29` (`fix: address five deep-review findings with regression coverage`).
+- Local `master` fast-forwarded to this commit, preserving all integration history; this task archive follows as a separate local documentation commit.
+- Package version remains 2.8.16; no push, PR, Mainline metadata publication, release, or npm publish was performed. Await the user's next instruction before any remote write.
 
 ## Decisions
 
