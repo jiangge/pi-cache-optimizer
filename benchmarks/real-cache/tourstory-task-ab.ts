@@ -24,9 +24,10 @@ const EXPERIMENT = process.env.BENCH_EXPERIMENT || "release";
 const PROJECT = resolve(process.env.BENCH_PROJECT_DIR || join(BENCH_DIR, "..", "..", "..", "idea", "tourstory"));
 const SEED = Number(process.env.BENCH_SEED || 20261003);
 const observerExtension = fileURLToPath(new URL("./codex-observer-extension.ts", import.meta.url));
+const forceCodexSkillCompressionExtension = fileURLToPath(new URL("./force-codex-skill-compression-extension.ts", import.meta.url));
 const currentExtension = resolve(BENCH_DIR, "..", "..", "index.ts");
 
-type Arm = PiGroup & { description: string; extensionPath?: string };
+type Arm = PiGroup & { description: string; extensionPath?: string; postExtensions?: string[] };
 
 const outDir = join(OUT_DIR, `tourstory-${PROVIDER.replace(/[^\w.-]/g, "_")}-${MODEL.replace(/[^\w.-]/g, "_")}-${new Date().toISOString().replace(/[:.]/g, "-")}`);
 mkdirSync(outDir, { recursive: true });
@@ -84,13 +85,31 @@ const arms: Arm[] = EXPERIMENT === "skill"
         { name: "CORE", extension: false, description: "Pi core only" },
         { name: "CURRENT", extension: false, extensionPath: currentExtension, description: "current pi-cache-optimizer checkout" },
       ]
+  : EXPERIMENT === "codex-skill-counterfactual"
+    ? [
+        {
+          name: "NATIVE_SKILLS",
+          extension: false,
+          extensionPath: currentExtension,
+          env: { PI_CACHE_RETENTION: "long" },
+          description: "patched current optimizer with Pi native Codex skill index",
+        },
+        {
+          name: "COMPRESSED_SKILLS",
+          extension: false,
+          extensionPath: currentExtension,
+          postExtensions: [forceCodexSkillCompressionExtension],
+          env: { PI_CACHE_RETENTION: "long" },
+          description: "benchmark-only counterfactual forcing the compressed skill index on Codex",
+        },
+      ]
   : [
       { name: "CORE", extension: false, description: "Pi core only" },
       { name: "OLD", extension: false, extensionPath: oldExtension, description: "exact pi-cache-optimizer v2.8.16" },
       { name: "CURRENT", extension: false, extensionPath: currentExtension, description: "current pi-cache-optimizer checkout" },
     ];
 
-if (!["release", "skill", "trajectory", "isolation"].includes(EXPERIMENT)) throw new Error("BENCH_EXPERIMENT must be release, skill, trajectory, or isolation");
+if (!["release", "skill", "trajectory", "isolation", "codex-skill-counterfactual"].includes(EXPERIMENT)) throw new Error("BENCH_EXPERIMENT must be release, skill, trajectory, isolation, or codex-skill-counterfactual");
 
 if (!Number.isInteger(REPLICATES) || REPLICATES < 1) throw new Error("BENCH_REPLICATES must be a positive integer");
 if (!Number.isInteger(START_BLOCK) || START_BLOCK < 0) throw new Error("BENCH_START_BLOCK must be a non-negative integer");
@@ -162,7 +181,7 @@ try {
           noTools: false,
           tools: ["read", "bash", "edit", "write"],
           extensions: extensionArgs,
-          postExtensions: [observerExtension],
+          postExtensions: [...(arm.postExtensions ?? []), observerExtension],
           // Codex already sends a distinct Pi-owned prompt_cache_key per session.
           // Do not perturb the semantic prompt with a random benchmark prefix there;
           // it can change the model's tool trajectory and confound task-cost comparisons.
