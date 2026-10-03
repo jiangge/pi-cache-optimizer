@@ -10,7 +10,9 @@ export type ProviderConfig = {
   provider: string;
   modelId: string;
   baseUrl: string;
-  apiKey: string;
+  apiKey?: string;
+  /** Provider-scoped auth entry copied into isolated benchmark agent dirs (OAuth stays local and is never logged). */
+  authEntry?: Record<string, unknown>;
   providerEntry: Record<string, unknown>;
   /** Undefined when the model is one of Pi's built-in catalog entries (not listed in models.json). */
   modelEntry: Record<string, unknown> | undefined;
@@ -29,17 +31,31 @@ export function loadProviderConfig(provider: string, modelId: string): ProviderC
     throw new Error(`model ${provider}/${modelId} not in models.json; set BENCH_BUILTIN_MODEL=1 if it is a built-in Pi model`);
   }
   let apiKey: unknown = entry.apiKey;
+  let authEntry: Record<string, unknown> | undefined;
   if (apiKey === undefined) {
     // Keys stored with `pi auth` live in auth.json instead of models.json.
     try {
       const auth = JSON.parse(readFileSync(join(agentDir, "auth.json"), "utf8"))[provider];
       if (auth?.type === "api_key") apiKey = auth.key;
+      if (auth?.type === "oauth") authEntry = auth;
     } catch { /* no auth.json entry */ }
   }
-  if (typeof apiKey !== "string" || apiKey.startsWith("!") || /^[A-Z][A-Z0-9_]*$/.test(apiKey)) {
+  if (apiKey !== undefined && (typeof apiKey !== "string" || apiKey.startsWith("!") || /^[A-Z][A-Z0-9_]*$/.test(apiKey))) {
     throw new Error("only literal API keys (models.json apiKey or auth.json api_key) are supported by this harness");
   }
-  return { provider, modelId, baseUrl: String(entry.baseUrl).replace(/\/+$/, ""), apiKey, providerEntry: { ...entry, apiKey, ...(modelEntry ? {} : { models: undefined }) }, modelEntry };
+  if (apiKey === undefined && !authEntry) throw new Error(`no usable auth found for ${provider}`);
+  const defaultBaseUrl = provider === "openai-codex" ? "https://chatgpt.com/backend-api" : undefined;
+  const baseUrl = typeof entry.baseUrl === "string" && entry.baseUrl.trim() ? entry.baseUrl : defaultBaseUrl;
+  if (!baseUrl) throw new Error(`provider ${provider} has no baseUrl and the harness has no built-in default`);
+  return {
+    provider,
+    modelId,
+    baseUrl: baseUrl.replace(/\/+$/, ""),
+    apiKey: typeof apiKey === "string" ? apiKey : undefined,
+    authEntry,
+    providerEntry: { ...entry, ...(typeof apiKey === "string" ? { apiKey } : {}), ...(modelEntry ? {} : { models: undefined }) },
+    modelEntry,
+  };
 }
 
 export function sha1(value: string): string {

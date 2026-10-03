@@ -18,20 +18,23 @@ const EXTENSION_PATH = join(BENCH_DIR, "..", "..", "index.ts");
 const PI_CLI = join(BENCH_DIR, "..", "..", "node_modules", "@earendil-works", "pi-coding-agent", "dist", "bundle", "cli.js");
 
 /**
- * Creates an isolated agent dir for one run: only the benchmarked provider/model, with its base URL pointed at the
- * recording proxy under `label`. No persisted extension config, no global skills or AGENTS.md, so environment
- * variables are the only feature switches.
+ * Creates an isolated agent dir for one run: only the benchmarked provider/model. When `port` is provided its base
+ * URL is pointed at the recording proxy; otherwise Pi talks directly to the configured provider. No persisted
+ * extension config, no global skills or AGENTS.md, so environment variables are the only feature switches.
  */
-export function prepareAgentDir(config: ProviderConfig, group: PiGroup, label: string, port: number): string {
+export function prepareAgentDir(config: ProviderConfig, group: PiGroup, label: string, port?: number): string {
   const dir = join(process.env.BENCH_AGENTS_DIR || join(OUT_DIR, "agents"), label);
   mkdirSync(dir, { recursive: true });
   const provider = {
     ...config.providerEntry,
     compat: { ...((config.providerEntry.compat as Record<string, unknown> | undefined) ?? {}), ...group.compat },
-    baseUrl: `http://127.0.0.1:${port}/${encodeURIComponent(label)}${new URL(config.baseUrl).pathname.replace(/\/+$/, "")}`,
+    ...(port === undefined ? {} : { baseUrl: `http://127.0.0.1:${port}/${encodeURIComponent(label)}${new URL(config.baseUrl).pathname.replace(/\/+$/, "")}` }),
     models: config.modelEntry ? [config.modelEntry] : undefined,
   };
   writeFileSync(join(dir, "models.json"), JSON.stringify({ providers: { [config.provider]: provider } }, null, 2), { mode: 0o600 });
+  if (config.authEntry) {
+    writeFileSync(join(dir, "auth.json"), JSON.stringify({ [config.provider]: config.authEntry }, null, 2), { mode: 0o600 });
+  }
   return dir;
 }
 
@@ -39,7 +42,7 @@ export function runPi(options: {
   config: ProviderConfig;
   group: PiGroup;
   label: string;
-  port: number;
+  port?: number;
   sessionId: string;
   prompt: string;
   cwd: string;
@@ -48,6 +51,12 @@ export function runPi(options: {
   noTools?: boolean;
   /** Extra extension files loaded with -e (e.g. the workspace's own Trellis extension). */
   extensions?: string[];
+  /** Extra extension files that must run after this repo's extension. */
+  postExtensions?: string[];
+  /** Stable per-session benchmark namespace for observer-only cache isolation. */
+  benchmarkNamespace?: string;
+  /** JSONL destination used by benchmark-only observer extensions. */
+  benchmarkObserverFile?: string;
   timeoutMs?: number;
 }): Promise<{ code: number | null; stdout: string; stderr: string }> {
   const agentDir = prepareAgentDir(options.config, options.group, options.label, options.port);
@@ -56,6 +65,7 @@ export function runPi(options: {
     "--no-extensions",
     ...(options.extensions ?? []).flatMap((path) => ["-e", path]),
     ...(options.group.extension ? ["-e", EXTENSION_PATH] : []),
+    ...(options.postExtensions ?? []).flatMap((path) => ["-e", path]),
     "--provider", options.config.provider,
     "--model", options.config.modelId,
     "--session-id", options.sessionId,
@@ -69,6 +79,9 @@ export function runPi(options: {
   // Clear inherited retention first; a group may request it explicitly below.
   delete env.PI_CACHE_RETENTION;
   Object.assign(env, options.group.env);
+  env.BENCH_LABEL = options.label;
+  if (options.benchmarkNamespace) env.BENCH_NAMESPACE = options.benchmarkNamespace;
+  if (options.benchmarkObserverFile) env.BENCH_OBSERVER_FILE = options.benchmarkObserverFile;
   if (process.env.BENCH_HOME) env.HOME = process.env.BENCH_HOME;
   return new Promise((resolve) => {
     const child = spawn(process.execPath, [PI_CLI, ...args], { cwd: options.cwd, env: env as NodeJS.ProcessEnv, stdio: ["ignore", "pipe", "pipe"] });
