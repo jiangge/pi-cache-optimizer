@@ -226,7 +226,7 @@ core's own cache transport.
   persistently listed in the extension-owned config as
   `promptCacheKey.omit`; this removes both request-key spellings, including a
   key already supplied by Pi. Do not add `supportsPromptCacheKey` to Pi's
-  `models.json`, because Pi 1.0.2 does not define that compat field.
+  `models.json`, because Pi 1.0.3 does not define that compat field.
 * All `before_agent_start` prompt mutations (session-overview churn strip,
   skill compression) can be disabled persistently with:
   `PI_CACHE_OPTIMIZER_NO_PROMPT_REWRITE=1` (truthy: `1`, `true`, `yes`, `on`).
@@ -1139,7 +1139,7 @@ The extension registers a Pi command `/cache-optimizer` with runtime, diagnostic
 configuration, repair, rollback, and reset subcommands. It MUST register Pi's native
 `getArgumentCompletions(argumentPrefix)` callback rather than a custom editor or
 autocomplete provider. TypeScript validation consumes the installed official Pi
-1.0.2 declarations directly; a complete local ambient redeclaration is forbidden
+1.0.3 declarations directly; a complete local ambient redeclaration is forbidden
 because it can hide upstream API drift. Pi 1.0's expanded event/context surface
 is compatible with the subset used here. The callback completes the supported top-level
 subcommands (`enable`, `disable`, `doctor`, `stats`, `config`, `compat`, `reset`,
