@@ -45,7 +45,7 @@ async function withExtension(run: (h: Awaited<ReturnType<typeof loadHarness>>) =
   }
 }
 
-async function loadHarness(dir: string) {
+async function loadHarness(dir: string, sessionId = "fixture-review-session") {
   const jiti = createJiti(join(process.cwd(), "tests", "deep-review-regressions.test.ts"), { interopDefault: false, moduleCache: false });
   const loaded = await jiti.import<typeof import("../index.ts")>(join(process.cwd(), "index.ts"));
   const hooks = new Map<string, Hook>();
@@ -59,7 +59,7 @@ async function loadHarness(dir: string) {
   const catalog = new Map<string, ReturnType<typeof model>>();
   const ctx = {
     model: model(), mode: "json", hasUI: false,
-    sessionManager: { getSessionId: () => "fixture-review-session", getBranch: () => [] },
+    sessionManager: { getSessionId: () => sessionId, getBranch: () => [] },
     modelRegistry: {
       find: (provider: string, id: string) => catalog.get(`${provider}/${id}`),
       getAvailable: () => [...catalog.values()], getAll: () => [...catalog.values()],
@@ -91,6 +91,95 @@ async function loadHarness(dir: string) {
 function assistant(provider: string, id: string, input = 100, responseModel?: string) {
   return { role: "assistant", provider, model: id, ...(responseModel ? { responseModel } : {}), api: "openai-completions", stopReason: "stop", usage: { input, output: 1, cacheRead: 0, cacheWrite: 0 } };
 }
+
+test("session footer retains yesterday across reload while daily commands stay daily", async (t) => {
+  t.mock.timers.enable({ apis: ["Date"], now: new Date(2026, 8, 20, 12).getTime() });
+  await withExtension(async (h) => {
+    await h.hook("message_end", { message: assistant("proxy", "gpt-a") });
+    await h.close();
+    t.mock.timers.setTime(new Date(2026, 8, 21, 12).getTime());
+    const next = await loadHarness(h.dir);
+    try {
+      assert.match(next.statuses.at(-1) ?? "", /0\/1·/);
+      await next.hook("message_end", { message: assistant("proxy", "gpt-a") });
+      assert.match(next.statuses.at(-1) ?? "", /0\/2·/);
+      await next.command("config footer-mode total");
+      await next.command("stats all");
+      assert.match(next.statuses.at(-1) ?? "", /0\/1·/);
+      await next.command("config footer-mode session");
+      assert.match(next.statuses.at(-1) ?? "", /0\/2·/);
+      await next.close();
+      const aggregate = await next.I.loadStatsShardAggregateV7();
+      assert.equal(aggregate.totalsByModel["proxy/gpt-a"]?.totalRequests, 1);
+    } finally { await next.close(); }
+  });
+});
+
+for (const startingMode of ["session", "total", "process"]) test(`midnight rotates daily shards from ${startingMode} without losing session counters`, async (t) => {
+  t.mock.timers.enable({ apis: ["Date"], now: new Date(2026, 8, 20, 12).getTime() });
+  await withExtension(async (h) => {
+    await h.command(`config footer-mode ${startingMode}`);
+    await h.hook("message_end", { message: assistant("proxy", "gpt-a") });
+    t.mock.timers.setTime(new Date(2026, 8, 21, 12).getTime());
+    await h.hook("message_end", { message: assistant("proxy", "gpt-a") });
+    assert.match(h.statuses.at(-1) ?? "", startingMode === "session" ? /0\/2·/ : /0\/1·/);
+    await h.command("config footer-mode total");
+    assert.match(h.statuses.at(-1) ?? "", /0\/1·/);
+    await h.command("config footer-mode process");
+    assert.match(h.statuses.at(-1) ?? "", /0\/1·/);
+    await h.command("config footer-mode session");
+    assert.match(h.statuses.at(-1) ?? "", /0\/2·/);
+    await h.close();
+    const shards = await h.I.readValidStatsShardsV7();
+    assert.equal(shards.length, 2);
+    assert.deepEqual(shards.map((s) => s.models["proxy/gpt-a"].stats.totalRequests), [1, 1]);
+    const next = await loadHarness(h.dir);
+    try {
+      assert.match(next.statuses.at(-1) ?? "", /0\/2·/);
+      await next.command("reset");
+      assert.match(next.statuses.at(-1) ?? "", /0\/0·/);
+      await next.hook("message_end", { message: assistant("proxy", "gpt-a") });
+      assert.match(next.statuses.at(-1) ?? "", /0\/1·/);
+    } finally { await next.close(); }
+  });
+});
+
+test("idle midnight shutdown preserves yesterday and does not attribute it to today or another session", async (t) => {
+  t.mock.timers.enable({ apis: ["Date"], now: new Date(2026, 8, 20, 12).getTime() });
+  await withExtension(async (h) => {
+    await h.hook("message_end", { message: assistant("proxy", "gpt-a") });
+    t.mock.timers.setTime(new Date(2026, 8, 21, 12).getTime());
+    await h.close();
+    assert.equal((await h.I.loadStatsShardAggregateV7()).totalsByModel["proxy/gpt-a"], undefined);
+    const other = await loadHarness(h.dir, "different-review-session");
+    try { assert.match(other.statuses.at(-1) ?? "", /0\/0·/); }
+    finally { await other.close(); }
+    const next = await loadHarness(h.dir);
+    try { assert.match(next.statuses.at(-1) ?? "", /0\/1·/); }
+    finally { await next.close(); }
+  });
+});
+
+test("failed midnight archive keeps session counters in memory and does not fail the hook", async (t) => {
+  t.mock.timers.enable({ apis: ["Date"], now: new Date(2026, 8, 20, 12).getTime() });
+  await withExtension(async (h) => {
+    await h.hook("message_end", { message: assistant("proxy", "gpt-a") });
+    const shards = await h.I.readValidStatsShardsV7();
+    const path = join(h.dir, "pi-cache-optimizer-stats.d", "shards", `${shards[0].instanceId}.json`);
+    await rm(path);
+    await mkdir(path); // A directory refuses atomic replacement on all platforms.
+    const warn = console.warn;
+    console.warn = () => undefined;
+    try {
+      t.mock.timers.setTime(new Date(2026, 8, 21, 12).getTime());
+      await h.hook("message_end", { message: assistant("proxy", "gpt-a") });
+      assert.match(h.statuses.at(-1) ?? "", /0\/2·/);
+      await h.command("config footer-mode total");
+      assert.match(h.statuses.at(-1) ?? "", /0\/1·/);
+      assert.ok(h.notices.some((text) => /failed to persist/.test(text)));
+    } finally { console.warn = warn; }
+  });
+});
 
 test("config reset preserves the latest disk footer/key policies, file mode, and counters", async () => {
   await withExtension(async (h) => {
@@ -379,7 +468,7 @@ test("cleanup expires corrupt JSON/schema shards but protects young, current-day
     const dir = join(h.dir, "cleanup-fixtures");
     await mkdir(dir);
     const now = Date.now();
-    const old = new Date(now - 7 * 86400_000);
+    const old = new Date(now - 61 * 86400_000);
     const young = new Date(now - 3600_000);
     const put = async (text: string, date = old, name = `${randomUUID()}.json`) => {
       const path = join(dir, name);

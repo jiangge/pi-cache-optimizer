@@ -62,7 +62,7 @@ Run `/reload` in Pi after install/update/remove so extension hooks refresh.
 
 On Pi 0.79.7 and newer, `pi update` updates Pi itself only. To update installed Pi packages such as this extension, run `pi update --extensions` (packages only) or `pi update --all` (Pi + packages).
 
-This extension requires Pi 0.82+ and is validated against Pi 1.0.1. It uses the official Pi package types directly for type-checking, along with extension hooks, `getAgentDir()`, and prompt options shared by those versions; it does not depend on Pi 0.83+ APIs such as `ctx.scopedModels` or the bundled TypeBox 1.3 aliases. Native virtual model support and codemode nested-call coalescing activate only on Pi 0.99+ hosts that produce them; older hosts keep the previous behavior. The local development baseline uses Node.js 22.19.0 or newer, matching Pi 1.0.1's engine requirement.
+This extension requires Pi 0.82+ and is validated against Pi 1.0.2. It uses the official Pi package types directly for type-checking, along with extension hooks, `getAgentDir()`, and prompt options shared by those versions; it does not depend on Pi 0.83+ APIs such as `ctx.scopedModels` or the bundled TypeBox 1.3 aliases. Native virtual model support and codemode nested-call coalescing activate only on Pi 0.99+ hosts that produce them; older hosts keep the previous behavior. The local development baseline uses Node.js 22.19.0 or newer, matching Pi 1.0.2's engine requirement.
 
 ## Commands
 
@@ -132,17 +132,17 @@ The fixture verifier reports numeric tool-order changes and confirms cache-marke
 
 ## Footer cache stats mode
 
-Current versions store stats under `pi-cache-optimizer-stats.d/shards/` in Pi's agent directory. Each loaded extension instance owns one UUID-named shard and writes it through temp-file + atomic rename. This prevents parent/child/parallel Pi processes from overwriting one another. Upgrading from the old v6 single-file format deletes the old local stats files and starts footer counters from zero; upstream provider caches are not affected.
+Current versions store stats under `pi-cache-optimizer-stats.d/shards/` in Pi's agent directory. Each loaded extension instance owns one active UUID-named daily shard and writes it through temp-file + atomic rename; at local midnight it closes the old shard and starts a new UUID without erasing session history. This prevents parent/child/parallel Pi processes from overwriting one another. Upgrading from the old v6 single-file format deletes the old local stats files and starts footer counters from zero; upstream provider caches are not affected.
 
-Response stats stay with the dispatched catalog/request-local model even if you switch to another model on the same provider while waiting. Legacy response aliases use the request snapshot, not the new selection; the footer continues showing the selected direct model. Old corrupt JSON/schema shards expire by file modification time after 48 hours; young corrupt files, valid current-day shards, live old instances, and symlink targets remain protected.
+Response stats stay with the dispatched catalog/request-local model even if you switch to another model on the same provider while waiting. Legacy response aliases use the request snapshot, not the new selection; the footer continues showing the selected direct model. Old corrupt JSON/schema shards expire by file modification time after two months; young corrupt files, valid current-day shards, live old instances, and symlink targets remain protected.
 
 The footer defaults to `session`, which reflects the current Pi conversation rather than another parallel Pi terminal using the same provider/model. Use either the command or environment variable to select the scope:
 
 | Value | Effect |
 |---|---|
-| `session` (default) | Aggregate today's shards carrying the current hashed Pi conversation session id and exact provider/model. A reload creates a new instance shard but remains in the same session scope. |
-| `total` | Aggregate today's valid local shards for the exact provider/model across sessions, including child Pi agents that load this extension and share the same agent directory. |
-| `process` | Show only counters collected by the current extension instance. It starts at `0/0` after Pi restart or extension reload. |
+| `session` (default) | Aggregate all retained shards carrying the current hashed Pi conversation session id and exact provider/model, including across local-day boundaries. A reload creates a new instance shard but remains in the same lifetime session scope. |
+| `total` | Aggregate the current local day's valid shards for the exact provider/model across sessions, including child Pi agents that load this extension and share the same agent directory. |
+| `process` | Show only today's counters collected by the current extension instance. It starts at `0/0` at local midnight, after Pi restart, or extension reload. |
 
 Persistent command configuration takes precedence over the environment variable:
 
@@ -156,7 +156,7 @@ The explicit setting is stored in `pi-cache-optimizer-config.json` under Pi's ag
 
 ## Per-model `prompt_cache_key` opt-out
 
-Some OpenAI-compatible Completions endpoints reject `prompt_cache_key` with HTTP 400 even though the same field is valid for other providers. Pi 1.0.1 owns the key for Responses/Codex transports; this extension's key opt-out and fallback apply only to `openai-completions`. Pi 1.0.1 has no native `supportsPromptCacheKey` compat field; do **not** add that unknown field to `models.json`. `supportsLongCacheRetention` is not an equivalent switch and should not be used for this purpose.
+Some OpenAI-compatible Completions endpoints reject `prompt_cache_key` with HTTP 400 even though the same field is valid for other providers. Pi 1.0.2 owns the key for Responses/Codex transports; this extension's key opt-out and fallback apply only to `openai-completions`. Pi 1.0.2 has no native `supportsPromptCacheKey` compat field; do **not** add that unknown field to `models.json`. `supportsLongCacheRetention` is not an equivalent switch and should not be used for this purpose.
 
 When the extension observes an explicit field-level `prompt_cache_key` unsupported error for the exact provider/model, ordinary `/cache-optimizer fix` offers a confirmed model-scoped repair. Value-validation failures and conditional restrictions such as “not allowed when temperature is set” do not qualify. If concurrent responses from different models cannot be correlated because Pi provides no request ID, header-only evidence is ignored unless the finalized assistant message supplies exact provider/model identity. If you already know that the endpoint rejects the field, use the explicit command:
 
@@ -196,7 +196,7 @@ Notes:
 
 - `sendSessionAffinityHeaders: true` is the safe default when your proxy supports sticky routing.
 - `supportsLongCacheRetention: true` is optional. Add it only when the endpoint explicitly supports OpenAI long prompt cache retention.
-- Do not add `supportsPromptCacheKey` to `models.json`: Pi 1.0.1 does not define that compat field. Use `/cache-optimizer fix prompt-cache-key` to store an exact provider/model omit rule in the extension-owned config; it removes both key spellings, including a key supplied by Pi.
+- Do not add `supportsPromptCacheKey` to `models.json`: Pi 1.0.2 does not define that compat field. Use `/cache-optimizer fix prompt-cache-key` to store an exact provider/model omit rule in the extension-owned config; it removes both key spellings, including a key supplied by Pi.
 - If you see `400 Unsupported parameter: prompt_cache_retention`, remove/avoid `supportsLongCacheRetention` for that channel. Keep `sendSessionAffinityHeaders` if supported. The extension detects the explicit error from response headers or the finalized assistant error message and strips the parameter from subsequent requests in the current process.
 - Use `/cache-optimizer compat` or `/cache-optimizer doctor` to see model-specific advice.
 - DeepSeek model names select the `DS cache` adapter only; they do not prove a reasoning wire protocol. Generic cache/routing advice remains active for absent or non-DeepSeek formats. DeepSeek replay advice is shown only when effective `compat.thinkingFormat: "deepseek"` is explicitly configured; it never treats `thinkingFormat` as a missing fix key.
@@ -364,7 +364,7 @@ Rollback creates a new access-mode-preserving backup and uses atomic replacement
 
 ## Footer stats
 
-Stats are read-only local counters stored as UUID-owned shards under `pi-cache-optimizer-stats.d/shards/` in Pi's agent directory (custom agent dirs use `PI_CODING_AGENT_DIR`). Shards contain only dates, opaque session hashes, exact provider/model counters, reset epochs, and process lifecycle metadata — no API keys, prompts, payloads, headers, responses, or model output. The footer defaults to the current conversation session; `total` aggregates all valid current-day shards for the exact provider/model, and `process` shows only the current extension instance. Footer mode configuration is stored separately in `pi-cache-optimizer-config.json`. Upgrading from the old v6 shared stats files deletes those local counters instead of migrating them.
+Stats are read-only local counters stored as UUID-owned shards under `pi-cache-optimizer-stats.d/shards/` in Pi's agent directory (custom agent dirs use `PI_CODING_AGENT_DIR`). Shards contain only dates, opaque session hashes, exact provider/model counters, reset epochs, and process lifecycle metadata — no API keys, prompts, payloads, headers, responses, or model output. The footer defaults to the current conversation session and retains that session's counters across local-day boundaries; `total` aggregates only current-day shards, and `process` shows only the current extension instance. Footer mode configuration is stored separately in `pi-cache-optimizer-config.json`. Upgrading from the old v6 shared stats files deletes those local counters instead of migrating them.
 
 Pi 0.79+ also includes a built-in footer `CH` marker for the latest prompt cache hit rate. This extension complements that marker with persisted provider/model counters plus proxy compat diagnostics.
 

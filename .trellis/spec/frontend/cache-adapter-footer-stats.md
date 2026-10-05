@@ -14,7 +14,7 @@ below as binding when changing `extension.ts`.
 |---|---|---|
 | npm package name | `pi-cache-optimizer` | Renamed from `pi-deepseek-cache-optimizer` in 2.0.0. |
 | Status key | `pi-cache-stats` | Passed to `ctx.ui.setStatus(STATUS_KEY, ...)`. Renamed from `deepseek-cache-stats`. |
-| Stats shard path | `~/.pi/agent/pi-cache-optimizer-stats.d/shards/<instance-uuid>.json` by default | Resolved with Pi core's exported `getAgentDir()`. Each loaded extension instance atomically owns one shard; old shared `pi-cache-optimizer-stats.json` / `deepseek-cache-optimizer-stats.json` files are ignored and deleted. |
+| Stats shard path | `~/.pi/agent/pi-cache-optimizer-stats.d/shards/<instance-uuid>.json` by default | Resolved with Pi core's exported `getAgentDir()`. Each loaded extension instance atomically owns one active daily shard and closes/rotates its UUID at local-day rollover; old shared `pi-cache-optimizer-stats.json` / `deepseek-cache-optimizer-stats.json` files are ignored and deleted. |
 | Footer config path | `~/.pi/agent/pi-cache-optimizer-config.json` by default | Stores only versioned `footerMode` command configuration. Uses the same Pi agent-dir resolution and is separate from numeric stats persistence. |
 | Models JSON path | `~/.pi/agent/models.json` by default | Reference path for compat warnings/fix; display helper shows `%USERPROFILE%\.pi\agent\models.json` on Windows unless a custom agent dir env override is active. |
 
@@ -226,7 +226,7 @@ core's own cache transport.
   persistently listed in the extension-owned config as
   `promptCacheKey.omit`; this removes both request-key spellings, including a
   key already supplied by Pi. Do not add `supportsPromptCacheKey` to Pi's
-  `models.json`, because Pi 1.0.1 does not define that compat field.
+  `models.json`, because Pi 1.0.2 does not define that compat field.
 * All `before_agent_start` prompt mutations (session-overview churn strip,
   skill compression) can be disabled persistently with:
   `PI_CACHE_OPTIMIZER_NO_PROMPT_REWRITE=1` (truthy: `1`, `true`, `yes`, `on`).
@@ -398,7 +398,9 @@ pi-cache-optimizer-stats.d/
 ```
 
 Each loaded extension factory instance creates a random UUID and is the only writer
-of that UUID-named shard. A writer MUST NOT edit another instance's shard. Every
+of that UUID-named shard. At local-day rollover it closes the old daily shard and
+creates a fresh UUID; it MUST NOT overwrite yesterday's counters. A writer MUST
+NOT edit another instance's shard. Every
 shard/epoch update uses a unique temp file followed by atomic rename. This removes
 the shared-v6 lost-update race between parent, child, parallel, and independently
 running Pi processes.
@@ -458,9 +460,9 @@ Precedence is persistent command configuration, then
 
 | Mode | Source |
 |---|---|
-| `session` (default) | Current-day shards with the current session hash and exact model key. `/reload` creates a new instance shard but remains in the same session scope. |
+| `session` (default) | All retained shards with the current session hash and exact model key, across local days. `/reload` creates a new instance shard but remains in the same session scope. |
 | `total` | All valid current-day local shards for the exact model key, including observable child Pi agents and other Pi sessions. |
-| `process` | Current extension instance's in-memory/shard counters only; restart or `/reload` begins at zero. |
+| `process` | Current extension instance's current-day counters only; midnight, restart or `/reload` begins at zero. |
 
 The footer shows only the active/effective model. A selected matching model with no
 data shows `0/0`; unsupported models clear the footer. Router restore uses the most
@@ -513,13 +515,19 @@ This contract applies whenever multiple Pi processes or in-process extension ins
 
 ```ts
 readValidStatsShardsV7(directory?: string): Promise<PersistedStatsShardV7[]>;
-aggregateStatsShardsV7(shards: PersistedStatsShardV7[], day?: string): Promise<ShardAggregate>;
+aggregateStatsShardsV7(shards: PersistedStatsShardV7[], day?: string | null): Promise<ShardAggregate>;
 writeStatsShardV7(path: string, shard: PersistedStatsShardV7): Promise<void>;
 ```
 
 #### 3. Contracts
 
 * Each instance writes only its UUID shard through unique-temp + atomic rename.
+* Omitted/undefined aggregate day selects today; explicit `null` selects all retained
+  days. Session footer data uses the latter independently of the configured mode;
+  total/process and stats commands stay daily. Never use undefined as an all-days sentinel.
+* Rollover closes yesterday using its captured day/path, then rotates the UUID and
+  clears daily process counters. Queued writes capture both snapshot and path.
+  Failed archives warn and retain the old snapshot in memory until reload.
 * `session`, `total`, and `process` use explicit session/model/day/epoch scopes.
 * Parent-child relationships are never inferred from PID, PPID, environment variables, or adapter labels.
 * Old v6 files are deleted/ignored, not imported; reset epochs are exact-model or global local-stat views.
@@ -534,6 +542,8 @@ writeStatsShardV7(path: string, shard: PersistedStatsShardV7): Promise<void>;
 | Missed `fs.watch` event | Keep persisted data; refresh on lifecycle or explicit command. |
 | Old active shard with live PID | Retain conservatively during cleanup. |
 | Epoch mismatch | Ignore stale data; the writer adopts current epochs before its next usage. |
+| Midnight or footer mode switch | Session footer keeps retained history; daily totals/process never receive yesterday's counters. |
+| Day-close write failure | Warn and retain old counters in memory; do not throw from hooks. |
 
 #### 5. Good / Base / Bad Cases
 
@@ -545,6 +555,9 @@ writeStatsShardV7(path: string, shard: PersistedStatsShardV7): Promise<void>;
 #### 6. Tests Required
 
 Assert shard isolation, exact model aggregation, session/total/process scopes, epoch invalidation, old-file deletion, malformed/symlink safety, current-day retention, cleanup lease behavior, lifecycle refresh, and detailed stats output.
+`tests/deep-review-regressions.test.ts` additionally covers midnight from every
+footer mode, mode-switch preservation, reload, idle shutdown, session isolation,
+reset across historical days, and failed archive in-memory fallback.
 
 #### 7. Wrong vs Correct
 
@@ -572,8 +585,10 @@ await writeStatsShardV7(instanceShardPath, currentInstanceShard);
 * There is no permanent polling interval. A missed watch event may delay an idle
   footer update, but lifecycle or explicit-command refresh restores authoritative
   shard totals.
-* Local-day rollover clears the current instance's stale counters. Aggregation ignores
-  every shard whose top-level or stats day is not the current local day.
+* Local-day rollover archives the current daily shard and clears daily process
+  counters independently of footer mode. Daily aggregation ignores shards whose
+  top-level or stats day is not today; session footer aggregation includes all
+  retained days while still enforcing reset epochs and exact session/model identity.
 
 ### Cleanup
 
@@ -581,11 +596,11 @@ Maintenance runs best-effort under an atomic `mkdir` cleanup lease and at most o
 per six hours. A lease older than one hour is recoverable.
 
 * Keep every current-day shard, including `closed` shards and shards whose PID exited.
-* Delete eligible non-current-day shards after 48 hours. If an old shard is marked
+* Delete eligible non-current-day shards after two months. If an old shard is marked
   active and its PID is still alive, conservatively retain it.
 * Delete extension-owned temp files after 24 hours.
 * Ignore malformed shards during aggregation. JSON syntax failures and schema-invalid
-  shards both expire by `lstat().mtimeMs` after 48 hours; an unreadable file is
+  shards both expire by `lstat().mtimeMs` after two months; an unreadable file is
   retained. Parsing failures MUST NOT bypass retention cleanup.
 * Operate only on direct children with recognized extension filenames, require regular
   files from `lstat`, and never follow symlinks.
@@ -1124,7 +1139,7 @@ The extension registers a Pi command `/cache-optimizer` with runtime, diagnostic
 configuration, repair, rollback, and reset subcommands. It MUST register Pi's native
 `getArgumentCompletions(argumentPrefix)` callback rather than a custom editor or
 autocomplete provider. TypeScript validation consumes the installed official Pi
-1.0.1 declarations directly; a complete local ambient redeclaration is forbidden
+1.0.2 declarations directly; a complete local ambient redeclaration is forbidden
 because it can hide upstream API drift. Pi 1.0's expanded event/context surface
 is compatible with the subset used here. The callback completes the supported top-level
 subcommands (`enable`, `disable`, `doctor`, `stats`, `config`, `compat`, `reset`,

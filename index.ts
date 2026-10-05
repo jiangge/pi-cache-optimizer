@@ -443,9 +443,13 @@ export default function (pi: ExtensionAPI) {
   let shardRefreshTimer: ReturnType<typeof setTimeout> | null = null;
   let shardWatcher: ReturnType<typeof watch> | undefined;
   const enqueuePersist = createSerializedAsyncRunner();
-  const instanceId = randomUUID();
+  let instanceId = randomUUID();
   const instanceStartedAt = Date.now();
-  const instanceShardPath = join(SHARD_FILES_DIR, `${instanceId}.json`);
+  let instanceShardPath = join(SHARD_FILES_DIR, `${instanceId}.json`);
+  let shardDay = currentLocalDay();
+  let rolloverPromise: Promise<void> | undefined;
+  // Failed day-close writes remain visible in memory until persisted or reload.
+  const retiredShards = new Map<string, PersistedStatsShardV7>();
   const modelApiByKey = new Map<string, string>();
   const modelNameByKey = new Map<string, string>();
   const modelEpochByKey = new Map<string, string>();
@@ -607,9 +611,14 @@ export default function (pi: ExtensionAPI) {
 
   async function refreshShardAggregate(): Promise<ShardAggregate> {
     const persistedShards = await readValidStatsShardsV7();
+    for (const shard of persistedShards) retiredShards.delete(shard.instanceId);
     const shards = persistedShards.filter((shard) => shard.instanceId !== instanceId);
+    shards.push(...retiredShards.values());
     if (currentSessionHashSet) shards.push(buildCurrentStatsShard());
+    // Keep lifetime session footer data separate from daily totals/commands.
+    // null explicitly means all retained days; undefined invokes the default day.
     const aggregate = await aggregateStatsShardsV7(shards);
+    const sessionAggregate = await aggregateStatsShardsV7(shards, null);
 
     // A reset from another process can advance epochs while this instance is
     // idle. Adopt those epochs during every aggregate refresh, not only when a
@@ -636,24 +645,17 @@ export default function (pi: ExtensionAPI) {
     }
 
     cacheStatsByModel = {};
-    for (const [sessionHash, models] of Object.entries(aggregate.bySession)) {
+    for (const [sessionHash, models] of Object.entries(sessionAggregate.bySession)) {
       for (const [key, stats] of Object.entries(models)) {
         cacheStatsByModel[`${sessionHash}:${key}`] = stats;
       }
     }
     cacheStatsTotalsByModel = aggregate.totalsByModel;
     if (currentSessionHashSet) {
-      lastActualRoutedModel = aggregate.lastRoutedModelBySession[currentSessionHash];
+      lastActualRoutedModel = sessionAggregate.lastRoutedModelBySession[currentSessionHash];
     }
     lastStatusText = undefined;
     return aggregate;
-  }
-
-  async function ensureCurrentEpochs(): Promise<void> {
-    currentGlobalEpoch = await readGlobalStatsEpoch();
-    for (const key of Object.keys(cacheStatsProcessByModel)) {
-      modelEpochByKey.set(key, await readModelStatsEpoch(key));
-    }
   }
 
   function buildCurrentStatsShard(state: "active" | "closed" = "active"): PersistedStatsShardV7 {
@@ -683,7 +685,7 @@ export default function (pi: ExtensionAPI) {
         updatedAt: now,
         ...(state === "closed" ? { closedAt: now } : {}),
       },
-      day: currentLocalDay(),
+      day: shardDay,
       globalEpoch: currentGlobalEpoch,
       models,
       ...(lastActualRoutedModel ? { lastRoutedModel: { ...lastActualRoutedModel } } : {}),
@@ -780,9 +782,10 @@ export default function (pi: ExtensionAPI) {
 
   function persistCacheStats(ctx?: ExtensionContext, lifecycleState: "active" | "closed" = "active"): Promise<void> {
     const shard = buildCurrentStatsShard(lifecycleState);
+    const path = instanceShardPath;
     return enqueuePersist(async () => {
       try {
-        await writeStatsShardV7(instanceShardPath, shard);
+        await writeStatsShardV7(path, shard);
       } catch (error) {
         console.warn(`${LOG_PREFIX}: failed to persist cache stats shard`, error);
         if (!persistenceWarningShown) {
@@ -810,6 +813,7 @@ export default function (pi: ExtensionAPI) {
       clearTimeout(persistTimer);
       persistTimer = null;
     }
+    await rollOverStatsIfNeeded(ctx);
     // Adopt resets performed by another Pi process before capturing the shard
     // snapshot. Otherwise shutdown/command flush could rewrite stale local
     // counters under an old epoch even though aggregation already hid them.
@@ -819,27 +823,31 @@ export default function (pi: ExtensionAPI) {
   }
 
   async function rollOverStatsIfNeeded(ctx?: ExtensionContext): Promise<void> {
+    if (rolloverPromise) return rolloverPromise;
     const day = currentLocalDay();
-    let changed = false;
-    for (const key of Object.keys(cacheStatsProcessByModel)) {
-      if (cacheStatsProcessByModel[key]?.day !== day) {
-        cacheStatsProcessByModel[key] = emptyCacheStats(day);
-        changed = true;
+    if (shardDay === day) return;
+    rolloverPromise = (async () => {
+      if (persistTimer !== null) {
+        clearTimeout(persistTimer);
+        persistTimer = null;
       }
-    }
-    for (const id of CACHE_PROVIDER_IDS) {
-      const stats = cacheStatsLegacyFamily[id];
-      if (stats && stats.day !== day) {
-        cacheStatsLegacyFamily[id] = emptyCacheStats(day);
-        changed = true;
-      }
-    }
-    if (changed) {
+      // Preserve yesterday under its original UUID/day before clearing daily
+      // counters. Each day owns a new shard so total never includes yesterday.
+      await refreshShardAggregate();
+      await persistCacheStats(ctx, "closed");
+      retiredShards.set(instanceId, buildCurrentStatsShard("closed"));
+      instanceId = randomUUID();
+      instanceShardPath = join(SHARD_FILES_DIR, `${instanceId}.json`);
+      shardDay = day;
       shardCreatedAt = Date.now();
+      cacheStatsProcessByModel = {};
+      cacheStatsLegacyFamily = emptyAllCacheStats();
       lastStatusText = undefined;
-      await ensureCurrentEpochs();
-      await flushPersistCacheStats(ctx);
-    }
+      await persistCacheStats(ctx);
+      await refreshShardAggregate();
+    })();
+    try { await rolloverPromise; }
+    finally { rolloverPromise = undefined; }
   }
 
   async function restoreCacheStats(reason: string, ctx: ExtensionContext): Promise<void> {

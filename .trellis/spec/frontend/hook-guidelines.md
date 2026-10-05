@@ -26,7 +26,7 @@ Primary hooks/events:
 
 ### `session_start`
 
-- Delete/ignore obsolete v1-v6 single-file stats and load the v7 shard aggregate for the current local day.
+- Delete/ignore obsolete v1-v6 single-file stats and load daily v7 totals plus all-retained-day session footer aggregates.
 - Create an empty instance-owned shard; on reload, older shards with the same session hash preserve the session scope without copying counters into the new shard.
 - In TUI mode, install an unreferenced `fs.watch` listener for shard changes. Do not install a permanent polling interval.
 - Run best-effort expired-shard maintenance under the cross-process cleanup lease.
@@ -34,7 +34,7 @@ Primary hooks/events:
 
 ### `session_shutdown`
 
-- Cancel any pending debounced stats timer and await a final serialized `closed` shard write before Pi tears down the runtime.
+- Cancel any pending debounced stats timer, archive/rotate the daily shard if the local date changed, and await a final serialized `closed` shard write before Pi tears down the runtime.
 - Close the shard watcher and pending refresh timer, but retain the current-day shard so the day's parent/child totals remain available.
 - Uninstall the extension-owned `Symbol.for("pi.cache.hints.v1")` service without deleting a newer replacement owner.
 - Clear extension-owned legacy cache-key globals and transient hint state.

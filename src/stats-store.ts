@@ -26,7 +26,9 @@ export const SHARD_CLEANUP_LOCK_PATH = join(SHARD_MAINTENANCE_DIR, "cleanup.lock
 
 export const SHARD_CLEANUP_MARKER_PATH = join(SHARD_MAINTENANCE_DIR, "last-cleanup");
 
-export const SHARD_RETENTION_MS = 48 * 60 * 60 * 1000;
+// Retain closed and inactive shards for roughly two months so session-scoped
+// statistics can survive long-running conversations without meaningful disk use.
+export const SHARD_RETENTION_MS = 60 * 24 * 60 * 60 * 1000;
 
 export const SHARD_TEMP_RETENTION_MS = 24 * 60 * 60 * 1000;
 
@@ -185,6 +187,15 @@ export function mergeCacheStatsForTotal(existing: CacheStats | undefined, incomi
   if (incoming.day > existing.day) return cloneCacheStats(incoming);
   if (incoming.day < existing.day) return existing;
   addCacheStatsTotals(existing, incoming);
+  return existing;
+}
+
+/** Merge counters while retaining historical days for an explicitly session-scoped view. */
+export function mergeStatsAcrossDays(existing: CacheStats | undefined, incoming: CacheStats, day: string | null): CacheStats {
+  if (day !== null) return mergeCacheStatsForTotal(existing, incoming);
+  if (!existing) return cloneCacheStats(incoming);
+  addCacheStatsTotals(existing, incoming);
+  existing.day = incoming.day > existing.day ? incoming.day : existing.day;
   return existing;
 }
 
@@ -352,7 +363,7 @@ export async function readValidStatsShardsV7(directory: string = SHARD_FILES_DIR
 
 export async function aggregateStatsShardsV7(
   shards: PersistedStatsShardV7[],
-  day: string = currentLocalDay(),
+  day: string | null = currentLocalDay(),
 ): Promise<ShardAggregate> {
   const globalEpoch = await readGlobalStatsEpoch();
   const modelEpochs = new Map<string, string>();
@@ -371,7 +382,7 @@ export async function aggregateStatsShardsV7(
   const modelSessions = new Map<string, Set<string>>();
 
   for (const shard of shards) {
-    if (shard.day !== day || shard.globalEpoch !== globalEpoch) continue;
+    if ((day !== null && shard.day !== day) || shard.globalEpoch !== globalEpoch) continue;
     let contributed = false;
     if (shard.lastRoutedModel && (routedUpdatedAt.get(shard.sessionHash) ?? -1) < shard.lifecycle.updatedAt) {
       routedUpdatedAt.set(shard.sessionHash, shard.lifecycle.updatedAt);
@@ -383,11 +394,11 @@ export async function aggregateStatsShardsV7(
         epoch = await readModelStatsEpoch(key);
         modelEpochs.set(key, epoch);
       }
-      if (entry.modelEpoch !== epoch || entry.stats.day !== day) continue;
+      if (entry.modelEpoch !== epoch || (day !== null && entry.stats.day !== day)) continue;
       contributed = true;
       const sessionModels = result.bySession[shard.sessionHash] ??= {};
-      sessionModels[key] = mergeCacheStatsForTotal(sessionModels[key], entry.stats);
-      result.totalsByModel[key] = mergeCacheStatsForTotal(result.totalsByModel[key], entry.stats);
+      sessionModels[key] = mergeStatsAcrossDays(sessionModels[key], entry.stats, day);
+      result.totalsByModel[key] = mergeStatsAcrossDays(result.totalsByModel[key], entry.stats, day);
       result.instancesByModel[key] = (result.instancesByModel[key] ?? 0) + 1;
       if ((modelRefUpdatedAt.get(key) ?? -1) < shard.lifecycle.updatedAt) {
         modelRefUpdatedAt.set(key, shard.lifecycle.updatedAt);
