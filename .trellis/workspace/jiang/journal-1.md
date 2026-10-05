@@ -784,3 +784,37 @@ Completed and merged the 2.8.9 prompt-cache-key security review: fixed five P1/P
 ### Next Steps
 
 - None - task complete
+
+
+## Session 15: Upgrade project Pi baseline to 1.0.3 and review
+
+**Date**: 2026-10-05
+**Task**: Upgrade project Pi baseline to 1.0.3 and review
+**Branch**: `chore/upgrade-project-pi-1.0.1`
+
+### Summary
+
+Upgraded the project Pi dev baseline from 1.0.2 to npm latest 1.0.3 (pi-coding-agent ^1.0.3, pi-server 1.0.3; peer range unchanged at >=0.82.0, package version 2.8.19 untouched). Diffed installed 1.0.2 against the 1.0.3 tarball: root index.d.ts, the five contract-bound internals, and the extension event declarations/types/runner/loader are byte-identical; bundle compat key union unchanged (supportsPromptCacheKey still absent); Azure provider rename keeps its azure-openai-responses transport id and Pi still owns prompt_cache_key for Responses transports, so no source change was required. Synced README/README.zh-CN/spec version references and appended evidence to the task cross-day-review. Ran clean npm ci (0 vulnerabilities) plus the full quality gate: typecheck, 178/178 tests, check:diff, check:modules (26 modules, no cycles), check:pack (31 files), and a real-host load smoke via Pi 1.0.3 discoverAndLoadExtensions (0 errors, 10 handlers + cache-optimizer command). Post-commit review corrected two unverified claims in the task record (event shapes now directly verified; runtime-Foundry inference removed) and recorded the clean-install evidence. Also interpreted Pi issue #10318: maintainer davidbrai suggests passing the physical model via an existing event after virtual-model resolution instead of a new hook; no extension action needed now. Archived task 10-03-upgrade-project-pi-1-0-1.
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `b28674d` | (see git log) |
+| `966a866` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
