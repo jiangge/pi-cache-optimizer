@@ -72,8 +72,13 @@ package version is unchanged.
 - Contract-bound internals byte-identical: `dist/core/model-config.js`,
   `dist/extensions/llama/provider.js`, `dist/core/skills.js`,
   `dist/core/system-prompt.js`, `dist/core/model-runtime.js`.
-- ExtensionAPI/hooks unchanged (root d.ts identical); provider hook event
-  shapes untouched.
+- ExtensionAPI/hooks unchanged: provider hook event shapes are untouched.
+  (Originally inferred from the root d.ts alone; the post-commit review
+  completed the evidence — `dist/core/extensions/types.d.ts` declaring the
+  `BeforeProviderRequestEvent`/`BeforeProviderHeadersEvent`/
+  `AfterProviderResponseEvent`/`MessageEndEvent`/`ToolExecutionEndEvent`
+  shapes, plus `runner.js` and `loader.js`, are byte-identical between 1.0.2
+  and 1.0.3.)
 - Compat key union across the bundle: 34 = 34, none added or removed;
   `supportsPromptCacheKey` still absent (grep clean in 1.0.3 dist).
 - Azure provider renamed `azure-openai-responses` → `azure` (1.0.3 breaking
@@ -82,8 +87,12 @@ package version is unchanged.
   (Responses-family bypass, non-applicable proxy diagnostics) remain valid.
   The azure Responses transport still sets `prompt_cache_key` from the Pi
   session id (`clampOpenAIPromptCacheKey(options?.sessionId)`) — Pi still owns
-  the key for Responses transports. Foundry Chat Completions models resolve at
-  runtime, not in the static catalog; generic extension rules apply. The
+  the key for Responses transports. No azure Foundry/Chat-Completions model
+  exists in the 1.0.3 static catalog; how Foundry deployments surface was NOT
+  verified in this pass, and the original "resolves at runtime" wording was
+  removed during post-commit review as an unverified inference. The
+  extension's rules are provider-id-agnostic and API-type-driven, so no code
+  change is required regardless of how Foundry models appear. The
   extension never matches on provider id, so the rename needs no code change.
   User-side effect only: stats buckets keyed `azure-openai-responses/…`
   become historical after Pi's rename.
@@ -112,7 +121,15 @@ package version is unchanged.
 
 ### Verification (on installed 1.0.3)
 
-- Clean-scope check: lockfile diff contains only `@earendil-works/*` moves.
+- Clean-scope check: lockfile diff contains only `@earendil-works/*` moves
+  (structural comparison: 11 changed entries — root devDependencies plus the
+  10 Pi packages; zero non-Pi entries).
+- Clean `npm ci` from the committed lockfile: exits 0, 0 vulnerabilities
+  (run during post-commit review; the original pass installed without the
+  clean step).
+- Full `npm run check` re-run after the clean install: typecheck, 178/178
+  tests, check:diff, check:modules (26 modules, no cycles), check:pack
+  (31 files) all pass.
 - `npm run typecheck`: pass. `npm test`: 178 passed / 0 failed.
 - `npm run check:diff`, `check:modules` (26 modules, no cycles),
   `check:pack` (31 files): pass.
@@ -122,3 +139,15 @@ package version is unchanged.
   `before_agent_start`, `before_provider_headers`, `before_provider_request`,
   `after_provider_response`, `message_end`) and the `cache-optimizer` command.
 - No release in this pass (dev-only bump + docs); 2.8.19 remains current.
+
+### Post-commit review corrections
+
+- "Provider hook event shapes untouched" was originally based on the root
+  d.ts only; review verified the event declarations and loader/runner are
+  byte-identical and folded the evidence into the assessment above.
+- The "Foundry Chat Completions models resolve at runtime" assertion was
+  removed as an unverified inference; only the static-catalog fact remains,
+  explicitly marked unverified where relevant.
+- Clean `npm ci` plus a full quality-gate re-run were executed during review
+  and recorded under Verification. Runtime source required no changes; no
+  new regression test was warranted because no extension surface moved.
