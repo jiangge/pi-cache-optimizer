@@ -22,7 +22,7 @@ Upgrade this repository's reproducible local Pi development baseline from 0.87.1
 - [x] Peer range remains `>=0.82.0`; new host features degrade to the previous behavior on older hosts.
 - [x] The untouched built-in `llama.cpp` model is recognized on both the 0.82.x and 0.83+ provider shapes.
 - [x] Native virtual model behavior is covered by permanent tests and verified against a real Pi 0.99.2 host.
-- [ ] Version 2.8.12 is published to npm.
+- [x] Version 2.8.12 is published to npm (confirmed during archival with `npm view pi-cache-optimizer@2.8.12 version --prefer-online`).
 
 ## Compatibility Assessment
 

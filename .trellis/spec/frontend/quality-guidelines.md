@@ -74,7 +74,7 @@ Add or update tests/verification scripts when changing:
 - adapter detection
 - usage normalization
 - persisted stats schema/migration
-- prompt rewrite/reorder behavior
+- prompt rewrite behavior (in-place edits only; never reorder Pi's sections)
 - JSONC compat fix editing
 - OpenAI-compatible `prompt_cache_key` fallback
 - routing-provider registry/cache-hints protocol
@@ -111,7 +111,7 @@ Tests should assert external behavior and protocol behavior, not private impleme
 - Persisted state must contain only counters and local dates; never API keys, prompts, messages, headers, or outputs.
 - Current state shape is versioned and session-scoped; normal updates use `${sessionHash}:${provider}/${id}` in memory and `sessions[sessionHash][provider/model]` on disk.
 - Adapter selection must use only model id/name plus assistant message `model`/`name`; never provider id, API type, base URL, thinking format, or compat flags.
-- Stable-prefix optimization may move stable instruction files and compressed skill listings ahead of dynamic context; it must not persist or print their contents.
+- Prompt rewrites edit text in place (churn strip, skill-list compression); they must not persist or print prompt contents.
 - OpenAI-compatible payloads may receive a top-level `prompt_cache_key` from `ctx.sessionManager.getSessionId()` when the active/effective model uses `openai-completions`/`openai-responses`, no effective key exists, and opt-out env vars are not set.
 - Router/provider live registry data may be used for pre-message UX, but `message_end` stats identity is authoritative from assistant message metadata.
 

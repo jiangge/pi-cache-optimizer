@@ -33,10 +33,9 @@ Pi extension for improving provider-side KV / prompt cache hit rates. It keeps s
 
 ## What it does
 
-- Reorders uniquely identifiable stable system-prompt content before dynamic context. If the same candidate appears more than once (for example, quoted inside dynamic context), it is left unchanged to avoid removing the wrong occurrence.
-- Compresses Pi skill listings and strips session-overview churn.
+- Compresses Pi's skill list into a grouped Markdown list that keeps every skill name and description (only the XML envelope and repeated paths are removed), and strips session-overview churn. Both are in-place edits that never move content between Pi's prompt sections, and they also apply to OpenAI Responses/Codex models. (Earlier versions also lifted "stable" content to the front of the prompt; Pi >= 0.86 already orders its sections from stable to variable, and measured prefix stability was identical, so that step was removed.)
 - Requests long cache retention when Pi/provider compat supports it.
-- Adds a session-id `prompt_cache_key` fallback for `openai-completions` / `openai-responses` payloads when no effective key exists, including Pi's built-in `llama.cpp` provider as Pi 0.82+ core does.
+- Adds a conservative session-id `prompt_cache_key` fallback for `openai-completions` proxy payloads when no effective key exists. Pi 1.0+ owns this field for Responses/Codex transports.
 - Warns once for third-party OpenAI-compatible proxies missing cache/session-affinity compat flags.
 - Detects adaptive-thinking compat for Claude (opus-4.6+ including Opus 5, sonnet-4.6+ including Sonnet 5, fable-5+) and Kimi Coding K3 / `kimi-for-coding` custom channels.
 - Stores cache statistics in per-extension-instance atomic shards, so parent sessions, child Pi agents, and parallel Pi processes cannot overwrite one another.
@@ -63,7 +62,7 @@ Run `/reload` in Pi after install/update/remove so extension hooks refresh.
 
 On Pi 0.79.7 and newer, `pi update` updates Pi itself only. To update installed Pi packages such as this extension, run `pi update --extensions` (packages only) or `pi update --all` (Pi + packages).
 
-This extension requires Pi 0.82+ and is validated against Pi 0.99.2. It uses the official Pi package types directly for type-checking, along with extension hooks, `getAgentDir()`, and prompt options shared by those versions; it does not depend on Pi 0.83+ APIs such as `ctx.scopedModels` or the bundled TypeBox 1.3 aliases. Native virtual model support and codemode nested-call coalescing activate only on Pi 0.99+ hosts that produce them; older hosts keep the previous behavior.
+This extension requires Pi 0.82+ and is validated against Pi 1.0.2. It uses the official Pi package types directly for type-checking, along with extension hooks, `getAgentDir()`, and prompt options shared by those versions; it does not depend on Pi 0.83+ APIs such as `ctx.scopedModels` or the bundled TypeBox 1.3 aliases. Native virtual model support and codemode nested-call coalescing activate only on Pi 0.99+ hosts that produce them; older hosts keep the previous behavior. The local development baseline uses Node.js 22.19.0 or newer, matching Pi 1.0.2's engine requirement.
 
 ## Commands
 
@@ -72,7 +71,7 @@ This extension requires Pi 0.82+ and is validated against Pi 0.99.2. It uses the
 | `/cache-optimizer` | Interactive menu when UI supports it; otherwise prints help and current state. |
 | `/cache-optimizer enable` | Enables runtime optimizations for the current Pi process, resets local footer stats, and starts a fresh “enabled” measurement. |
 | `/cache-optimizer disable` | Disables optimization for the current Pi process, resets local footer stats, and keeps collecting footer stats in disabled comparison mode. Run `/reload` or restart Pi to return to startup behavior. |
-| `/cache-optimizer doctor` | Shows active model/provider/API/base URL/compat plus low-hit diagnosis. |
+| `/cache-optimizer doctor` | Shows active model/provider/API/base URL/compat, whether the skill list was compressed on the last prompt (and why not, e.g. an unrecognised Pi format), plus low-hit diagnosis. |
 | `/cache-optimizer compat` | Shows copyable compat advice for the active model, if applicable. |
 | `/cache-optimizer stats` | Shows detailed counters for every cache-adapter-matched model used by the current conversation session today. |
 | `/cache-optimizer stats all` | Shows detailed per-model totals across all valid local sessions/shards today, including request and token counts. |
@@ -87,6 +86,8 @@ This extension requires Pi 0.82+ and is validated against Pi 0.99.2. It uses the
 
 The interactive `/cache-optimizer` menu includes `Footer mode`, where you can choose `total`, `session`, or `process`. `enable` / `disable` are current-process switches. For a persistent opt-out, use environment variables below.
 
+Doctor displays endpoint URLs without username/password, query parameters, or fragments. Invalid URLs are shown as unavailable; the actual transport URL is never changed.
+
 ## Persistent opt-out
 
 | Env var | Effect |
@@ -97,7 +98,7 @@ The interactive `/cache-optimizer` menu includes `Footer mode`, where you can ch
 | `PI_CACHE_OPTIMIZER_NO_OPENAI_CACHE_KEY=1` | Disable the OpenAI-compatible `prompt_cache_key` fallback. Preferred explicit opt-out. |
 | `PI_CACHE_OPTIMIZER_OPENAI_CACHE_KEY=0` | Disable the same fallback via the legacy inverse switch. Values `0`, `false`, `no`, or `off` disable it. |
 
-Persistent feature settings are managed under the Pi agent directory by the native command interface. They take precedence over their corresponding environment variables:
+Persistent feature settings are managed under the Pi agent directory by the native command interface. They take precedence over their corresponding environment variables, including both OpenAI cache-key switches above. Runtime `disable` still suppresses optimization regardless of persistent settings:
 
 ```text
 /cache-optimizer config prompt-rewrite on|off
@@ -109,7 +110,9 @@ Persistent feature settings are managed under the Pi agent directory by the nati
 /cache-optimizer config reset
 ```
 
-`config reset` removes persistent feature overrides while preserving the existing footer mode and model-specific prompt-cache-key settings. These commands do not modify shell startup files or `PI_CACHE_RETENTION`; `enable` and `disable` remain current-process runtime switches.
+`openai-codex-responses` keeps Pi's native skill index even when skill compression is enabled. Real task-level benchmarks with `openai-codex/gpt-6-luna` showed that the shorter Markdown skill index could increase the model's tool-call trajectory and total task cost; Codex therefore keeps the native Pi XML skill list while still benefiting from the optimizer's other cache/runtime features.
+
+`config reset` reads the latest disk configuration under the shared transaction lock and removes only persistent feature overrides, preserving the latest footer mode, model-specific prompt-cache-key settings, and file permissions. Invalid JSON/schema, symlinks, non-regular targets, and concurrent manual changes are refused rather than overwritten. These commands do not modify shell startup files or `PI_CACHE_RETENTION`; `enable` and `disable` remain current-process runtime switches.
 
 ## Opt-in deterministic tool ordering
 
@@ -129,15 +132,17 @@ The fixture verifier reports numeric tool-order changes and confirms cache-marke
 
 ## Footer cache stats mode
 
-Current versions store stats under `pi-cache-optimizer-stats.d/shards/` in Pi's agent directory. Each loaded extension instance owns one UUID-named shard and writes it through temp-file + atomic rename. This prevents parent/child/parallel Pi processes from overwriting one another. Upgrading from the old v6 single-file format deletes the old local stats files and starts footer counters from zero; upstream provider caches are not affected.
+Current versions store stats under `pi-cache-optimizer-stats.d/shards/` in Pi's agent directory. Each loaded extension instance owns one active UUID-named daily shard and writes it through temp-file + atomic rename; at local midnight it closes the old shard and starts a new UUID without erasing session history. This prevents parent/child/parallel Pi processes from overwriting one another. Upgrading from the old v6 single-file format deletes the old local stats files and starts footer counters from zero; upstream provider caches are not affected.
+
+Response stats stay with the dispatched catalog/request-local model even if you switch to another model on the same provider while waiting. Legacy response aliases use the request snapshot, not the new selection; the footer continues showing the selected direct model. Old corrupt JSON/schema shards expire by file modification time after two months; young corrupt files, valid current-day shards, live old instances, and symlink targets remain protected.
 
 The footer defaults to `session`, which reflects the current Pi conversation rather than another parallel Pi terminal using the same provider/model. Use either the command or environment variable to select the scope:
 
 | Value | Effect |
 |---|---|
-| `session` (default) | Aggregate today's shards carrying the current hashed Pi conversation session id and exact provider/model. A reload creates a new instance shard but remains in the same session scope. |
-| `total` | Aggregate today's valid local shards for the exact provider/model across sessions, including child Pi agents that load this extension and share the same agent directory. |
-| `process` | Show only counters collected by the current extension instance. It starts at `0/0` after Pi restart or extension reload. |
+| `session` (default) | Aggregate all retained shards carrying the current hashed Pi conversation session id and exact provider/model, including across local-day boundaries. A reload creates a new instance shard but remains in the same lifetime session scope. |
+| `total` | Aggregate the current local day's valid shards for the exact provider/model across sessions, including child Pi agents that load this extension and share the same agent directory. |
+| `process` | Show only today's counters collected by the current extension instance. It starts at `0/0` at local midnight, after Pi restart, or extension reload. |
 
 Persistent command configuration takes precedence over the environment variable:
 
@@ -151,7 +156,7 @@ The explicit setting is stored in `pi-cache-optimizer-config.json` under Pi's ag
 
 ## Per-model `prompt_cache_key` opt-out
 
-Some OpenAI-compatible endpoints reject `prompt_cache_key` with HTTP 400 even though the same field is valid for other providers. Pi 0.99.2 has no native `supportsPromptCacheKey` compat field; do **not** add that unknown field to `models.json`. `supportsLongCacheRetention` is not an equivalent switch and should not be used for this purpose.
+Some OpenAI-compatible Completions endpoints reject `prompt_cache_key` with HTTP 400 even though the same field is valid for other providers. Pi 1.0.2 owns the key for Responses/Codex transports; this extension's key opt-out and fallback apply only to `openai-completions`. Pi 1.0.2 has no native `supportsPromptCacheKey` compat field; do **not** add that unknown field to `models.json`. `supportsLongCacheRetention` is not an equivalent switch and should not be used for this purpose.
 
 When the extension observes an explicit field-level `prompt_cache_key` unsupported error for the exact provider/model, ordinary `/cache-optimizer fix` offers a confirmed model-scoped repair. Value-validation failures and conditional restrictions such as “not allowed when temperature is set” do not qualify. If concurrent responses from different models cannot be correlated because Pi provides no request ID, header-only evidence is ignored unless the finalized assistant message supplies exact provider/model identity. If you already know that the endpoint rejects the field, use the explicit command:
 
@@ -165,7 +170,7 @@ The preview explains that the setting is stored in the extension-owned `pi-cache
 
 Third-party `openai-completions` proxies (LiteLLM / OneAPI / NewAPI / OpenRouter-like channels) often route one session across multiple upstream backends. That splits provider-side prompt caches.
 
-Pi 0.84.1 also fixes built-in Fireworks compatibility for models that reject `prompt_cache_retention`; the extension avoids provider-name special cases and resolves exact provider/model compat from `models.json` plus the runtime model. Pi 0.81+ also has a built-in `llama.cpp` provider using an OpenAI-shaped transport. Pi 0.82+ core generates a session `prompt_cache_key` for it when cache retention is enabled, so this extension preserves that key and may add the same conservative fallback when missing. The built-in provider's explicit compat fingerprint is excluded from generic proxy routing/session-affinity advice, but a custom or overridden provider that merely reuses the id `llama.cpp` is treated like any other OpenAI-compatible channel. `prompt_cache_retention` remains subject to the normal safety rule: keep it only for official OpenAI or an explicit effective `supportsLongCacheRetention: true` opt-in in `models.json`; otherwise strip it before sending. Pi 0.99.2 has no native `supportsPromptCacheKey` compat field, so the per-model key opt-out is stored in this extension's `pi-cache-optimizer-config.json` instead of `models.json`. The extension config is independent of Pi's compat precedence and only affects the exact provider/model listed there.
+Pi 0.84.1 also fixes built-in Fireworks compatibility for models that reject `prompt_cache_retention`; the extension avoids provider-name special cases and resolves exact provider/model compat from `models.json` plus the runtime model. Pi 0.81+ also has a built-in `llama.cpp` provider using an OpenAI-shaped transport. The extension keeps its session-id key fallback for third-party `openai-completions` channels, while Pi 1.0+ owns the key for Responses/Codex transports. The built-in provider's explicit compat fingerprint is excluded from generic proxy routing/session-affinity advice, but a custom or overridden provider that merely reuses the id `llama.cpp` is treated like any other OpenAI-compatible channel. `prompt_cache_retention` remains subject to the normal safety rule: keep it only for official OpenAI or an explicit effective `supportsLongCacheRetention: true` opt-in in `models.json`; otherwise strip it before sending. The extension-owned `pi-cache-optimizer-config.json` stores per-model key opt-outs only for `openai-completions`.
 
 For real proxies, start with session affinity:
 
@@ -191,7 +196,7 @@ Notes:
 
 - `sendSessionAffinityHeaders: true` is the safe default when your proxy supports sticky routing.
 - `supportsLongCacheRetention: true` is optional. Add it only when the endpoint explicitly supports OpenAI long prompt cache retention.
-- Do not add `supportsPromptCacheKey` to `models.json`: Pi 0.99.2 does not define that compat field. Use `/cache-optimizer fix prompt-cache-key` to store an exact provider/model omit rule in the extension-owned config; it removes both key spellings, including a key supplied by Pi.
+- Do not add `supportsPromptCacheKey` to `models.json`: Pi 1.0.2 does not define that compat field. Use `/cache-optimizer fix prompt-cache-key` to store an exact provider/model omit rule in the extension-owned config; it removes both key spellings, including a key supplied by Pi.
 - If you see `400 Unsupported parameter: prompt_cache_retention`, remove/avoid `supportsLongCacheRetention` for that channel. Keep `sendSessionAffinityHeaders` if supported. The extension detects the explicit error from response headers or the finalized assistant error message and strips the parameter from subsequent requests in the current process.
 - Use `/cache-optimizer compat` or `/cache-optimizer doctor` to see model-specific advice.
 - DeepSeek model names select the `DS cache` adapter only; they do not prove a reasoning wire protocol. Generic cache/routing advice remains active for absent or non-DeepSeek formats. DeepSeek replay advice is shown only when effective `compat.thinkingFormat: "deepseek"` is explicitly configured; it never treats `thinkingFormat` as a missing fix key.
@@ -359,7 +364,7 @@ Rollback creates a new access-mode-preserving backup and uses atomic replacement
 
 ## Footer stats
 
-Stats are read-only local counters stored as UUID-owned shards under `pi-cache-optimizer-stats.d/shards/` in Pi's agent directory (custom agent dirs use `PI_CODING_AGENT_DIR`). Shards contain only dates, opaque session hashes, exact provider/model counters, reset epochs, and process lifecycle metadata — no API keys, prompts, payloads, headers, responses, or model output. The footer defaults to the current conversation session; `total` aggregates all valid current-day shards for the exact provider/model, and `process` shows only the current extension instance. Footer mode configuration is stored separately in `pi-cache-optimizer-config.json`. Upgrading from the old v6 shared stats files deletes those local counters instead of migrating them.
+Stats are read-only local counters stored as UUID-owned shards under `pi-cache-optimizer-stats.d/shards/` in Pi's agent directory (custom agent dirs use `PI_CODING_AGENT_DIR`). Shards contain only dates, opaque session hashes, exact provider/model counters, reset epochs, and process lifecycle metadata — no API keys, prompts, payloads, headers, responses, or model output. The footer defaults to the current conversation session and retains that session's counters across local-day boundaries; `total` aggregates only current-day shards, and `process` shows only the current extension instance. Footer mode configuration is stored separately in `pi-cache-optimizer-config.json`. Upgrading from the old v6 shared stats files deletes those local counters instead of migrating them.
 
 Pi 0.79+ also includes a built-in footer `CH` marker for the latest prompt cache hit rate. This extension complements that marker with persisted provider/model counters plus proxy compat diagnostics.
 
@@ -382,7 +387,7 @@ Pi 0.99 lets extensions register virtual models with `pi.registerVirtualModel()`
 - Request hooks read the dispatched model id from the provider payload and match it against physical models with configured credentials. The `prompt_cache_key` fallback, `prompt_cache_retention` safety, Anthropic TTL repair, and per-model `prompt_cache_key` omit rules then apply to that physical model. If several credentialed providers share the id and would be treated differently, the extension does not guess; identity-dependent request changes are skipped.
 - Footer stats and `/cache-optimizer doctor`, `compat`, `stats`, `reset`, and `fix` use the physical model that answered last on the current session branch, matching Pi's own routed-model display and context limits. Doctor and compat name both the virtual selection and that physical model.
 - Before Pi routes the first request, the footer stays empty and diagnostics ask you to send a prompt first.
-- Prompt rewriting is skipped for virtual selections by default: Pi picks the physical model after the system prompt is built, and a reordered prompt must not reach a safety-filtered Codex route. `PI_CACHE_OPTIMIZER_VIRTUAL_REWRITE=1` is an explicit opt-in only when the routing registry exposes a complete candidate chain and every candidate is a known non-Responses, non-Codex transport; unknown or incomplete routes remain unchanged.
+- Prompt rewriting is skipped for virtual selections by default: Pi picks the physical model after the system prompt is built, and the rewritten prompt is not sent to a route whose backend is unknown. `PI_CACHE_OPTIMIZER_VIRTUAL_REWRITE=1` is an explicit opt-in only when the routing registry exposes a complete candidate chain and every candidate is a known non-Responses, non-Codex transport; unknown or incomplete routes remain unchanged.
 - The session-affinity header bridge is skipped as well, because Pi builds request headers before the payload exists. Pi still sends the physical model's own configured affinity headers.
 
 ## For router / virtual-channel extension authors
@@ -413,7 +418,7 @@ For seamless final cache-stat attribution, relay the real upstream identity on c
 
 ### Optional: live route registry for pre-response UX
 
-Final message metadata is enough for post-response stats. For pre-response flows — footer display before the first response, `/cache-optimizer doctor`, `/cache-optimizer compat`, `/cache-optimizer reset`, and OpenAI-compatible `prompt_cache_key` fallback — register a live route adapter under `Symbol.for("pi.routing.registry.v1")`.
+Final message metadata is enough for post-response stats. For pre-response flows — footer display before the first response, `/cache-optimizer doctor`, `/cache-optimizer compat`, `/cache-optimizer reset`, and the `openai-completions` `prompt_cache_key` fallback — register a live route adapter under `Symbol.for("pi.routing.registry.v1")`.
 
 Protocol shape:
 
@@ -510,12 +515,11 @@ Then run `/reload` or restart Pi. Optional local state cleanup (if you use `PI_C
 
 Do not delete `models.json` during cleanup; it contains your Pi model/provider configuration and is not owned by this package.
 
-## Verify effect
+## Optional: inspect cache stats
 
-1. Select a model whose provider exposes cache usage.
-2. Send several similar turns in the same Pi session.
-3. Watch the footer or run `/cache-optimizer stats`.
-4. For third-party proxies, also run `/cache-optimizer doctor` and confirm sticky routing / session affinity on the proxy side.
+No validation step is required after installation. If you want to inspect what the provider reports, watch the footer or run `/cache-optimizer stats`. `/cache-optimizer doctor` is available when diagnosing a third-party proxy configuration.
+
+The repository also contains maintainer-only benchmark and A/B research tools under `benchmarks/`. They are not part of the published package and are not required for normal use.
 
 ## License
 

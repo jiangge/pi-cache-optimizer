@@ -83,7 +83,7 @@ normalizeToolsInPayload(payload, api): { payload: unknown; changed: boolean };
 
 | Condition | Behavior |
 |---|---|
-| Gate absent/non-truthy or runtime disabled | Do not reorder; retain the normal request pipeline. |
+| Gate absent/non-truthy or runtime disabled | Do not rewrite or reorder; retain the normal request pipeline. |
 | Unknown API, malformed tool, missing name, unsupported wrapper, tool cache marker, or Anthropic deferred grouping | Return the original payload unchanged. |
 | Google/Vertex payload contains `AbortSignal` | Sort the verified `config.tools` path while retaining the signal by identity. |
 | Verified payload is already sorted or has equal-name ties | Return the original payload and preserve original order. |
@@ -112,10 +112,61 @@ const normalized = normalizeToolsInPayload(providerPayload, api);
 return normalized.changed ? normalized.payload : undefined;
 ```
 
+## Scenario: credential-blind endpoint diagnostics
+
+### 1. Scope / Trigger
+
+Doctor output and request lifecycle snapshots may inspect `model.baseUrl`, which
+can contain embedded credentials even though it is model metadata.
+
+### 2. Signature
+
+```ts
+snapshotBaseUrlForDiagnostics(baseUrl: unknown): string;
+```
+
+### 3. Contracts
+
+Use the shared helper for endpoint display and snapshots. Parse only HTTP(S)
+URLs with a hostname; strip userinfo, query, and fragment. Missing, malformed,
+or opaque endpoints return an empty string, never a best-effort raw fallback.
+Doctor shows `(default)` for missing values and `(unavailable)` for invalid ones.
+Sanitization MUST NOT mutate the transport model or request URL.
+
+### 4. Validation & Error Matrix
+
+| Condition | Behavior |
+|---|---|
+| HTTP(S) URL with userinfo/token query/fragment | Display only sanitized endpoint. |
+| Malformed authority, opaque URL, non-HTTP scheme | Return empty; display unavailable. |
+| Missing endpoint | Display default. |
+
+### 5. Good / Base / Bad Cases
+
+* Good: authenticated endpoint diagnostics retain host/path but no credentials.
+* Base: a normal HTTP(S) endpoint remains useful for diagnosis.
+* Bad: a failed `new URL()` falls back to raw text or regex-based redaction.
+
+### 6. Tests Required
+
+`tests/deep-review-regressions.test.ts` exercises actual doctor commands with
+fake credentials, encoded userinfo, query/fragment, malformed/opaque URLs,
+safe/missing endpoints, and unchanged original transport URLs.
+
+### 7. Wrong vs Correct
+
+```ts
+// Wrong: baseUrl itself may contain secrets.
+lines.push(`Base URL: ${model.baseUrl}`);
+// Correct: never display raw input on parse failure.
+const endpoint = snapshotBaseUrlForDiagnostics(model.baseUrl);
+```
+
 ## Review checklist
 
 - [ ] Tool ordering is off by default and suppressed by runtime disable.
 - [ ] Sorting is allowlisted, immutable, stable, shallow-cloned, and cache-control/grouping safe.
 - [ ] Unknown/custom/malformed payloads are exact no-ops.
 - [ ] No prompt, payload, headers, credentials, response bodies, or raw session ids are persisted or logged.
+- [ ] Endpoint diagnostics strip credentials/query/fragment and never echo malformed URLs.
 - [ ] README, binding spec, hook/state docs, tests, and verifier describe the same behavior.

@@ -278,6 +278,94 @@ describe("OpenAI-compatible request contracts", () => {
       { name: "hidden", description: "Hidden", filePath: "/skills/hidden/SKILL.md", baseDir: "/skills/hidden", sourceInfo, disableModelInvocation: true },
     ] as any;
     assert.equal(internals.formatSkillsForPrompt(skills), piSkills.formatSkillsForPrompt(skills));
+    assert.equal(internals.formatSkillsForPrompt(skills, "bash"), piSkills.formatSkillsForPrompt(skills, "bash"));
+  });
+
+  describe("skill compression on Pi's real system prompt", () => {
+    const sourceInfo = { path: "", source: "local", scope: "user", origin: "top-level" };
+    const skill = (name: string, description: string, filePath: string, disableModelInvocation = false) =>
+      ({ name, description, filePath, baseDir: filePath, sourceInfo, disableModelInvocation }) as any;
+    const skills = [
+      skill("zeta", "Zeta does things.\n  Use when zeta.", "/home/u/.agents/skills/zeta/SKILL.md"),
+      skill("alpha", "Alpha with <xml> & \"quotes\" and $& replacement tokens", "/home/u/.agents/skills/alpha/SKILL.md"),
+      skill("beta", "Beta project skill", "/work/.pi/skills/beta/SKILL.md"),
+      skill("odd", "Directory name differs from skill name", "/home/u/.agents/skills/other-dir/SKILL.md"),
+      skill("win", "Windows style path", "C:\\Users\\u\\skills\\win\\SKILL.md"),
+      skill("hidden", "Must never be listed", "/home/u/.agents/skills/hidden/SKILL.md", true),
+    ];
+    const loadPiPrompt = async () => {
+      const mod = await createJiti(join(process.cwd(), "tests", "system-prompt-test.ts"), { interopDefault: false, moduleCache: false }).import<typeof import("../node_modules/@earendil-works/pi-coding-agent/dist/core/system-prompt.js")>(
+        join(process.cwd(), "node_modules", "@earendil-works", "pi-coding-agent", "dist", "core", "system-prompt.js"),
+      );
+      return (selectedTools: string[]) => mod.buildSystemPrompt({ cwd: "/work", selectedTools, skills, contextFiles: [] } as any);
+    };
+
+    test("fires on the prompt Pi actually assembles, keeping every name and description", async () => {
+      const build = await loadPiPrompt();
+      const prompt = build(["read", "bash"]);
+      assert.ok(prompt.includes("<available_skills>"), "Pi should emit the verbose block");
+      const out = internals.compressSkillsInSystemPrompt(prompt, { skills } as any);
+      assert.notEqual(out, prompt, "compression must fire against Pi's real output");
+      assert.ok(out.length < prompt.length);
+      assert.ok(!out.includes("<available_skills>"));
+      assert.match(out, /<skills>\nThe following skills provide specialized instructions/);
+      assert.match(out, /<\/skills>/);
+      for (const s of skills.filter((entry: any) => !entry.disableModelInvocation)) {
+        assert.ok(out.includes(s.name), `${s.name} listed`);
+        assert.ok(out.includes(s.description.replace(/\s+/g, " ").trim()), `${s.name} description kept verbatim`);
+      }
+      assert.ok(!out.includes("Must never be listed"));
+    });
+
+    test("states each root once and gives explicit paths where the convention does not hold", async () => {
+      const build = await loadPiPrompt();
+      const out = internals.compressSkillsInSystemPrompt(build(["read"]), { skills } as any);
+      assert.equal(out.split("## Skills in /home/u/.agents/skills/").length, 2);
+      assert.ok(out.includes("Each skill file is at /home/u/.agents/skills/<name>/SKILL.md"));
+      assert.ok(out.includes("## Skills in /work/.pi/skills/"));
+      assert.ok(out.includes("- odd (file: /home/u/.agents/skills/other-dir/SKILL.md): Directory name differs"));
+      assert.ok(out.includes("- win (file: C:\\Users\\u\\skills\\win\\SKILL.md): Windows style path"));
+      // Conventional skills must not repeat their path.
+      assert.ok(!out.includes("/home/u/.agents/skills/alpha/SKILL.md"));
+      // Dollar patterns in descriptions must not be interpreted as replacement tokens.
+      assert.ok(out.includes("$& replacement tokens"));
+    });
+
+    test("is deterministic, idempotent and independent of skill order", async () => {
+      const build = await loadPiPrompt();
+      const prompt = build(["read"]);
+      const once = internals.compressSkillsInSystemPrompt(prompt, { skills } as any);
+      assert.equal(internals.compressSkillsInSystemPrompt(once, { skills } as any), once);
+      const reversed = [...skills].reverse();
+      assert.equal(internals.formatSkillsForPromptCompressed(reversed), internals.formatSkillsForPromptCompressed(skills));
+    });
+
+    test("also matches the pre-0.86 layout where the block was appended with leading newlines", () => {
+      const legacy = `base prompt${internals.formatSkillsForPrompt(skills)}\n\nCurrent working directory: /work`;
+      const out = internals.compressSkillsInSystemPrompt(legacy, { skills } as any);
+      assert.notEqual(out, legacy);
+      assert.ok(out.startsWith("base prompt\n\nThe following skills"));
+      assert.ok(out.endsWith("\n\nCurrent working directory: /work"));
+    });
+
+    test("no-ops below the minimum count, when Pi's text differs, and when opted out", async () => {
+      const build = await loadPiPrompt();
+      const prompt = build(["read"]);
+      assert.equal(internals.compressSkillsInSystemPrompt(prompt, { skills: skills.slice(0, 2) } as any), prompt);
+      // `bash`-only tool sets make Pi say "Use bash to load…"; compression must recognise that wording too.
+      const bashOnly = build(["bash"]);
+      const bashOut = internals.compressSkillsInSystemPrompt(bashOnly, { skills, selectedTools: ["bash"] } as any);
+      assert.ok(!bashOut.includes("<available_skills>"), "bash-only prompt is compressed");
+      assert.ok(bashOut.includes("Use bash to load a skill's file when the task matches its description."), "Pi's bash wording is kept");
+      const previous = process.env.PI_CACHE_OPTIMIZER_NO_SKILL_COMPRESSION;
+      process.env.PI_CACHE_OPTIMIZER_NO_SKILL_COMPRESSION = "1";
+      try {
+        assert.equal(internals.compressSkillsInSystemPrompt(prompt, { skills } as any), prompt);
+      } finally {
+        if (previous === undefined) delete process.env.PI_CACHE_OPTIMIZER_NO_SKILL_COMPRESSION;
+        else process.env.PI_CACHE_OPTIMIZER_NO_SKILL_COMPRESSION = previous;
+      }
+    });
   });
 
   test("installed Pi registerProvider drops lower provider compat for extension-owned models", async () => {
@@ -573,9 +661,17 @@ describe("OpenAI-compatible request contracts", () => {
         providers: { "cache-key-proxy": { compat: { supportsPromptCacheKey: false } } },
       }));
       assert.equal(fresh.__internals_for_tests.shouldInjectOpenAIPromptCacheKeyForModel(runtimeModel), true);
+      assert.equal(
+        fresh.__internals_for_tests.shouldInjectOpenAIPromptCacheKeyForModel({ ...runtimeModel, api: "openai-responses" } as any),
+        false,
+      );
       assert.deepEqual(
         request({ payload: { messages: [] } }, context),
         { messages: [], prompt_cache_key: "cache-key-session" },
+      );
+      assert.equal(
+        request({ payload: { input: [] } }, { ...context, model: { ...runtimeModel, api: "openai-responses" } }),
+        undefined,
       );
 
       // The extension-owned config is the only per-model opt-out. It removes

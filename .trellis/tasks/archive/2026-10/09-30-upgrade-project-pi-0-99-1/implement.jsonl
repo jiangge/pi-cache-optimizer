@@ -1,0 +1,6 @@
+{"file":".trellis/spec/frontend/index.md","reason":"项目规范索引与文档语言约束"}
+{"file":".trellis/spec/frontend/type-safety.md","reason":"必须使用仓库本地官方 Pi 类型声明检测上游 API 漂移"}
+{"file":".trellis/spec/frontend/hook-guidelines.md","reason":"升级后评估 Pi 生命周期钩子与 llama.cpp 指纹豁免契约"}
+{"file":".trellis/spec/frontend/cache-adapter-footer-stats.md","reason":"llama.cpp 内置 provider 指纹与 prompt_cache_key 兼容字段的规范来源"}
+{"file":".trellis/spec/frontend/quality-guidelines.md","reason":"依赖升级、干净安装、测试与打包质量门禁"}
+{"file":".trellis/spec/guides/index.md","reason":"修改依赖版本前的全局搜索与变更检查规则"}
