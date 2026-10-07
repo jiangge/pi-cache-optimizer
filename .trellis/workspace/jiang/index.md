@@ -8,8 +8,8 @@
 
 <!-- @@@auto:current-status -->
 - **Active File**: `journal-1.md`
-- **Total Sessions**: 15
-- **Last Active**: 2026-10-05
+- **Total Sessions**: 16
+- **Last Active**: 2026-10-07
 <!-- @@@/auto:current-status -->
 
 ---
@@ -19,7 +19,7 @@
 <!-- @@@auto:active-documents -->
 | File | Lines | Status |
 |------|-------|--------|
-| `journal-1.md` | ~820 | Active |
+| `journal-1.md` | ~853 | Active |
 <!-- @@@/auto:active-documents -->
 
 ---
@@ -29,6 +29,7 @@
 <!-- @@@auto:session-history -->
 | # | Date | Title | Commits | Branch |
 |---|------|-------|---------|--------|
+| 16 | 2026-10-07 | 修复中文 provider 拒绝错误识别 | `b9c3ee8` | `chore/upgrade-project-pi-1.0.1` |
 | 15 | 2026-10-05 | Upgrade project Pi baseline to 1.0.3 and review | `b28674d`, `966a866` | `chore/upgrade-project-pi-1.0.1` |
 | 14 | 2026-10-03 | 补归档两项已完成的 Pi 升级任务 | `1acb73b`, `e8abd6e`, `d70e963` | `release/2.8.17` |
 | 13 | 2026-10-03 | 发布 pi-cache-optimizer 2.8.17 | `52c91c4` | `release/2.8.17` |

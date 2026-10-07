@@ -818,3 +818,36 @@ Upgraded the project Pi dev baseline from 1.0.2 to npm latest 1.0.3 (pi-coding-a
 ### Next Steps
 
 - None - task complete
+
+
+## Session 16: 修复中文 provider 拒绝错误识别
+
+**Date**: 2026-10-07
+**Task**: 修复中文 provider 拒绝错误识别
+**Branch**: `chore/upgrade-project-pi-1.0.1`
+
+### Summary
+
+补齐 prompt_cache_key 与 thinking→reasoning_effort 中文拒绝识别并加回归测试；通过确认式流程为 GLM-5.3-Flash 精确配置 omit，验证新进程移除两种 key。npm run check 179/179 通过。提交 b9c3ee8；旧 Pi 会话仍需 /reload 或重启。
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `b9c3ee8` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
