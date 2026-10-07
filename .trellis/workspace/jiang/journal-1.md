@@ -832,17 +832,60 @@ Upgraded the project Pi dev baseline from 1.0.2 to npm latest 1.0.3 (pi-coding-a
 
 ### Main Changes
 
-(Add details)
+- Added grammar-bound Chinese rejection evidence for `prompt_cache_key` and the DeepSeek-like `thinking` → `reasoning_effort` protocol change.
+- Kept evidence process-local and exact-model scoped; ordinary `/cache-optimizer fix` remains user-invoked, previewed, and confirmation-gated.
+- Updated both READMEs, the executable contract spec, and permanent regression tests. The confirmed GLM-specific opt-out removes both cache-key spellings without changing unrelated payload fields.
 
 ### Git Commits
 
 | Hash | Message |
 |------|---------|
-| `b9c3ee8` | (see git log) |
+| `b9c3ee8` | `fix: recognize Chinese provider rejection errors` |
 
 ### Testing
 
-- [OK] (Add test results)
+- [OK] `npm run check`: 179 tests, typecheck, diff, 26-module cycle check, and 31-file package check passed.
+- [OK] Fresh-module verification confirmed the exact-model omit removes both `prompt_cache_key` spellings; receipt/backup hashes matched.
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
+
+
+## Session 17: 收紧中文拒绝证据边界并准备 2.8.20 发布
+
+**Date**: 2026-10-07
+**Task**: 收紧中文拒绝证据边界并准备 2.8.20 发布
+**Branch**: `chore/upgrade-project-pi-1.0.1`
+
+### Summary
+
+按用户授权替换旧 Mainline 提议并完成中文拒绝边界修复；普通 fix 证据门控回归通过，npm run check 179/179 全通过。准备发布 pi-cache-optimizer 2.8.20，PR 合并及 OIDC npm 发布验证仍待完成。
+
+### Main Changes
+
+- Tightened Chinese rejection evidence boundaries for values, conditions, negated recommendations, and diagnostic clause suffixes while preserving the exact UNKNOWN_FIELD positive and confirmation gates.
+- Added integration coverage for ordinary `/cache-optimizer fix` before evidence, after evidence on another model, cancellation, and confirmation; no user configuration was changed.
+- Retired superseded Mainline intent `int_fc7474c5`; preserved its original implementation commit and recorded this corrective follow-up under `int_c2a24061`.
+- Prepared npm release 2.8.20 through the repository's existing tag-triggered OIDC workflow; final publication must be verified against the workflow run and npm registry.
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `692e3f5` | `fix: tighten Chinese provider rejection evidence` |
+| `45280b0` | `chore: release pi-cache-optimizer 2.8.20` |
+| `7e359aa` | `chore(task): archive 10-07-tighten-chinese-rejection-evidence-boundaries` |
+| `8c2afaa` | `chore(task): remove duplicate active Chinese rejection record` |
+
+### Testing
+
+- [OK] `npm run check` after version bump: 179/179 tests, typecheck, diff, module graph, and pack checks passed.
+- [OK] `task.py validate` passed; Mainline preflight is unblocked with no overlaps.
 
 ### Status
 
