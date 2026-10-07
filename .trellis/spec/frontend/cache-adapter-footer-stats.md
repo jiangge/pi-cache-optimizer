@@ -359,6 +359,43 @@ cache/routing diagnostics only. The copyable ordinary fix suggestion therefore
 contains only safe generic fields; protocol changes require explicit provider
 error evidence and a model-scoped review.
 
+#### Localized provider rejection evidence
+
+Provider rejection recognition MUST stay grammar-bound and may accept
+localized text only when the rejected parameter and its role are explicit:
+
+- For `prompt_cache_key`, a 400 error may match the Chinese grammar
+  `(?:未知|未识别|不支持|不允许)(?:请求)?(?:字段|参数)[：:]prompt_cache_key`
+  (normalization may accept snake/camel spellings and whitespace). The
+  rejection word, field/parameter noun, key, and terminal boundary must remain
+  associated in one diagnostic string. Rejected values and conditional
+  restrictions (for example, “not allowed when temperature is set”) MUST NOT
+  count as field-level unsupported evidence.
+- For the DeepSeek-like `thinking` protocol, Chinese rejection text is evidence
+  only when it attaches a supported rejection term to the `thinking` parameter
+  and the same error/header diagnostic recommends `reasoning_effort`. A
+  recommendation in a separate header, a rejection of `reasoning_effort`,
+  generic docs text, or negated guidance MUST NOT match.
+- English and Chinese matches feed the same process-local, exact provider/model
+  evidence gates. A response hook only records the rejection category and may
+  notify; it MUST NOT edit config. `/cache-optimizer fix` remains user-invoked,
+  model-scoped, and confirmation-gated.
+
+Required regression assertions:
+
+| Case | Expected |
+|------|----------|
+| Exact 400 body `未知请求字段：prompt_cache_key` | Record evidence only for the exact provider/model; offer opt-out only through confirmed `/cache-optimizer fix` |
+| Chinese rejection of `thinking` followed by `请使用 reasoning_effort` | Match reasoning protocol rejection |
+| Error rejects a key's value or says it is disallowed only under a condition | Do not match field-level unsupported evidence |
+| Recommendation and rejection are split across headers, or recommendation is negated | Do not match reasoning protocol rejection |
+| Confirmed exact-model omit | Remove `prompt_cache_key` and `promptCacheKey`; preserve unrelated payload fields and all other models |
+
+Wrong: match merely because `prompt_cache_key` and `不支持` occur somewhere in the same
+body, or because a request hook sees an error. Correct: require the localized
+field-rejection grammar and retain the same evidence, identity, and confirmation
+gates as English errors.
+
 ### Platform-friendly models.json path
 
 Runtime I/O MUST use Pi core's exported `getAgentDir()` rather than duplicating

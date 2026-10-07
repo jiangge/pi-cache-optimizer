@@ -158,7 +158,7 @@ Footer 默认使用 `session`，避免另一个并行 Pi 终端使用相同 prov
 
 某些 OpenAI-compatible Completions endpoint 会因 `prompt_cache_key` 返回 HTTP 400，但同一个字段对其他 provider 可能有效。Pi 1.0+ 已负责 Responses/Codex transport 的 key；本扩展的 fallback 和 opt-out 只作用于 `openai-completions`。Pi 1.0.3 没有原生的 `supportsPromptCacheKey` compat 字段，**不要**把这个未知字段加入 `models.json`。`supportsLongCacheRetention` 也不是等价开关，不应借用来实现此目的。
 
-当扩展观察到精确 provider/model 对 `prompt_cache_key` 的明确字段级拒绝后，普通 `/cache-optimizer fix` 会提供经过确认的模型级修复。参数值校验失败，以及“设置 temperature 时不允许”这类条件限制都不构成证据。若不同模型的响应并发交错，而 Pi 又没有提供 request ID，扩展会忽略无法安全关联的 response-header 证据；只有最终 assistant message 提供精确 provider/model 身份时才恢复归因。如果你已经确定 endpoint 不支持该字段，可以主动执行：
+当扩展观察到精确 provider/model 对 `prompt_cache_key` 的明确字段级拒绝后（包括 `未知请求字段：prompt_cache_key` 这类已识别的中文错误），普通 `/cache-optimizer fix` 会提供经过确认的模型级修复。参数值校验失败，以及“设置 temperature 时不允许”这类条件限制都不构成证据。若不同模型的响应并发交错，而 Pi 又没有提供 request ID，扩展会忽略无法安全关联的 response-header 证据；只有最终 assistant message 提供精确 provider/model 身份时才恢复归因。如果你已经确定 endpoint 不支持该字段，可以主动执行：
 
 ```text
 /cache-optimizer fix prompt-cache-key
@@ -353,7 +353,7 @@ Pi Cache Optimizer 按 Pi 的优先级解析有效 compat（`provider.compat` �
 面向新手的安全流程是分阶段的：
 
 1. 先运行 `/cache-optimizer fix`，只处理协议无关的缓存 / 路由修复，例如 session affinity；命令会展示具体位置并要求确认。
-2. 发起一次普通请求。如果 OpenAI-compatible 的 DeepSeek-like 模型明确拒绝 `thinking` 并要求使用 `reasoning_effort`，扩展只在当前进程保留 model-scoped 分类，不会持久化或显示完整错误，不会发送隐藏探测请求，也不会在 response hook 中自动修改配置。
+2. 发起一次普通请求。如果 OpenAI-compatible 的 DeepSeek-like 模型明确拒绝 `thinking` 并要求使用 `reasoning_effort`（包括已识别的中文拒绝和建议文本），扩展只在当前进程保留 model-scoped 分类，不会持久化或显示完整错误，不会发送隐藏探测请求，也不会在 response hook 中自动修改配置。
 3. 再次运行 `/cache-optimizer fix`，查看基于证据的 model-level 协议修复；该修复写入最高优先级的 `modelOverrides[modelId].compat`，并结合 runtime compat 自检，避免 extension-provided model 静默遮挡。不会仅凭共享 provider 或模型名字扩大修改范围，显式 `openai`、`qwen`、`openrouter`、`together` format 会被尊重。
 4. 如果最近一次已确认修复导致问题，运行 `/cache-optimizer rollback`；回滚始终需要 UI 确认。
 
