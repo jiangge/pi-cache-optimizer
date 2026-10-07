@@ -1,4 +1,3 @@
-import { join } from "node:path";
 
 // ── String-aware JSONC scanning primitives ─────────────────────────
 //

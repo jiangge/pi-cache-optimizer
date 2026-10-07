@@ -35,7 +35,7 @@
 
 - 将 Pi 的 skill 列表压缩为按目录分组的 Markdown 列表，保留每个 skill 的名称和完整描述（只去掉 XML 外壳和重复路径），并移除 session-overview 中的易变字段。这两项都是原位修改，不会在 Pi 的提示段之间搬移内容，对 OpenAI Responses/Codex 模型同样生效。（早期版本还会把“稳定”内容提到提示最前面；Pi 0.86 起已按从稳定到易变的顺序拼段，实测前缀稳定性没有差别，因此移除了这一步。）
 - 在 Pi / provider compat 支持时请求长缓存保留。
-- 仅对 `openai-completions` 代理请求，在没有有效 key 时使用 Pi session id 保守补 `prompt_cache_key`；Pi 1.0+ 已负责 Responses/Codex transport 的 key。
+- 仅对 `openai-completions` 代理请求，在没有有效 key 时按会话保守补 `prompt_cache_key`；本扩展自己补的值（该 key、session-affinity 头补齐、cache hints）使用 Pi session id 的单向哈希（`pi-<32 位 hex>`）；Pi 核心自己设置的 key 和头保持不变，已有 key 也绝不覆盖；Pi 1.0+ 已负责 Responses/Codex transport 的 key。
 - 对缺少缓存 / session-affinity compat 的第三方 OpenAI-compatible 代理给出一次性提醒。
 - 检测 Claude（opus-4.6+ 含 Opus 5、sonnet-4.6+ 含 Sonnet 5、fable-5+）以及 Kimi Coding K3 / `kimi-for-coding` 自定义渠道的 adaptive-thinking compat。
 - 使用每个 extension instance 独占的原子 shard 保存缓存统计，避免父会话、子 Pi agent 和并行 Pi 进程互相覆盖。
@@ -170,7 +170,7 @@ Footer 默认使用 `session`，避免另一个并行 Pi 终端使用相同 prov
 
 LiteLLM / OneAPI / NewAPI / 类 OpenRouter 渠道等第三方 `openai-completions` 代理，常会把同一个 session 分散到多个上游后端，导致 provider 侧 prompt cache 被拆散。
 
-Pi 0.84.1 还修复了内置 Fireworks 渠道对拒绝 `prompt_cache_retention` 的模型兼容性；本扩展不按 provider 名称增加特殊分支，而是结合 `models.json` 与 runtime model，按精确 provider/model 解析有效 compat。Pi 0.81+ 也内置了使用 OpenAI-shaped transport 的 `llama.cpp` provider。本扩展只对第三方 `openai-completions` 保留 session-id key fallback；Pi 1.0+ 已负责 Responses/Codex transport 的 key。只有符合 Pi 内置 provider 明确 compat 指纹的模型会跳过通用 proxy 路由 / session-affinity 建议；仅复用 `llama.cpp` id 的自定义或覆盖 provider 仍按普通 OpenAI-compatible 渠道处理。`prompt_cache_retention` 继续遵循统一安全规则：仅官方 OpenAI 或 `models.json` 中有效配置为 `supportsLongCacheRetention: true` 时保留，否则发送前移除。Pi 1.0.3 没有原生的 `supportsPromptCacheKey` compat 字段，因此仅对 `openai-completions` 按模型关闭 key 的策略保存在本扩展的 `pi-cache-optimizer-config.json` 中，而不是 `models.json`。扩展配置独立于 Pi 的 compat 优先级，只影响其中列出的精确 provider/model。
+Pi 0.84.1 还修复了内置 Fireworks 渠道对拒绝 `prompt_cache_retention` 的模型兼容性；本扩展不按 provider 名称增加特殊分支，而是结合 `models.json` 与 runtime model，按精确 provider/model 解析有效 compat。Pi 0.81+ 也内置了使用 OpenAI-shaped transport 的 `llama.cpp` provider。本扩展只对第三方 `openai-completions` 保留 session-id key fallback；Pi 1.0+ 已负责 Responses/Codex transport 的 key。只有符合 Pi 内置 provider 明确 compat 指纹的模型会跳过通用 proxy 路由 / session-affinity 建议；仅复用 `llama.cpp` id 的自定义或覆盖 provider 仍按普通 OpenAI-compatible 渠道处理。`prompt_cache_retention` 遵循统一安全规则：扩展只撤销自己设置 `PI_CACHE_RETENTION=long` 带来的副作用。依次判断：本进程内该模型已明确拒绝过该参数 → 移除；官方 OpenAI → 保留；显式 `supportsLongCacheRetention: true`（来自 `models.json`，或 provider 扩展注册的 runtime model；`models.json` 中显式 `false` 仍优先）→ 保留；用户在 Pi 启动前自行设置了 `PI_CACHE_RETENTION=long` → 保留；其余情况发送前移除。Azure OpenAI 不在白名单中，因为其长缓存支持取决于具体部署的模型。`/cache-optimizer doctor` 会显示最近一次判断及原因。Pi 1.0.3 没有原生的 `supportsPromptCacheKey` compat 字段，因此仅对 `openai-completions` 按模型关闭 key 的策略保存在本扩展的 `pi-cache-optimizer-config.json` 中，而不是 `models.json`。扩展配置独立于 Pi 的 compat 优先级，只影响其中列出的精确 provider/model。
 
 对真正的代理，建议先启用 session affinity：
 

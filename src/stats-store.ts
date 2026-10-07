@@ -331,8 +331,36 @@ export function parsePersistedStatsShardV7(value: unknown): PersistedStatsShardV
 export async function writeStatsShardV7(path: string, shard: PersistedStatsShardV7): Promise<void> {
   await mkdir(dirname(path), { recursive: true });
   const tempPath = `${path}.${process.pid}.${Date.now()}.${randomUUID()}.tmp`;
-  await writeFile(tempPath, JSON.stringify(shard, null, 2) + "\n", "utf8");
-  await rename(tempPath, path);
+  try {
+    await writeFile(tempPath, JSON.stringify(shard, null, 2) + "\n", "utf8");
+    await rename(tempPath, path);
+  } catch (error) {
+    // Do not leave an orphaned temp file behind until the next cleanup pass.
+    await unlink(tempPath).catch(() => undefined);
+    throw error;
+  }
+}
+
+type CachedShardRead = {
+  ino: number | bigint;
+  size: number;
+  mtimeMs: number;
+  shard: PersistedStatsShardV7 | undefined;
+};
+
+/**
+ * Parsed-shard cache keyed by path and validated by inode, size, and mtime.
+ * Writers always publish through temp-file + rename, so an updated shard gets
+ * a new inode; unchanged shards are not re-read or re-parsed on every refresh.
+ */
+const shardReadCache = new Map<string, CachedShardRead>();
+
+export function clearStatsShardReadCache(): void {
+  shardReadCache.clear();
+}
+
+function cloneShard(shard: PersistedStatsShardV7): PersistedStatsShardV7 {
+  return structuredClone(shard);
 }
 
 export async function readValidStatsShardsV7(directory: string = SHARD_FILES_DIR): Promise<PersistedStatsShardV7[]> {
@@ -344,19 +372,38 @@ export async function readValidStatsShardsV7(directory: string = SHARD_FILES_DIR
     throw error;
   }
   const shards: PersistedStatsShardV7[] = [];
+  const seenPaths = new Set<string>();
   for (const name of names) {
     if (!/^[0-9a-f-]+\.json$/i.test(name)) continue;
     const path = join(directory, name);
+    seenPaths.add(path);
     try {
       const info = await lstat(path);
-      if (!info.isFile() || info.isSymbolicLink()) continue;
-      const parsed = parsePersistedStatsShardV7(JSON.parse(await readFile(path, "utf8")));
-      const filenameInstanceId = name.slice(0, -".json".length);
-      if (parsed && parsed.instanceId === filenameInstanceId) shards.push(parsed);
+      if (!info.isFile() || info.isSymbolicLink()) {
+        shardReadCache.delete(path);
+        continue;
+      }
+      const cached = shardReadCache.get(path);
+      let parsed: PersistedStatsShardV7 | undefined;
+      if (cached && cached.ino === info.ino && cached.size === info.size && cached.mtimeMs === info.mtimeMs) {
+        parsed = cached.shard;
+      } else {
+        const filenameInstanceId = name.slice(0, -".json".length);
+        const candidate = parsePersistedStatsShardV7(JSON.parse(await readFile(path, "utf8")));
+        parsed = candidate && candidate.instanceId === filenameInstanceId ? candidate : undefined;
+        shardReadCache.set(path, { ino: info.ino, size: info.size, mtimeMs: info.mtimeMs, shard: parsed });
+      }
+      // Callers may mutate the aggregate they build; hand out copies so the
+      // cache stays authoritative.
+      if (parsed) shards.push(cloneShard(parsed));
     } catch {
       // Ignore malformed or transiently unavailable shards. Atomic writers will
       // publish a complete replacement on the next successful update.
+      shardReadCache.delete(path);
     }
+  }
+  for (const path of Array.from(shardReadCache.keys())) {
+    if (!seenPaths.has(path) && path.startsWith(directory)) shardReadCache.delete(path);
   }
   return shards;
 }

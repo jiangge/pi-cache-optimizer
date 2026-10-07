@@ -37,6 +37,87 @@ export function restoreCacheRetentionEnv(snapshot: CacheRetentionEnvSnapshot, en
   }
 }
 
+/**
+ * Why `prompt_cache_retention` was kept on, or removed from, a provider payload.
+ *
+ * - `provider-rejected`: this model already answered with an explicit
+ *   unsupported-parameter error in this process; never resend it.
+ * - `official-openai`: api.openai.com documents the parameter.
+ * - `explicit-opt-in`: models.json or the runtime model compat explicitly sets
+ *   `supportsLongCacheRetention: true` (Pi's built-in catalog only ever sets
+ *   `false`, so `true` is always a deliberate choice).
+ * - `user-requested-long`: the user started Pi with `PI_CACHE_RETENTION=long`
+ *   themselves, so the field is vanilla Pi behaviour, not an optimizer side effect.
+ * - `unverified-endpoint`: the field exists only because this extension forced
+ *   `PI_CACHE_RETENTION=long`; third-party endpoints (including Azure, whose
+ *   support is per deployed model) are not known to accept it.
+ */
+export type PromptCacheRetentionGateReason =
+  | "provider-rejected"
+  | "official-openai"
+  | "explicit-opt-in"
+  | "user-requested-long"
+  | "unverified-endpoint";
+
+export type PromptCacheRetentionGateInput = {
+  providerRejected: boolean;
+  officialOpenAI: boolean;
+  explicitOptIn: boolean;
+  userRequestedLong: boolean;
+};
+
+export type PromptCacheRetentionGateDecision = {
+  keep: boolean;
+  reason: PromptCacheRetentionGateReason;
+};
+
+/**
+ * Pure decision for the `prompt_cache_retention` gate. The optimizer only undoes
+ * its own side effect: it never strips a field the user or the provider config
+ * asked for, except after the provider has explicitly rejected it.
+ */
+export function decidePromptCacheRetention(input: PromptCacheRetentionGateInput): PromptCacheRetentionGateDecision {
+  if (input.providerRejected) return { keep: false, reason: "provider-rejected" };
+  if (input.officialOpenAI) return { keep: true, reason: "official-openai" };
+  if (input.explicitOptIn) return { keep: true, reason: "explicit-opt-in" };
+  if (input.userRequestedLong) return { keep: true, reason: "user-requested-long" };
+  return { keep: false, reason: "unverified-endpoint" };
+}
+
+/** True when PI_CACHE_RETENTION=long was already set before this extension loaded. */
+export function userRequestedLongCacheRetention(snapshot: CacheRetentionEnvSnapshot = STARTUP_CACHE_RETENTION_ENV): boolean {
+  return snapshot.wasSet && snapshot.value === LONG_CACHE_RETENTION_VALUE;
+}
+
+export type PromptCacheRetentionDecisionRecord = PromptCacheRetentionGateDecision & {
+  modelKey?: string;
+  at: number;
+};
+
+let lastPromptCacheRetentionDecision: PromptCacheRetentionDecisionRecord | undefined;
+
+/** Remember the latest gate decision so `/cache-optimizer doctor` can explain it. */
+export function recordPromptCacheRetentionDecision(modelKey: string | undefined, decision: PromptCacheRetentionGateDecision): void {
+  lastPromptCacheRetentionDecision = { ...decision, modelKey, at: Date.now() };
+}
+
+export function getLastPromptCacheRetentionDecision(): PromptCacheRetentionDecisionRecord | undefined {
+  return lastPromptCacheRetentionDecision ? { ...lastPromptCacheRetentionDecision } : undefined;
+}
+
+const PROMPT_CACHE_RETENTION_REASON_TEXT: Record<PromptCacheRetentionGateReason, string> = {
+  "provider-rejected": "removed: this model rejected the parameter earlier in this process",
+  "official-openai": "kept: official OpenAI endpoint",
+  "explicit-opt-in": "kept: supportsLongCacheRetention: true is set explicitly",
+  "user-requested-long": "kept: PI_CACHE_RETENTION=long was set before Pi started",
+  "unverified-endpoint": "removed: added only by the optimizer and the endpoint is not known to accept it (set supportsLongCacheRetention: true to opt in)",
+};
+
+export function describePromptCacheRetentionDecision(record: PromptCacheRetentionDecisionRecord | undefined): string | undefined {
+  if (!record) return undefined;
+  return `prompt_cache_retention ${PROMPT_CACHE_RETENTION_REASON_TEXT[record.reason]}${record.modelKey ? ` (${record.modelKey})` : ""}`;
+}
+
 export function isCacheRetentionBaselineV1(value: unknown): value is CacheRetentionBaselineV1 {
   if (typeof value !== "object" || value === null) return false;
   const record = value as { version?: unknown; snapshot?: unknown };

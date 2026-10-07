@@ -6,6 +6,7 @@ import { join } from "node:path";
 import { test } from "node:test";
 import { createJiti } from "jiti";
 import type { ExtensionAPI, ExtensionCommandContext, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { derivePromptCacheKey } from "../src/request-payload.ts";
 
 function model(id = "gpt-a", provider = "proxy", baseUrl = "https://example.invalid/v1") {
   return {
@@ -432,7 +433,7 @@ test("persistent cache-key on overrides both environment opt-outs in settings, d
     assert.equal(h.I.shouldInjectOpenAIPromptCacheKey(), true);
     assert.match(h.I.getOptimizerRuntimeModeLines().join("\n"), /fallback: on/);
     const payload = await h.hook("before_provider_request", { payload: { model: "gpt-a" } });
-    assert.equal((payload as Record<string, unknown>)?.prompt_cache_key, "fixture-review-session");
+    assert.equal((payload as Record<string, unknown>)?.prompt_cache_key, derivePromptCacheKey("fixture-review-session"));
     await h.command("disable");
     assert.equal(h.I.shouldInjectOpenAIPromptCacheKey(), false);
     assert.equal(await h.hook("before_provider_request", { payload: { model: "gpt-a" } }), undefined);

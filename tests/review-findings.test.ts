@@ -839,16 +839,17 @@ describe("explicit compat precedence", () => {
         JSON.stringify(config({ provider: true, model: true, modelOverride: false })),
       );
       const deniedPayload: Record<string, unknown> = { prompt_cache_retention: "24h" };
-      hook({ payload: deniedPayload }, context);
-      assert.equal("prompt_cache_retention" in deniedPayload, false);
+      const deniedPayloadResult = (hook({ payload: deniedPayload }, context) ?? deniedPayload) as Record<string, unknown>;
+      assert.equal("prompt_cache_retention" in deniedPayloadResult, false);
+      assert.equal(deniedPayload.prompt_cache_retention, "24h");
 
       await writeFile(
         join(tempAgentDir, "models.json"),
         JSON.stringify(config({ provider: false, model: false, modelOverride: true })),
       );
       const allowedPayload: Record<string, unknown> = { prompt_cache_retention: "24h" };
-      hook({ payload: allowedPayload }, context);
-      assert.equal(allowedPayload.prompt_cache_retention, "24h");
+      const allowedPayloadResult = (hook({ payload: allowedPayload }, context) ?? allowedPayload) as Record<string, unknown>;
+      assert.equal(allowedPayloadResult.prompt_cache_retention, "24h");
 
       await writeFile(
         join(tempAgentDir, "models.json"),
@@ -862,8 +863,9 @@ describe("explicit compat precedence", () => {
         }),
       );
       const invalidConfigPayload: Record<string, unknown> = { prompt_cache_retention: "24h" };
-      hook({ payload: invalidConfigPayload }, context);
-      assert.equal("prompt_cache_retention" in invalidConfigPayload, false);
+      const invalidConfigPayloadResult = (hook({ payload: invalidConfigPayload }, context) ?? invalidConfigPayload) as Record<string, unknown>;
+      assert.equal("prompt_cache_retention" in invalidConfigPayloadResult, false);
+      assert.equal(invalidConfigPayload.prompt_cache_retention, "24h");
     } finally {
       if (previousAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
       else process.env.PI_CODING_AGENT_DIR = previousAgentDir;
@@ -947,8 +949,8 @@ describe("provider response recovery", () => {
       assert.ok(messageEndHook);
 
       const firstPayload: Record<string, unknown> = { prompt_cache_retention: "24h" };
-      requestHook({ payload: firstPayload }, context);
-      assert.equal(firstPayload.prompt_cache_retention, "24h");
+      const firstPayloadResult = (requestHook({ payload: firstPayload }, context) ?? firstPayload) as Record<string, unknown>;
+      assert.equal(firstPayloadResult.prompt_cache_retention, "24h");
 
       await messageEndHook({
         message: {
@@ -963,8 +965,8 @@ describe("provider response recovery", () => {
       }, context);
 
       const valueErrorPayload: Record<string, unknown> = { prompt_cache_retention: "24h" };
-      requestHook({ payload: valueErrorPayload }, context);
-      assert.equal(valueErrorPayload.prompt_cache_retention, "24h");
+      const valueErrorPayloadResult = (requestHook({ payload: valueErrorPayload }, context) ?? valueErrorPayload) as Record<string, unknown>;
+      assert.equal(valueErrorPayloadResult.prompt_cache_retention, "24h");
 
       await messageEndHook({
         message: {
@@ -979,8 +981,9 @@ describe("provider response recovery", () => {
       }, context);
 
       const unsupportedPayload: Record<string, unknown> = { prompt_cache_retention: "24h" };
-      requestHook({ payload: unsupportedPayload }, context);
-      assert.equal("prompt_cache_retention" in unsupportedPayload, false);
+      const unsupportedPayloadResult = (requestHook({ payload: unsupportedPayload }, context) ?? unsupportedPayload) as Record<string, unknown>;
+      assert.equal("prompt_cache_retention" in unsupportedPayloadResult, false);
+      assert.equal(unsupportedPayload.prompt_cache_retention, "24h");
       assert.ok(notifications.some((message) => message.includes("prompt_cache_retention")));
     } finally {
       if (previousAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
@@ -1073,8 +1076,9 @@ describe("provider response recovery", () => {
       }, { ...baseContext, model: routerModel });
 
       const nextPayload: Record<string, unknown> = { prompt_cache_retention: "24h" };
-      requestHook({ payload: nextPayload }, { ...baseContext, model: upstreamModel });
-      assert.equal("prompt_cache_retention" in nextPayload, false);
+      const nextPayloadResult = (requestHook({ payload: nextPayload }, { ...baseContext, model: upstreamModel }) ?? nextPayload) as Record<string, unknown>;
+      assert.equal("prompt_cache_retention" in nextPayloadResult, false);
+      assert.equal(nextPayload.prompt_cache_retention, "24h");
     } finally {
       if (previousAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
       else process.env.PI_CODING_AGENT_DIR = previousAgentDir;

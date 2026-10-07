@@ -7,6 +7,7 @@ import { createJiti } from "jiti";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 
 import { __internals_for_tests as internals } from "#extension";
+import { derivePromptCacheKey } from "../src/request-payload.ts";
 
 type PiModel = NonNullable<ExtensionContext["model"]>;
 
@@ -79,9 +80,9 @@ describe("OpenAI-compatible request contracts", () => {
       true,
     );
     assert.deepEqual(headers, {
-      session_id: "session-123",
-      "x-client-request-id": "session-123",
-      "x-session-affinity": "session-123",
+      session_id: derivePromptCacheKey("session-123"),
+      "x-client-request-id": derivePromptCacheKey("session-123"),
+      "x-session-affinity": derivePromptCacheKey("session-123"),
     });
     assert.deepEqual(internals.describeMissingOpenAICompatibleProxyCompat({ ...extensionModel, compat: effective }), []);
     assert.equal(internals.buildFixSuggestion({ ...extensionModel, compat: effective }), undefined);
@@ -105,8 +106,8 @@ describe("OpenAI-compatible request contracts", () => {
     );
     assert.deepEqual(existing, {
       "X-Client-Request-Id": "provider-value",
-      session_id: "session-123",
-      "x-session-affinity": "session-123",
+      session_id: derivePromptCacheKey("session-123"),
+      "x-session-affinity": derivePromptCacheKey("session-123"),
     });
 
     const openRouterHeaders: Record<string, string | null | undefined> = {};
@@ -121,7 +122,7 @@ describe("OpenAI-compatible request contracts", () => {
       ),
       true,
     );
-    assert.deepEqual(openRouterHeaders, { "x-session-id": "session-456" });
+    assert.deepEqual(openRouterHeaders, { "x-session-id": derivePromptCacheKey("session-456") });
 
     for (const [candidate, compat, enabled, sessionId] of [
       [extensionModel, { sendSessionAffinityHeaders: false }, true, "session-123"],
@@ -447,9 +448,9 @@ describe("OpenAI-compatible request contracts", () => {
       const enabledHeaders: Record<string, string | null> = {};
       requestHeaders({ headers: enabledHeaders }, context);
       assert.deepEqual(enabledHeaders, {
-        session_id: "hook-session",
-        "x-client-request-id": "hook-session",
-        "x-session-affinity": "hook-session",
+        session_id: derivePromptCacheKey("hook-session"),
+        "x-client-request-id": derivePromptCacheKey("hook-session"),
+        "x-session-affinity": derivePromptCacheKey("hook-session"),
       });
       assert.deepEqual(fresh.__internals_for_tests.describeMissingOpenAICompatibleProxyCompat(runtimeModel), []);
       assert.equal(fresh.__internals_for_tests.buildFixSuggestion(runtimeModel), undefined);
@@ -593,7 +594,7 @@ describe("OpenAI-compatible request contracts", () => {
         }));
         const routedProxyHeaders: Record<string, string | null> = {};
         requestHeaders({ headers: routedProxyHeaders }, routeContext);
-        assert.equal(routedProxyHeaders["x-session-affinity"], "hook-session");
+        assert.equal(routedProxyHeaders["x-session-affinity"], derivePromptCacheKey("hook-session"));
       } finally {
         unregisterRouter();
       }
@@ -667,7 +668,7 @@ describe("OpenAI-compatible request contracts", () => {
       );
       assert.deepEqual(
         request({ payload: { messages: [] } }, context),
-        { messages: [], prompt_cache_key: "cache-key-session" },
+        { messages: [], prompt_cache_key: derivePromptCacheKey("cache-key-session") },
       );
       assert.equal(
         request({ payload: { input: [] } }, { ...context, model: { ...runtimeModel, api: "openai-responses" } }),

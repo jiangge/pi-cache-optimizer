@@ -1,85 +1,46 @@
-import { createHash, randomUUID } from "node:crypto";
-import { chmod, copyFile, link, lstat, mkdir, readFile, readdir, rename, rm, stat, unlink, writeFile } from "node:fs/promises";
-import { constants as fsConstants, readFileSync, statSync, watch } from "node:fs";
-import { homedir } from "node:os";
-import { basename, dirname, join } from "node:path";
+import { randomUUID } from "node:crypto";
+import { mkdir } from "node:fs/promises";
+import { watch } from "node:fs";
+import { join } from "node:path";
 import {
-  getAgentDir,
-  type BuildSystemPromptOptions,
-  type ExtensionAPI,
-  type ExtensionCommandContext,
-  type ExtensionContext,
+  type ExtensionAPI, type ExtensionContext
 } from "@earendil-works/pi-coding-agent";
-import { LOG_PREFIX, type ModelIdentity, type PiModel, type UnknownRecord, asRecord, getErrorCode, isNonEmptyString, isProcessAlive, lower, type MutableEnv } from "./src/common.ts";
-import { FIX_RECEIPT_FILE_NAME, FIX_RECEIPT_PATH, MODELS_JSON_PATH, MODELS_TRANSACTION_LOCK_PATH, MODELS_TRANSACTION_LOCK_STALE_MS, MODELS_TRANSACTION_LOCK_WAIT_MS, STATE_DIR } from "./src/paths.ts";
-import { type FixReceiptCompatChange, type FixReceiptPlacement, type FixSuggestion, type ModelsJsonFixReceiptV1, RECEIPT_COMPAT_KEYS, type ReceiptScalar, type ReceiptScalarState, isReceiptTimestamp, isSafeReceiptText, isSha256 } from "./src/fix-types.ts";
-import { type JsonPropertyEdit, type ModelNodeLocation, deepEqualIgnoringKeys, deriveInnerIndent, findExistingCompatKeysInJsonc, findJsonObjectKey, findMatchingBracket, isJsonWhitespace, lineIndentOf, locateJsonPropertyValueSpan, locateModelOverrideInJsonc, locateProviderCompatInJsonc, parseJsonc, readJsonStringLiteral, skipJsonValue, skipJsonWhitespace, stripJsoncComments, stripJsoncTrailingCommas } from "./src/jsonc.ts";
-import { type FileIdentity, atomicCreateTextFileNoReplace, atomicReplaceTextFilePreservingMode, atomicRestoreFileFromBackup, backupTimestamp, hashText, readRegularTextFile, sameFileIdentity, uniqueTempPath, validateAtomicTarget, withModelsJsonTransactionLock } from "./src/atomic-fs.ts";
-import { getAssistantMessageModelTokenValues, getModelIdNameTokenValues, hasAnyTokenContaining, isAdaptiveGenerationModel, isKimiCodingAdaptiveModel, modelOrAssistantMessageHas } from "./src/model-detect.ts";
-import { type CacheCompat, NESTED_COMPAT_KEYS, findLastExactModelDefinition, getEffectiveCompatSources, mergeCacheCompat, resolveEffectiveCompatFromConfig } from "./src/compat-config.ts";
-import { analyzeModelsJsonForMissingEntry, applyModelsJsonFixTransaction, chooseFixPlacement, composeFixInsertion, composeMissingEntryInsertion, composeModelOverrideInsertion, composeModelsJsonReceiptRollback, composeProviderAffinityInsertion, createModelsJsonFixReceipt, createRollbackBackupPath, decideFixPlacement, formatCompatKeysForInsertion, formatMissingEntryManualSnippet, hasExplicitLongRetentionOptInFromConfig, hasReceiptReasoningProtocolChange, isActionableModelsJsonFixReceipt, locateModelInJsonc, markModelsJsonFixReceiptRolledBack, parseModelsJsonFixReceipt, prepareModelsJsonRollback, readModelsJsonFixReceipt, readModelsJsonFixReceiptSnapshot, receiptBackupPath, resolveExplicitCompatValue, selfCheckFix, selfCheckMissingEntryInsertion, validateModelsJsonRollback, writeModelsJsonFixReceipt } from "./src/models-json-fix.ts";
-import { getNonNegativeNumber, getNumber } from "./src/common.ts";
-import { CACHE_PROVIDER_IDS, type CacheProviderId, type CacheStats, LEGACY_STATE_FILE_PATH, type PersistedRoutedModelRef, type PersistedStatsShardV7, SHARD_FILES_DIR, SHARD_GLOBAL_EPOCH_PATH, SHARD_STATE_DIR, STATE_FILE_PATH, type ShardAggregate, type UsageSnapshot, addUsageToCacheStats, advanceGlobalStatsEpoch, advanceModelStatsEpoch, aggregateStatsShardsV7, cleanupStatsShardsV7, cloneCacheStats, currentLocalDay, emptyAllCacheStats, emptyCacheStats, initialEpoch, loadStatsShardAggregateV7, maybeCleanupStatsShardsV7, mergeCacheStatsForTotal, modelEpochPath, parseCacheStats, parsePersistedRoutedModelRef, parsePersistedStatsShardV7, readGlobalStatsEpoch, readModelStatsEpoch, readValidStatsShardsV7, removeLegacyStatsFiles, writeStatsShardV7 } from "./src/stats-store.ts";
-import { ALEPH_MODEL_PATTERN, ARCTIC_MODEL_PATTERN, AYA_MODEL_PATTERN, DOUBAO_SEED_PATTERN, MIMO_MODEL_PATTERN, MPT_MODEL_PATTERN, NOVA_MODEL_PATTERN, ORION_MODEL_PATTERN, PHI_MODEL_PATTERN, PI_VIRTUAL_MODEL_API, PPLX_MODEL_PATTERN, ROUTED_FALLBACK_MODEL_SYMBOL, XAI_MODEL_PATTERN, YI_MODEL_PATTERN, getAssistantRecord, getCompat, isAnthropicMessagesApi, isAssistantMessage, isClaudeLikeAssistantMessage, isClaudeLikeModel, isDeepSeekLikeAssistantMessage, isDeepSeekLikeModel, isGeminiLikeAssistantMessage, isGeminiLikeModel, isKimiCodingEmptySignatureModel, isKnownThirdPartyOpenAIEndpoint, isMistralConversationsApi, isNativeVirtualModel, isOfficialOpenAIBaseUrl, isOpenAICompatibleApi, isOpenAICompatibleProxyApi, isOpenAIFamilyAssistantMessage, isOpenAIFamilyModel, isOpenAIFamilyToken, isPiBuiltInLlamaCppModel, isResponsesPromptRewriteBypassApi, isRoutedFallbackModel, isValidModelsConfigForEffectiveCompat, modelKey, readEffectiveCompatConfig } from "./src/model-identity.ts";
-import { invalidateModelsConfigCache } from "./src/model-identity.ts";
-import { getAnthropicRawUsage, getDeepSeekRawUsage, getGeminiRawUsage, getOpenAIRawUsage, normalizeWithFallback, usageRecordFromAssistant } from "./src/usage.ts";
-import { CONFIG_FILE_PATH, NO_SKILL_COMPRESSION_ENV, VIRTUAL_REWRITE_ENV, FOOTER_MODE_ENV, type FooterStatsMode, NO_OPENAI_CACHE_KEY_ENV, type PersistedCacheOptimizerConfig, type PersistedCacheOptimizerConfigV2, type PersistedCacheOptimizerConfigV3, type PersistedCacheOptimizerFeature, TOOL_ORDER_ENV, featureEnabled, footerStatsMode, isEnabledEnv, isToolOrderEnabled, normalizePersistedCacheOptimizerConfig, parseFooterStatsMode, parsePersistedCacheOptimizerConfig, persistedCacheOptimizerConfig, persistedFooterStatsMode, readPersistedCacheOptimizerConfig, resolveFooterStatsMode, runtimeOptimizerEnabled, setPersistedCacheOptimizerConfig, shouldInjectOpenAIPromptCacheKey, writePersistedCacheOptimizerConfig, writePersistedFeature, writePersistedFooterMode } from "./src/config.ts";
-import { LONG_CACHE_RETENTION_VALUE, PI_CACHE_RETENTION_BASELINE_SYMBOL, PI_CACHE_RETENTION_ENV, STARTUP_CACHE_RETENTION_ENV, captureCacheRetentionEnv, getOrCaptureCacheRetentionBaseline, requestLongCacheRetention, restoreCacheRetentionEnv } from "./src/retention.ts";
+import { LOG_PREFIX, type PiModel, asRecord, isNonEmptyString } from "./src/common.ts";
+import { FIX_RECEIPT_FILE_NAME, FIX_RECEIPT_PATH, MODELS_JSON_PATH, STATE_DIR } from "./src/paths.ts";
+import { type FixSuggestion } from "./src/fix-types.ts";
+import { deepEqualIgnoringKeys, findExistingCompatKeysInJsonc, locateModelOverrideInJsonc, locateProviderCompatInJsonc, parseJsonc, stripJsoncComments, stripJsoncTrailingCommas } from "./src/jsonc.ts";
+import { atomicCreateTextFileNoReplace, atomicReplaceTextFilePreservingMode, atomicRestoreFileFromBackup, backupTimestamp, hashText } from "./src/atomic-fs.ts";
+import { getAssistantMessageModelTokenValues, getModelIdNameTokenValues, isAdaptiveGenerationModel, isKimiCodingAdaptiveModel } from "./src/model-detect.ts";
+import { findLastExactModelDefinition, mergeCacheCompat, resolveEffectiveCompatFromConfig } from "./src/compat-config.ts";
+import { analyzeModelsJsonForMissingEntry, applyModelsJsonFixTransaction, chooseFixPlacement, composeFixInsertion, composeMissingEntryInsertion, composeModelOverrideInsertion, composeModelsJsonReceiptRollback, composeProviderAffinityInsertion, createModelsJsonFixReceipt, createRollbackBackupPath, decideFixPlacement, formatCompatKeysForInsertion, hasExplicitLongRetentionOptInFromConfig, hasReceiptReasoningProtocolChange, isActionableModelsJsonFixReceipt, locateModelInJsonc, markModelsJsonFixReceiptRolledBack, parseModelsJsonFixReceipt, prepareModelsJsonRollback, readModelsJsonFixReceipt, readModelsJsonFixReceiptSnapshot, receiptBackupPath, resolveExplicitCompatValue, selfCheckFix, selfCheckMissingEntryInsertion, validateModelsJsonRollback, writeModelsJsonFixReceipt } from "./src/models-json-fix.ts";
+import { type CacheProviderId, type CacheStats, LEGACY_STATE_FILE_PATH, type PersistedRoutedModelRef, type PersistedStatsShardV7, SHARD_FILES_DIR, SHARD_GLOBAL_EPOCH_PATH, SHARD_STATE_DIR, STATE_FILE_PATH, type ShardAggregate, type UsageSnapshot, addUsageToCacheStats, advanceGlobalStatsEpoch, advanceModelStatsEpoch, aggregateStatsShardsV7, cleanupStatsShardsV7, cloneCacheStats, currentLocalDay, emptyAllCacheStats, emptyCacheStats, initialEpoch, loadStatsShardAggregateV7, maybeCleanupStatsShardsV7, modelEpochPath, parseCacheStats, parsePersistedRoutedModelRef, parsePersistedStatsShardV7, readGlobalStatsEpoch, readModelStatsEpoch, readValidStatsShardsV7, removeLegacyStatsFiles, writeStatsShardV7 } from "./src/stats-store.ts";
+import { PI_VIRTUAL_MODEL_API, getCompat, isAnthropicMessagesApi, isKimiCodingEmptySignatureModel, isKnownThirdPartyOpenAIEndpoint, isMistralConversationsApi, isNativeVirtualModel, isOfficialOpenAIBaseUrl, isOpenAICompatibleApi, isOpenAICompatibleProxyApi, isOpenAIFamilyAssistantMessage, isOpenAIFamilyModel, isOpenAIFamilyToken, isPiBuiltInLlamaCppModel, isResponsesPromptRewriteBypassApi, isRoutedFallbackModel, isValidModelsConfigForEffectiveCompat, modelKey, readEffectiveCompatConfig } from "./src/model-identity.ts";
+import { CONFIG_FILE_PATH, VIRTUAL_REWRITE_ENV, FOOTER_MODE_ENV, TOOL_ORDER_ENV, featureEnabled, footerStatsMode, isEnabledEnv, isToolOrderEnabled, parseFooterStatsMode, parsePersistedCacheOptimizerConfig, readPersistedCacheOptimizerConfig, resolveFooterStatsMode, runtimeOptimizerEnabled, setPersistedCacheOptimizerConfig, shouldInjectOpenAIPromptCacheKey, writePersistedCacheOptimizerConfig, writePersistedFeature, writePersistedFooterMode } from "./src/config.ts";
+import { LONG_CACHE_RETENTION_VALUE, PI_CACHE_RETENTION_BASELINE_SYMBOL, PI_CACHE_RETENTION_ENV, STARTUP_CACHE_RETENTION_ENV, captureCacheRetentionEnv, getOrCaptureCacheRetentionBaseline, decidePromptCacheRetention, recordPromptCacheRetentionDecision, requestLongCacheRetention, restoreCacheRetentionEnv, userRequestedLongCacheRetention } from "./src/retention.ts";
 import { isRuntimeOptimizerEnabled, setRuntimeOptimizerEnabled } from "./src/config.ts";
 import { compareToolOrderEntries, getToolNameForPayload, isKnownToolOrderApi, isToolOrderingEligibleModel, isVerifiedToolForApi, normalizeToolsInPayload, sortToolsInPayload } from "./src/tool-ordering.ts";
 import { SKILL_COMPRESSION_MIN_COUNT, compressSkillsInSystemPrompt, compressSkillsViaSection, formatSkillsForPrompt, formatSkillsForPromptCompressed, stripSessionOverviewChurn, explainSkillCompressionSkip, recordSkillCompressionOutcome, getLastSkillCompressionOutcome, describeSkillCompressionOutcome } from "./src/prompt-rewrite.ts";
-import { addEffectiveSessionAffinityHeaders, addOpenAIPromptCacheKey, clampPromptCacheKey, collectAnthropicCacheControlsInWireOrder, downgradeAnthropicLongCacheControls, getEffectiveCompatValueSource, hasAnthropicCacheTtlOrderError, hasEffectivePromptCacheKey, isPromptCacheKeyOmittedForModel, normalizeAnthropicCacheControlTtlOrder, omitOpenAIPromptCacheKeys, shouldInjectOpenAIPromptCacheKeyForModel } from "./src/request-payload.ts";
-import { PI_CACHE_HINTS_SYMBOL, PI_ROUTING_REGISTRY_SYMBOL, type PiCacheHintsInput, type PiCacheHintsOutput, type PiCacheHintsV1, applyConfiguredTransportToModel, canRewriteNativeVirtualPrompt, describeNativeVirtualRouteNote, ensureRoutingRegistry, findModelInRegistry, findNativeVirtualDispatches, firstNonEmptyString, getProtocolGlobal, getProviderPayloadModelId, getRoutingRegistry, hashSessionId, installCacheHintsService, isRouterModel, nativeVirtualDispatchFromMessage, nativeVirtualDispatchToModel, parseRouteSnapshot, resolveActiveRouteSnapshot, resolveNativeVirtualRequestModel, resolveNativeVirtualRouteModel, resolveRouteModel, routeSnapshotToPiModel, sessionHashFromContext } from "./src/routing.ts";
-import { CONFIG_RECEIPT_PATH, type PromptCacheKeyConfigReceipt, type PromptCacheKeyConfigReceiptSnapshot, applyPromptCacheKeyConfigFix, configReceiptBackupPath, parsePromptCacheKeyConfigReceipt, rollbackPromptCacheKeyConfig, writePromptCacheKeyConfigReceipt } from "./src/prompt-cache-key-config.ts";
-import { type CompatAdvicePlacement, appendCredentialSafeProviderGuidance, appendDeepSeekCompatAdviceLines, appendOpenAIProxyCompatAdviceLines, buildDeepSeekCompatSuggestion, buildDeepSeekCompatWarningText, buildModelCompatOverride, buildOpenAIProxyCompatWarningText, buildProviderCompatOverride, buildSafeOpenAIProxyCompatSuggestion, describeMissingAdaptiveThinkingCompat, describeMissingCacheCompatForModel, describeMissingDeepSeekCompat, describeMissingOpenAICompatibleProxyCompat, getAgentDirDisplayPath, getModelsJsonDisplayPath, isAdaptiveThinkingCompatApplicable, isDeepSeekWireCompatApplicable } from "./src/compat-advice.ts";
+import { addEffectiveSessionAffinityHeaders, addOpenAIPromptCacheKey, clampPromptCacheKey, collectAnthropicCacheControlsInWireOrder, downgradeAnthropicLongCacheControls, getEffectiveCompatValueSource, hasAnthropicCacheTtlOrderError, hasEffectivePromptCacheKey, isPromptCacheKeyOmittedForModel, normalizeAnthropicCacheControlTtlOrder, omitOpenAIPromptCacheKeys, shouldInjectOpenAIPromptCacheKeyForModel, withAnthropicCacheTtlRepair, withoutPromptCacheRetention, derivePromptCacheKey } from "./src/request-payload.ts";
+import { PI_CACHE_HINTS_SYMBOL, PI_ROUTING_REGISTRY_SYMBOL, type PiCacheHintsInput, type PiCacheHintsOutput, applyConfiguredTransportToModel, canRewriteNativeVirtualPrompt, describeNativeVirtualRouteNote, ensureRoutingRegistry, findModelInRegistry, findNativeVirtualDispatches, getProtocolGlobal, getProviderPayloadModelId, getRoutingRegistry, hashSessionId, installCacheHintsService, nativeVirtualDispatchFromMessage, nativeVirtualDispatchToModel, parseRouteSnapshot, resolveActiveRouteSnapshot, resolveNativeVirtualRequestModel, resolveNativeVirtualRouteModel, resolveRouteModel, routeSnapshotToPiModel, sessionHashFromContext } from "./src/routing.ts";
+import { CONFIG_RECEIPT_PATH, applyPromptCacheKeyConfigFix, configReceiptBackupPath, parsePromptCacheKeyConfigReceipt, rollbackPromptCacheKeyConfig, writePromptCacheKeyConfigReceipt } from "./src/prompt-cache-key-config.ts";
+import { buildDeepSeekCompatSuggestion, buildDeepSeekCompatWarningText, buildModelCompatOverride, buildOpenAIProxyCompatWarningText, buildProviderCompatOverride, buildSafeOpenAIProxyCompatSuggestion, describeMissingAdaptiveThinkingCompat, describeMissingCacheCompatForModel, describeMissingDeepSeekCompat, describeMissingOpenAICompatibleProxyCompat, getAgentDirDisplayPath, getModelsJsonDisplayPath, isAdaptiveThinkingCompatApplicable, isDeepSeekWireCompatApplicable } from "./src/compat-advice.ts";
 import { type CacheProviderAdapter, isVirtualRoutingModel, modelFromAssistantMessage, selectAdapterForAssistantMessage, selectAdapterForModel } from "./src/adapters.ts";
 import { describeMissingOpenAIFamilyProxyCompat } from "./src/compat-advice.ts";
 import { type CacheUsageSample, buildAllStatsOutput, buildContributorsStatsOutput, buildSessionStatsOutput, buildStatsOutput, deriveTotalsByModelFromSessionStats, filterRestorableStatsForSession, formatCacheStats, formatCompactStats, formatHitRatio, formatRecentTrendSummary, formatTokenM, hasMissingUsageFields, makeSessionModelKey, mergeCacheSessions, mergeCacheTotals, mergeLastRoutedModels, modelKeyFromSessionKey, parsePersistedCacheStats, parsePersistedTotalsByModel, prefixFooterStatus, readPersistedCacheStats, routedModelRefToPiModel, selectFooterStatsForModel, writePersistedCacheStats } from "./src/stats-report.ts";
-import { appendAdaptiveThinkingCompatAdviceLines, buildAdaptiveThinkingCompatSuggestion, buildCompatDiagnosis, buildDoctorDiagnosis, buildFixSuggestion, buildLowHitDiagnosis, describeOptionalOpenAICompatibleProxyCompat, describeRouterChannelDiagnostics, getCompatCheckNotApplicableLines, getOptionalAssistantHttpStatus, getPromptCacheRetentionUnsupportedHint, isCompatCheckApplicable, isDeepSeekCompatCheckApplicable, isOpenAISdkHeader403Applicable, isPromptCacheKeyUnsupportedApplicable, isPromptCacheRetention400Applicable, isSessionAffinity403Applicable } from "./src/diagnostics.ts";
-import { REASONING_PROTOCOL_FALLBACK_SYMBOL, buildReasoningProtocolFixSuggestion, getAnthropicTtlFallbackState, getReasoningProtocolFallbackState, hasExplicitDeepSeekReasoningProtocol, hasPromptCacheKeyUnsupportedErrorMessage, hasPromptCacheKeyUnsupportedText, hasPromptCacheRetentionUnsupportedErrorMessage, hasPromptCacheRetentionUnsupportedText, hasReasoningProtocolRejectionErrorMessage, hasReasoningProtocolRejectionText, isExplicitPromptCacheRetentionUnsupportedApplicable, isReasoningProtocolRejectionForModel, isReasoningProtocolRejectionSignalApplicable, mergeFixSuggestions, notifyReasoningProtocolObservation } from "./src/provider-errors.ts";
+import { appendAdaptiveThinkingCompatAdviceLines, buildAdaptiveThinkingCompatSuggestion, buildCompatDiagnosis, buildDoctorDiagnosis, buildFixSuggestion, buildLowHitDiagnosis, describeOptionalOpenAICompatibleProxyCompat, describeRouterChannelDiagnostics, getCompatCheckNotApplicableLines, getPromptCacheRetentionUnsupportedHint, isCompatCheckApplicable, isDeepSeekCompatCheckApplicable, isOpenAISdkHeader403Applicable, isPromptCacheKeyUnsupportedApplicable, isPromptCacheRetention400Applicable, isSessionAffinity403Applicable } from "./src/diagnostics.ts";
+import { REASONING_PROTOCOL_FALLBACK_SYMBOL, buildReasoningProtocolFixSuggestion, getAnthropicTtlFallbackState, getReasoningProtocolFallbackState, hasExplicitDeepSeekReasoningProtocol, hasPromptCacheKeyUnsupportedErrorMessage, hasPromptCacheKeyUnsupportedText, hasPromptCacheRetentionUnsupportedErrorMessage, hasReasoningProtocolRejectionErrorMessage, hasReasoningProtocolRejectionText, isExplicitPromptCacheRetentionUnsupportedApplicable, isReasoningProtocolRejectionForModel, isReasoningProtocolRejectionSignalApplicable, mergeFixSuggestions, notifyReasoningProtocolObservation } from "./src/provider-errors.ts";
 import { hasPromptCacheKeyUnsupportedSignal, hasPromptCacheRetentionUnsupportedSignal, hasReasoningProtocolRejectionSignal } from "./src/provider-errors.ts";
 import { MAX_RECENT_SAMPLES, buildExactRouterStatusEntry, consolidateDirectProviderStatsModel, createSerializedAsyncRunner, findBestRouterModelStats, keyForModelExt } from "./src/stats-report.ts";
 import { type PiCacheHintSnapshot, getCacheHintsService, getSessionPromptCacheKey, isOptimizerOwnedCacheHintsService, markOptimizerOwnedCacheHintsService } from "./src/routing.ts";
 import { isActionablePromptCacheKeyConfigReceipt, readPromptCacheKeyConfigReceipt, readPromptCacheKeyConfigReceiptSnapshot } from "./src/prompt-cache-key-config.ts";
-import { formatOptimizerRuntimeMode, formatPersistentFeatureConfig, getOptimizerRuntimeModeLines, readPersistedFooterMode } from "./src/config.ts";
-import { FEATURE_COMMAND_MAP, getCacheOptimizerArgumentCompletions } from "./src/command-completion.ts";
+import { formatOptimizerRuntimeMode, getOptimizerRuntimeModeLines, readPersistedFooterMode } from "./src/config.ts";
+import { getCacheOptimizerArgumentCompletions } from "./src/command-completion.ts";
 import { MAX_PROVIDER_REQUEST_STATES, pruneProviderRequestStates, snapshotProviderRequestModel } from "./src/request-state.ts";
 import { NO_PROMPT_REWRITE_ENV } from "./src/config.ts";
 import { createCacheOptimizerCommandHandler } from "./src/command.ts";
 import { type ProviderRequestState } from "./src/request-state.ts";
 
 const STATUS_KEY = "pi-cache-stats";
-
-type PersistedCacheStatsV2 = {
-  version: 2;
-  statsByProvider: Partial<Record<CacheProviderId, CacheStats>>;
-};
-
-type PersistedCacheStatsV3 = {
-  version: 3;
-  statsByModel: Record<string, CacheStats>;
-  legacyFamily: Partial<Record<CacheProviderId, CacheStats>>;
-};
-
-/**
- * V4 format: session-scoped stats buckets.
- * Each Pi process/session gets its own stats isolated by a hashed session id.
- *
- * sessions: sessionHash → modelKey (provider/id) → CacheStats
- * legacyFamily: unchanged from v3 (migration/fallback when ctx.model is unknown)
- */
-type PersistedCacheStatsV4 = {
-  version: 4;
-  sessions: Record<string, Record<string, CacheStats>>;
-  legacyFamily: Partial<Record<CacheProviderId, CacheStats>>;
-};
-
-type PersistedCacheStatsV5 = {
-  version: 5;
-  sessions: Record<string, Record<string, CacheStats>>;
-  legacyFamily: Partial<Record<CacheProviderId, CacheStats>>;
-  lastRoutedModelBySession?: Record<string, PersistedRoutedModelRef>;
-};
 
 function buildAdaptiveThinkingCompatWarningText(key: string, missing: string[]): string {
   const slashIdx = key.indexOf("/");
@@ -143,6 +104,11 @@ function notifyCacheCompatIfNeeded(
 // extension's public API; pi only invokes the default export below.
 export const __internals_for_tests = {
   getLastSkillCompressionOutcome,
+  decidePromptCacheRetention,
+  userRequestedLongCacheRetention,
+  derivePromptCacheKey,
+  withAnthropicCacheTtlRepair,
+  withoutPromptCacheRetention,
   describeSkillCompressionOutcome,
   stripSessionOverviewChurn,
   formatSkillsForPrompt,
@@ -966,11 +932,19 @@ export default function (pi: ExtensionAPI) {
    * The caller strips prompt_cache_retention when this returns false.
    */
   function hasExplicitLongRetentionOptIn(model: PiModel): boolean {
-    return hasExplicitLongRetentionOptInFromConfig(
+    // Pi's built-in catalog only ever sets supportsLongCacheRetention: false, so
+    // an explicit true on the runtime model (provider extension or merged
+    // models.json) is as deliberate as one read from models.json directly.
+    // A value resolved from models.json (modelOverrides > model > provider)
+    // still wins, so an explicit false there is never overridden.
+    const configured = resolveExplicitCompatValue(
       readEffectiveCompatConfig(),
       model.provider,
       model.id,
+      "supportsLongCacheRetention",
     );
+    if (configured !== undefined) return configured.value === true;
+    return asRecord(model.compat)?.supportsLongCacheRetention === true;
   }
 
   /**
@@ -1014,6 +988,11 @@ export default function (pi: ExtensionAPI) {
   });
 
   pi.on("agent_settled", async (_event, ctx) => {
+    // No provider request can still be in flight once the agent has settled.
+    // Drop leftover lifecycle records (a request whose message never ended, or
+    // a record consumed out of order) so they cannot be correlated with the
+    // next run's messages.
+    providerRequestStates.length = 0;
     await refreshShardAggregate();
     await publishStatus(ctx);
   });
@@ -1198,61 +1177,57 @@ export default function (pi: ExtensionAPI) {
       toolOrderChanged = normalized.changed;
     }
 
+    // Every mutation below works on a copy and is returned explicitly: Pi's
+    // event.payload is never modified in place, so the hook does not depend on
+    // the host honouring in-place edits.
+    let payloadChanged = toolOrderChanged;
+
     // Anthropic rejects mixed cache breakpoints when a 1h block appears after
     // a 5m/default block in wire order (tools → system → messages). Repair any
     // conflict visible in Pi's final payload immediately. Some proxies inject
     // hidden short breakpoints after this hook; only models that have actually
     // returned the explicit TTL-order error receive the process-local 5m fallback.
     if (requestModel && isAnthropicMessagesApi(requestModel.api)) {
-      const visibleConflictFixed = normalizeAnthropicCacheControlTtlOrder(requestPayload);
-      if (!visibleConflictFixed && anthropicTtlOrderErrorModels.has(modelKey(requestModel))) {
-        downgradeAnthropicLongCacheControls(requestPayload);
+      const repaired = withAnthropicCacheTtlRepair(requestPayload, anthropicTtlOrderErrorModels.has(modelKey(requestModel)));
+      if (repaired !== undefined) {
+        requestPayload = repaired;
+        payloadChanged = true;
       }
     }
 
-    // ── Safety: strip prompt_cache_retention from payload for models that
-    // are not authorised to send it. Pi defaults supportsLongCacheRetention
-    // to true for all openai-completions models, but most third-party APIs
-    // reject the parameter with 400 “Extra inputs are not permitted”.
-    //
-    // Gate order (first match wins):
-    //   1. Official OpenAI          → keep (trusted to support it)
-    //   2. 400 history              → strip (empirical evidence overrides user config)
-    //   3. Explicit opt-in in models.json → keep (user explicitly wants it)
-    //   4. Everything else          → strip (safe default for third-party APIs)
-    //
-    // Gate 2 before Gate 3 is critical: if a user explicitly opted in but
-    // the API returned 400, we must strip — otherwise the 400 repeats forever.
-    if (runtimeOptimizerEnabled) {
-      const payloadRecord = asRecord(requestPayload);
-      if (payloadRecord && typeof payloadRecord.prompt_cache_retention === "string") {
-        if (requestModel) {
-          if (isOfficialOpenAIBaseUrl(requestModel)) {
-            // Gate 1: Official OpenAI → keep
-          } else if (promptCacheRetention400Models.has(modelKey(requestModel))) {
-            // Gate 2: 400 history → strip (overrides user opt-in)
-            delete payloadRecord.prompt_cache_retention;
-          } else if (hasExplicitLongRetentionOptIn(requestModel)) {
-            // Gate 3: Explicit user opt-in → keep
-          } else {
-            // Gate 4: Safe default → strip
-            delete payloadRecord.prompt_cache_retention;
-          }
+    // prompt_cache_retention gate. This extension sets PI_CACHE_RETENTION=long,
+    // which makes Pi emit prompt_cache_retention: "24h" for every endpoint whose
+    // detected compat does not explicitly disable it, including third-party
+    // proxies that reject unknown fields with HTTP 400. The gate undoes only that
+    // side effect; see decidePromptCacheRetention for the order and reasons.
+    if (runtimeOptimizerEnabled && typeof asRecord(requestPayload)?.prompt_cache_retention === "string") {
+      const decision = decidePromptCacheRetention({
+        providerRejected: !!requestModel && promptCacheRetention400Models.has(modelKey(requestModel)),
+        officialOpenAI: !!requestModel && isOfficialOpenAIBaseUrl(requestModel),
+        explicitOptIn: !!requestModel && hasExplicitLongRetentionOptIn(requestModel),
+        userRequestedLong: userRequestedLongCacheRetention(),
+      });
+      recordPromptCacheRetentionDecision(requestModel ? modelKey(requestModel) : undefined, decision);
+      if (!decision.keep) {
+        const stripped = withoutPromptCacheRetention(requestPayload);
+        if (stripped !== undefined) {
+          requestPayload = stripped;
+          payloadChanged = true;
         }
       }
     }
 
     if (isPromptCacheKeyOmittedForModel(requestModel)) {
       const omitted = omitOpenAIPromptCacheKeys(requestPayload);
-      return omitted ?? (toolOrderChanged ? requestPayload : undefined);
+      return omitted ?? (payloadChanged ? requestPayload : undefined);
     }
 
     if (!shouldInjectOpenAIPromptCacheKey() || !shouldInjectOpenAIPromptCacheKeyForModel(requestModel)) {
-      return toolOrderChanged ? requestPayload : undefined;
+      return payloadChanged ? requestPayload : undefined;
     }
 
     const withCacheKey = addOpenAIPromptCacheKey(requestPayload, getSessionPromptCacheKey(ctx));
-    return withCacheKey ?? (toolOrderChanged ? requestPayload : undefined);
+    return withCacheKey ?? (payloadChanged ? requestPayload : undefined);
   });
 
   pi.on("after_provider_response", async (event, ctx) => {
@@ -1412,7 +1387,7 @@ export default function (pi: ExtensionAPI) {
       const errorModel = messageModel
         ? findModelInRegistry(ctx.modelRegistry, messageModel.provider, messageModel.id) ?? messageModel
         : undefined;
-      if (isReasoningProtocolRejectionForModel(event.message, errorModel)) {
+      if (errorModel && isReasoningProtocolRejectionForModel(event.message, errorModel)) {
         await notifyReasoningProtocolObservation(
           errorModel,
           ctx,

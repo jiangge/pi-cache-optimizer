@@ -1,6 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
 import { constants as fsConstants } from "node:fs";
-import { chmod, copyFile, link, lstat, mkdir, readFile, rename, unlink, writeFile } from "node:fs/promises";
+import { chmod, copyFile, link, lstat, mkdir, open, readFile, rename, unlink, writeFile } from "node:fs/promises";
 import { LOG_PREFIX, asRecord, getErrorCode, isProcessAlive } from "./common.ts";
 import { MODELS_TRANSACTION_LOCK_PATH, MODELS_TRANSACTION_LOCK_STALE_MS, MODELS_TRANSACTION_LOCK_WAIT_MS, STATE_DIR } from "./paths.ts";
 
@@ -23,6 +23,31 @@ export function backupTimestamp(now: Date = new Date()): string {
 
 export function uniqueTempPath(targetPath: string, purpose: string): string {
   return `${targetPath}.${process.pid}.${Date.now()}.${backupSequence++}.${purpose}.tmp`;
+}
+
+/**
+ * Create `path` exclusively (`wx`) and flush it to stable storage before the
+ * caller renames or links it into place, so a crash right after the commit
+ * cannot leave an empty or truncated models.json / config file.
+ */
+export async function writeFileExclusiveDurable(path: string, content: string, mode: number): Promise<void> {
+  const handle = await open(path, "wx", mode);
+  try {
+    await handle.writeFile(content, "utf8");
+    await handle.sync();
+  } finally {
+    await handle.close();
+  }
+}
+
+/** Flush an already-written file (for example a copyFile result) to stable storage. */
+export async function syncFile(path: string): Promise<void> {
+  const handle = await open(path, "r+");
+  try {
+    await handle.sync();
+  } finally {
+    await handle.close();
+  }
 }
 
 export type FileIdentity = { dev: number | bigint; ino: number | bigint };
@@ -80,7 +105,7 @@ export async function atomicReplaceTextFilePreservingMode(
   try {
     // `wx` makes the unique temporary path non-overwriting even if a hostile
     // or stale file appears between name generation and the write.
-    await writeFile(tempPath, content, { encoding: "utf8", mode, flag: "wx" });
+    await writeFileExclusiveDurable(tempPath, content, mode);
     const tempInfo = await lstat(tempPath);
     if (tempInfo.isSymbolicLink() || !tempInfo.isFile()) {
       throw new Error("temporary replacement is not a regular file");
@@ -120,7 +145,7 @@ export async function atomicCreateTextFileNoReplace(
 ): Promise<void> {
   const tempPath = uniqueTempPath(targetPath, purpose);
   try {
-    await writeFile(tempPath, content, { encoding: "utf8", mode, flag: "wx" });
+    await writeFileExclusiveDurable(tempPath, content, mode);
     const tempInfo = await lstat(tempPath);
     if (tempInfo.isSymbolicLink() || !tempInfo.isFile()) {
       throw new Error("temporary creation is not a regular file");
@@ -167,6 +192,7 @@ export async function atomicRestoreFileFromBackup(
   const tempPath = uniqueTempPath(targetPath, "restore");
   try {
     await copyFile(backupPath, tempPath, fsConstants.COPYFILE_EXCL);
+    await syncFile(tempPath);
     const tempInfo = await lstat(tempPath);
     if (tempInfo.isSymbolicLink() || !tempInfo.isFile()) {
       throw new Error("temporary restore is not a regular file");

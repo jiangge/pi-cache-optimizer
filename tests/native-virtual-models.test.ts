@@ -4,6 +4,7 @@ import { after, before, describe, test } from "node:test";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createJiti } from "jiti";
+import { derivePromptCacheKey } from "../src/request-payload.ts";
 
 // Pi 0.99+ native virtual models keep ctx.model virtual (api "pi-virtual")
 // while Pi dispatches each request to a physical model. These tests pin how
@@ -419,7 +420,7 @@ describe("native virtual model hooks", () => {
     };
 
     const toProxy = await send({ model: "kimi-k3", messages: [], prompt_cache_retention: "24h" }, [proxy]);
-    assert.equal(toProxy.prompt_cache_key, "native-virtual-session");
+    assert.equal(toProxy.prompt_cache_key, derivePromptCacheKey("native-virtual-session"));
     assert.equal(toProxy.prompt_cache_retention, undefined);
 
     const toOpenAI = await send({ model: "gpt-6.1-sol", input: [], prompt_cache_retention: "24h", prompt_cache_key: "pi-key" }, [openai]);

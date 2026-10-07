@@ -2,7 +2,7 @@ import { LOG_PREFIX, type PiModel, asRecord, getNumber, isNonEmptyString, lower 
 import { findLastExactModelDefinition } from "./compat-config.ts";
 import { VIRTUAL_REWRITE_ENV, featureEnabled } from "./config.ts";
 import { ROUTED_FALLBACK_MODEL_SYMBOL, getAssistantRecord, isNativeVirtualModel, isResponsesPromptRewriteBypassApi, modelKey, readEffectiveCompatConfig } from "./model-identity.ts";
-import { clampPromptCacheKey } from "./request-payload.ts";
+import { derivePromptCacheKey } from "./request-payload.ts";
 import { type ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { createHash } from "node:crypto";
 
@@ -229,8 +229,8 @@ export function resolveNativeVirtualCandidateModels(
   model: PiModel | undefined,
   ctx?: ContextWithOptionalModelRegistry,
 ): PiModel[] | undefined {
-  if (!isNativeVirtualModel(model)) return undefined;
-  const adapter = model ? getRoutingRegistry()?.getRouter(model.provider) : undefined;
+  if (!model || !isNativeVirtualModel(model)) return undefined;
+  const adapter = getRoutingRegistry()?.getRouter(model.provider);
   if (!adapter?.resolveCandidateRoutes) return undefined;
 
   try {
@@ -527,7 +527,7 @@ export type PiCacheHintSnapshot = PiCacheHintsInput & PiCacheHintsOutput & {
 };
 
 export function getSessionPromptCacheKey(ctx: ExtensionContext): string | undefined {
-  return clampPromptCacheKey(ctx.sessionManager.getSessionId());
+  return derivePromptCacheKey(ctx.sessionManager.getSessionId());
 }
 
 export function isCacheHintsServiceV1(value: unknown): value is PiCacheHintsV1 {

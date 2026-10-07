@@ -1,4 +1,4 @@
-import { join } from "node:path";
+import { createHash } from "node:crypto";
 import { type PiModel, type UnknownRecord, asRecord, isNonEmptyString, lower } from "./common.ts";
 import { type CacheCompat, getEffectiveCompatSources, resolveEffectiveCompatFromConfig } from "./compat-config.ts";
 import { type PersistedCacheOptimizerConfig, type PersistedCacheOptimizerConfigV3, persistedCacheOptimizerConfig, runtimeOptimizerEnabled } from "./config.ts";
@@ -13,6 +13,19 @@ export function clampPromptCacheKey(key: string | undefined): string | undefined
   const chars = Array.from(normalized);
   if (chars.length <= OPENAI_PROMPT_CACHE_KEY_MAX_LENGTH) return normalized;
   return chars.slice(0, OPENAI_PROMPT_CACHE_KEY_MAX_LENGTH).join("");
+}
+
+/**
+ * Opaque, stable per-session identifier sent to providers and proxies for
+ * cache routing (`prompt_cache_key` and the session-affinity header bridge).
+ * The raw Pi session id never leaves the process: a one-way hash is just as
+ * stable for sticky routing and does not expose the local session identity to
+ * third-party endpoints.
+ */
+export function derivePromptCacheKey(sessionId: string | undefined): string | undefined {
+  const normalized = sessionId?.trim();
+  if (!normalized) return undefined;
+  return `pi-${createHash("sha256").update(normalized, "utf8").digest("hex").slice(0, 32)}`;
 }
 
 export function getEffectiveCompatValueSource(
@@ -71,7 +84,8 @@ export function addEffectiveSessionAffinityHeaders(
       ? "openrouter"
       : "openai"
   );
-  const value = sessionId.trim();
+  const value = derivePromptCacheKey(sessionId);
+  if (!value) return false;
   let changed = false;
   if (format === "openrouter") {
     return setProviderHeaderIfMissing(headers, "x-session-id", value);
@@ -161,23 +175,66 @@ export function hasAnthropicCacheTtlOrderError(message: unknown): boolean {
     error.includes("must not come after");
 }
 
-export function normalizeAnthropicCacheControlTtlOrder(payload: unknown): boolean {
-  const controls = collectAnthropicCacheControlsInWireOrder(payload);
+/** Pure check: does the payload put a 1h breakpoint after a 5m/default one? */
+export function hasAnthropicCacheTtlOrderConflict(payload: unknown): boolean {
   let seenShort = false;
-  let hasInvalidLongAfterShort = false;
-
-  for (const control of controls) {
+  for (const control of collectAnthropicCacheControlsInWireOrder(payload)) {
     const ttl = control.ttl;
     if (ttl === undefined || ttl === "5m") {
       seenShort = true;
     } else if (ttl === "1h" && seenShort) {
-      hasInvalidLongAfterShort = true;
-      break;
+      return true;
     }
   }
-  if (!hasInvalidLongAfterShort) return false;
+  return false;
+}
 
+/** Pure check: does the payload carry any 1h breakpoint? */
+export function hasAnthropicLongCacheControl(payload: unknown): boolean {
+  return collectAnthropicCacheControlsInWireOrder(payload).some((control) => control.ttl === "1h");
+}
+
+/**
+ * In-place repair, kept for callers that own the object. The request hook uses
+ * {@link withAnthropicCacheTtlRepair}, which never mutates Pi's payload.
+ */
+export function normalizeAnthropicCacheControlTtlOrder(payload: unknown): boolean {
+  if (!hasAnthropicCacheTtlOrderConflict(payload)) return false;
   return downgradeAnthropicLongCacheControls(payload);
+}
+
+function clonePayload(payload: unknown): unknown {
+  try {
+    return structuredClone(payload);
+  } catch {
+    // Non-cloneable payloads are not produced by Pi's built-in transports; keep
+    // the request valid by falling back to a JSON round-trip.
+    return JSON.parse(JSON.stringify(payload));
+  }
+}
+
+/**
+ * Returns a repaired copy when the Anthropic payload needs its 1h breakpoints
+ * downgraded, or undefined when it is already valid. `forceDowngrade` applies
+ * the process-local fallback for models that already returned the TTL-order
+ * error (proxies may inject hidden short breakpoints after this hook).
+ */
+export function withAnthropicCacheTtlRepair(payload: unknown, forceDowngrade: boolean): unknown | undefined {
+  const needsRepair = hasAnthropicCacheTtlOrderConflict(payload) ||
+    (forceDowngrade && hasAnthropicLongCacheControl(payload));
+  if (!needsRepair) return undefined;
+  const copy = clonePayload(payload);
+  downgradeAnthropicLongCacheControls(copy);
+  return copy;
+}
+
+/** Returns a copy without `prompt_cache_retention`, or undefined when absent. */
+export function withoutPromptCacheRetention(payload: unknown): unknown | undefined {
+  const record = asRecord(payload);
+  if (!record || !Object.prototype.hasOwnProperty.call(record, "prompt_cache_retention")) return undefined;
+  const copy = { ...record };
+  delete copy.prompt_cache_retention;
+  return copy;
 }
 
 export function addOpenAIPromptCacheKey(payload: unknown, cacheKey: string | undefined): unknown | undefined {

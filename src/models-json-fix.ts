@@ -1,8 +1,8 @@
 import { randomUUID } from "node:crypto";
 import { constants as fsConstants } from "node:fs";
-import { chmod, copyFile, link, lstat, mkdir, readFile, rename, unlink, writeFile } from "node:fs/promises";
+import { chmod, copyFile, link, lstat, mkdir, readFile, rename, unlink } from "node:fs/promises";
 import { basename, dirname, join } from "node:path";
-import { type FileIdentity, atomicReplaceTextFilePreservingMode, atomicRestoreFileFromBackup, backupTimestamp, hashText, readRegularTextFile, sameFileIdentity, uniqueTempPath, validateAtomicTarget, withModelsJsonTransactionLock } from "./atomic-fs.ts";
+import { type FileIdentity, atomicReplaceTextFilePreservingMode, atomicRestoreFileFromBackup, backupTimestamp, hashText, readRegularTextFile, sameFileIdentity, uniqueTempPath, validateAtomicTarget, withModelsJsonTransactionLock, writeFileExclusiveDurable } from "./atomic-fs.ts";
 import { LOG_PREFIX, type PiModel, asRecord, getErrorCode } from "./common.ts";
 import { findLastExactModelDefinition, resolveEffectiveCompatFromConfig } from "./compat-config.ts";
 import { type FixReceiptCompatChange, type FixReceiptPlacement, type ModelsJsonFixReceiptV1, RECEIPT_COMPAT_KEYS, type ReceiptScalar, type ReceiptScalarState, isReceiptTimestamp, isSafeReceiptText, isSha256 } from "./fix-types.ts";
@@ -1610,7 +1610,7 @@ export async function writeModelsJsonFixReceipt(
 
   const tempPath = uniqueTempPath(receiptPath, "receipt");
   try {
-    await writeFile(tempPath, JSON.stringify(receipt, null, 2) + "\n", { encoding: "utf8", mode, flag: "wx" });
+    await writeFileExclusiveDurable(tempPath, JSON.stringify(receipt, null, 2) + "\n", mode);
     const tempInfo = await lstat(tempPath);
     if (tempInfo.isSymbolicLink() || !tempInfo.isFile()) throw new Error("invalid temporary fix receipt");
     await chmod(tempPath, mode);

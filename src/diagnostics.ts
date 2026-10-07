@@ -1,4 +1,3 @@
-import { join } from "node:path";
 import { type CacheProviderAdapter } from "./adapters.ts";
 import { type PiModel, type UnknownRecord, asRecord, isNonEmptyString, lower } from "./common.ts";
 import { type CompatAdvicePlacement, appendCredentialSafeProviderGuidance, appendDeepSeekCompatAdviceLines, appendOpenAIProxyCompatAdviceLines, buildDeepSeekCompatSuggestion, buildSafeOpenAIProxyCompatSuggestion, describeMissingCacheCompatForModel, getModelsJsonDisplayPath, isAdaptiveThinkingCompatApplicable, isDeepSeekWireCompatApplicable } from "./compat-advice.ts";
@@ -555,8 +554,6 @@ export function buildLowHitDiagnosis(
   const recent10 = samples.slice(-10);
   const recent10Hits = recent10.filter((s) => s.hit).length;
   const recent10Total = recent10.length;
-  const recent10Cached = recent10.reduce((sum, s) => sum + s.cachedInputTokens, 0);
-  const recent10Input = recent10.reduce((sum, s) => sum + s.totalInputTokens, 0);
 
   // 5. Today's overall trend from persisted stats
   const todayStats = stats ?? emptyCacheStats();
@@ -611,7 +608,6 @@ export function buildLowHitDiagnosis(
 
   // Priority 4: recent trend low
   if (recent10Total > 0) {
-    const hitRatio = recent10Input > 0 ? Math.round((recent10Cached / recent10Input) * 100) : 0;
     if (recent10Hits === 0 && todayStats.totalRequests > 3 && todayHitRatio < 30) {
       lines.push(`📉 Cache hit rate is low: ${todayHitRatio}% today (${recent10Total} recent samples).`);
       lines.push("   Likely causes: proxy routing to different backends per request,");

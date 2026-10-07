@@ -3,6 +3,7 @@ import { afterEach, describe, test } from "node:test";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 
 import extension, { __internals_for_tests as internals } from "#extension";
+import { derivePromptCacheKey } from "../src/request-payload.ts";
 
 type PiModel = NonNullable<ExtensionContext["model"]>;
 type Handler = (event: any, context: any) => unknown;
@@ -218,9 +219,11 @@ describe("deterministic tool ordering", () => {
       sessionManager: { getSessionId: () => "anthropic-tool-order-session" },
       modelRegistry: { find: () => undefined, getAvailable: () => [], getAll: () => [] },
     };
-    request({ payload }, context);
-    assert.deepEqual(payload.tools.map((tool) => tool.name), ["z", "a"]);
-    assert.equal(payload.tools[1].cache_control.ttl, undefined);
+    const result = request({ payload }, context) as typeof payload;
+    assert.deepEqual(result.tools.map((tool) => tool.name), ["z", "a"]);
+    assert.equal(result.tools[1].cache_control.ttl, undefined);
+    // Pi's payload object is never mutated in place.
+    assert.equal(payload.tools[1].cache_control.ttl, "1h");
   });
 
   test("hook ordering is gated and composes tool ordering with existing request mutations", () => {
@@ -287,6 +290,6 @@ describe("deterministic tool ordering", () => {
     process.env[internals.TOOL_ORDER_ENV] = "0";
     const disabledResult = request({ payload }, context) as typeof payload & { prompt_cache_key?: string };
     assert.deepEqual(disabledResult.tools.map((tool) => tool.function.name), ["z", "a"]);
-    assert.equal(disabledResult.prompt_cache_key, "tool-order-session");
+    assert.equal(disabledResult.prompt_cache_key, derivePromptCacheKey("tool-order-session"));
   });
 });

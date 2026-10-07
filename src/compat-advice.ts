@@ -1,10 +1,8 @@
 import { type PiModel, isNonEmptyString, lower } from "./common.ts";
 import { isAdaptiveGenerationModel, isKimiCodingAdaptiveModel } from "./model-detect.ts";
 import { getCompat, isDeepSeekLikeModel, isKimiCodingEmptySignatureModel, isKnownThirdPartyOpenAIEndpoint, isOpenAICompatibleProxyApi, isOpenAIFamilyModel, isPiBuiltInLlamaCppModel, isRoutedFallbackModel } from "./model-identity.ts";
-import { MODELS_JSON_PATH, STATE_DIR } from "./paths.ts";
 import { getAgentDir } from "@earendil-works/pi-coding-agent";
 import { homedir } from "node:os";
-import { join } from "node:path";
 
 /** Join display-only path fragments without resolving them for I/O. */
 export function joinDisplayPath(base: string, child: string, platform: string = process.platform): string {

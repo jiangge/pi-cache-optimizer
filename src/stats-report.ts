@@ -7,7 +7,6 @@ import { CACHE_PROVIDER_IDS, type CacheProviderId, type CacheStats, LEGACY_STATE
 import { usageRecordFromAssistant } from "./usage.ts";
 import { type ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { mkdir, readFile, rename, unlink, writeFile } from "node:fs/promises";
-import { join } from "node:path";
 
 export type CacheStatsState = {
   statsByModel: Record<string, CacheStats>;
@@ -138,7 +137,6 @@ export function formatRecentTrendSummary(samples: CacheUsageSample[], maxCount: 
   const totalInput = recent.reduce((sum, s) => sum + s.totalInputTokens, 0);
   const missingCount = recent.filter((s) => s.missingUsageFields).length;
 
-  const hitRatio = formatHitRatio(hits, recent.length);
   const tokenRatio = totalInput > 0 ? formatHitRatio(totalCached, totalInput) : "N/A";
 
   let result = `Recent ${recent.length}/${maxCount}: ${hits}/${recent.length} hits · ${tokenRatio} tok cached`;

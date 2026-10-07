@@ -1,4 +1,4 @@
-import { type PiModel, type UnknownRecord, asRecord, lower } from "./common.ts";
+import { type PiModel, type UnknownRecord, asRecord } from "./common.ts";
 
 export type CacheCompat = {
   supportsStore?: boolean;

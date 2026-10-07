@@ -1,5 +1,5 @@
 import { type BuildSystemPromptOptions } from "@earendil-works/pi-coding-agent";
-import { basename, dirname, join } from "node:path";
+import { basename, dirname } from "node:path";
 import { NO_SKILL_COMPRESSION_ENV, featureEnabled } from "./config.ts";
 
 

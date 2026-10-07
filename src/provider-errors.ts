@@ -6,7 +6,6 @@ import { getAssistantRecord, getCompat, isDeepSeekLikeModel, isOfficialOpenAIBas
 import { isActionableModelsJsonFixReceipt, readModelsJsonFixReceipt } from "./models-json-fix.ts";
 import { firstNonEmptyString } from "./routing.ts";
 import { type ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { join } from "node:path";
 
 export const ANTHROPIC_TTL_FALLBACK_SYMBOL = Symbol.for("pi.cache.optimizer.anthropic-ttl-fallback.v1");
 

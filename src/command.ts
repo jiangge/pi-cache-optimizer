@@ -1,6 +1,5 @@
 import { type ExtensionCommandContext, type ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { readFile, rename } from "node:fs/promises";
-import { join } from "node:path";
+import { readFile } from "node:fs/promises";
 import { selectAdapterForModel } from "./adapters.ts";
 import { backupTimestamp, hashText } from "./atomic-fs.ts";
 import { FEATURE_COMMAND_MAP } from "./command-completion.ts";
@@ -22,6 +21,7 @@ import { type ProviderRequestState } from "./request-state.ts";
 import { type CacheStats, type ShardAggregate } from "./stats-store.ts";
 import { type CacheUsageSample } from "./stats-report.ts";
 import { describeSkillCompressionOutcome } from "./prompt-rewrite.ts";
+import { describePromptCacheRetentionDecision, getLastPromptCacheRetentionDecision } from "./retention.ts";
 
 /**
  * Everything the command needs from the extension instance. The extension keeps this state in closures
@@ -72,7 +72,7 @@ export function createCacheOptimizerCommandHandler(runtime: CommandRuntime) {
     sessionModelKey,
     syncSessionHash,
   } = runtime;
-  const { getCacheStatsTotalsByModel, getCurrentSessionHashSet, getCurrentSessionHash, getLastStatusText, clearLastStatusText } = runtime;
+  const { getCacheStatsTotalsByModel, getCurrentSessionHashSet, getCurrentSessionHash, clearLastStatusText } = runtime;
 
   return async function handleCacheOptimizerCommand(
     args: string,
@@ -110,7 +110,7 @@ export function createCacheOptimizerCommandHandler(runtime: CommandRuntime) {
         const samples = sk ? getRecentSamples(sk) : [];
         const lowHitLines = buildLowHitDiagnosis(model, adapter, statsState, samples);
         const routeNote = describeNativeVirtualRouteNote(selectedModel, model);
-        const fullDiagnosis = [routeNote, diagnosis, describeSkillCompressionOutcome(), ...lowHitLines].filter((line) => line !== undefined).join("\n");
+        const fullDiagnosis = [routeNote, diagnosis, describeSkillCompressionOutcome(), describePromptCacheRetentionDecision(getLastPromptCacheRetentionDecision()), ...lowHitLines].filter((line) => line !== undefined).join("\n");
         cmdCtx.ui.notify(fullDiagnosis, "info");
       } else if (subcommand === "stats") {
         const aggregate = await refreshShardAggregate();

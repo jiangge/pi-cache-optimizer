@@ -15,7 +15,7 @@ export function isKnownToolOrderApi(api: unknown): api is ToolOrderApi {
     api === "google-vertex" || api === "bedrock-converse-stream";
 }
 
-export function isToolOrderingEligibleModel(model: PiModel | undefined): boolean {
+export function isToolOrderingEligibleModel(model: PiModel | undefined): model is PiModel {
   // Responses/Codex prompt bypasses remain untouched. The pure helper still
   // supports the verified Responses shape for fixture use, but the request
   // hook must preserve Pi's server-managed/safety-sensitive bypass.

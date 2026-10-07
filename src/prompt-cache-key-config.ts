@@ -1,12 +1,12 @@
-import { type FileIdentity, atomicCreateTextFileNoReplace, atomicReplaceTextFilePreservingMode, atomicRestoreFileFromBackup, backupTimestamp, hashText, sameFileIdentity, uniqueTempPath, validateAtomicTarget, withModelsJsonTransactionLock } from "./atomic-fs.ts";
+import { type FileIdentity, atomicCreateTextFileNoReplace, atomicReplaceTextFilePreservingMode, atomicRestoreFileFromBackup, backupTimestamp, hashText, sameFileIdentity, uniqueTempPath, validateAtomicTarget, withModelsJsonTransactionLock, writeFileExclusiveDurable } from "./atomic-fs.ts";
 import { LOG_PREFIX, type PiModel, asRecord, getErrorCode } from "./common.ts";
-import { CONFIG_FILE_PATH, type PersistedCacheOptimizerConfigV2, type PersistedCacheOptimizerConfigV3, normalizePersistedCacheOptimizerConfig, parsePersistedCacheOptimizerConfig } from "./config.ts";
+import { CONFIG_FILE_PATH, type PersistedCacheOptimizerConfigV3, normalizePersistedCacheOptimizerConfig, parsePersistedCacheOptimizerConfig } from "./config.ts";
 import { isReceiptTimestamp, isSafeReceiptText, isSha256 } from "./fix-types.ts";
 import { modelKey } from "./model-identity.ts";
 import { STATE_DIR } from "./paths.ts";
 import { randomUUID } from "node:crypto";
 import { constants as fsConstants } from "node:fs";
-import { chmod, copyFile, link, lstat, mkdir, readFile, rename, unlink, writeFile } from "node:fs/promises";
+import { chmod, copyFile, link, lstat, mkdir, readFile, rename, unlink } from "node:fs/promises";
 import { basename, dirname, join } from "node:path";
 
 export const CONFIG_RECEIPT_FILE_NAME = "pi-cache-optimizer-config-receipt.json";
@@ -125,7 +125,7 @@ export async function writePromptCacheKeyConfigReceipt(
   }
   const tempPath = uniqueTempPath(receiptPath, "config-receipt");
   try {
-    await writeFile(tempPath, JSON.stringify(receipt, null, 2) + "\n", { encoding: "utf8", mode: 0o600, flag: "wx" });
+    await writeFileExclusiveDurable(tempPath, JSON.stringify(receipt, null, 2) + "\n", 0o600);
     const tempInfo = await lstat(tempPath);
     if (tempInfo.isSymbolicLink() || !tempInfo.isFile()) throw new Error("invalid temporary prompt-cache-key receipt");
     await chmod(tempPath, 0o600);
@@ -199,7 +199,7 @@ export async function applyPromptCacheKeyConfigFixUnderLock(
   const tempPath = uniqueTempPath(configPath, "config-fix");
   let committedInfo: Awaited<ReturnType<typeof lstat>> | undefined;
   try {
-    await writeFile(tempPath, modifiedText, { encoding: "utf8", mode, flag: "wx" });
+    await writeFileExclusiveDurable(tempPath, modifiedText, mode);
     await chmod(tempPath, mode);
     if (originalInfo) {
       await validateAtomicTarget(configPath, { identity: originalInfo, hash: beforeHash, mode });
