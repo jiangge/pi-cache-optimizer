@@ -1474,6 +1474,18 @@ describe("DeepSeek protocol-first compatibility", () => {
       '400 Unsupported parameter: thinking. Use reasoning_effort instead.',
     ), true);
     assert.equal(internals.hasReasoningProtocolRejectionText(
+      '400 未知请求参数：thinking，请使用 reasoning_effort。',
+    ), true);
+    assert.equal(internals.hasReasoningProtocolRejectionText(
+      '不支持 thinking 参数，请改用 reasoning_effort。',
+    ), true);
+    assert.equal(internals.hasReasoningProtocolRejectionText(
+      '不支持参数 thinking，请使用 reasoning_effort。',
+    ), true);
+    assert.equal(internals.hasReasoningProtocolRejectionText(
+      'thinking 参数不支持；请使用 reasoning_effort。',
+    ), true);
+    assert.equal(internals.hasReasoningProtocolRejectionText(
       '400 Unsupported parameter: reasoning_effort. Use thinking instead.',
     ), false);
     for (const message of [
@@ -1494,6 +1506,21 @@ describe("DeepSeek protocol-first compatibility", () => {
       'thinking is unsupported; do not use reasoning_effort.',
       'thinking is unsupported; reasoning_effort is not required.',
       'thinking is unsupported! do not use reasoning_effort.',
+      '不支持 thinking 参数，请不要使用 reasoning_effort。',
+      'thinking 参数不支持；不建议使用 reasoning_effort。',
+      'thinking 参数不支持；不能使用 reasoning_effort。',
+      'thinking 参数不支持；reasoning_effort 不推荐使用。',
+      '不支持 thinking 参数值，请使用 reasoning_effort。',
+      'thinking 参数不支持流式请求，请使用 reasoning_effort。',
+      '流式模式下不支持 thinking 参数，请使用 reasoning_effort。',
+      '当 stream=true 时，不支持 thinking 参数，请使用 reasoning_effort。',
+      '当 temperature=0.5 时，不支持 thinking 参数，请使用 reasoning_effort。',
+      '不支持 thinking 参数，当 stream=true 时请使用 reasoning_effort。',
+      'thinking 参数不支持；不建议使用参数 reasoning_effort。',
+      '并非不支持 thinking 参数，请使用 reasoning_effort。',
+      '未知请求参数：thinking；reasoning_effort 也不支持。',
+      '未知请求参数：thinking；请不要传入 reasoning_effort。',
+      '文档提到 thinking 和 reasoning_effort，但没有拒绝 thinking。',
       'The docs mention thinking and reasoning_effort, but no parameter was rejected.',
     ]) {
       assert.equal(internals.hasReasoningProtocolRejectionText(message), false, message);
@@ -1505,6 +1532,13 @@ describe("DeepSeek protocol-first compatibility", () => {
     assert.equal(internals.hasReasoningProtocolRejectionSignal({
       "x-provider-error": "thinking is unsupported; use reasoning_effort instead",
     }), true);
+    assert.equal(internals.hasReasoningProtocolRejectionSignal({
+      "x-provider-error": "未知请求参数：thinking，请使用 reasoning_effort。",
+    }), true);
+    assert.equal(internals.hasReasoningProtocolRejectionSignal({
+      "x-provider-error": "未知请求参数：thinking",
+      "x-provider-doc": "请使用 reasoning_effort",
+    }), false);
 
     const protocolFix = internals.buildReasoningProtocolFixSuggestion(current);
     assert.equal(protocolFix, undefined);
@@ -1531,6 +1565,13 @@ describe("DeepSeek protocol-first compatibility", () => {
     };
     assert.equal(internals.hasReasoningProtocolRejectionErrorMessage(matching), true);
     assert.equal(internals.isReasoningProtocolRejectionForModel(matching, current), true);
+    const chineseMatching = {
+      ...matching,
+      status: undefined,
+      errorMessage: '400: {"code":"UNKNOWN_FIELD","message":"未知请求参数：thinking，请使用 reasoning_effort。"}',
+    };
+    assert.equal(internals.hasReasoningProtocolRejectionErrorMessage(chineseMatching), true);
+    assert.equal(internals.isReasoningProtocolRejectionForModel(chineseMatching, current), true);
     assert.equal(
       internals.hasReasoningProtocolRejectionErrorMessage({ ...matching, status: 422 }),
       false,
@@ -2861,10 +2902,131 @@ describe("prompt_cache_key model opt-out", () => {
     maxTokens: 8192,
   } as any;
 
+  test("Chinese 400 rejection records exact-model evidence and applies omit only after confirmation", async () => {
+    const tempAgentDir = await mkdtemp(join(tmpdir(), "pi-cache-key-chinese-evidence-test-"));
+    const previousAgentDir = process.env.PI_CODING_AGENT_DIR;
+    const previousRetention = process.env.PI_CACHE_RETENTION;
+    const configPath = join(tempAgentDir, "pi-cache-optimizer-config.json");
+    const originalConfig = JSON.stringify({ version: 2, footerMode: "session" }, null, 2) + "\n";
+    try {
+      process.env.PI_CODING_AGENT_DIR = tempAgentDir;
+      await writeFile(configPath, originalConfig, "utf8");
+      const jiti = createJiti(join(process.cwd(), "tests", "review-findings.test.ts"), { interopDefault: false, moduleCache: false });
+      const freshModule = await jiti.import<typeof import("../index.ts")>(join(process.cwd(), "index.ts"));
+      const handlers = new Map<string, (event: any, context: any) => unknown>();
+      const commands = new Map<string, { handler: (args: string, context: any) => unknown }>();
+      freshModule.default({
+        on(name: string, handler: (event: any, context: any) => unknown) { handlers.set(name, handler); },
+        registerCommand(name: string, command: { handler: (args: string, context: any) => unknown }) { commands.set(name, command); },
+      } as any);
+      const targetModel = {
+        provider: "jiyuanlvdong",
+        id: "glm-5.3-flash",
+        name: "GLM 5.3 Flash",
+        api: "openai-completions",
+        baseUrl: "https://tokenrhythm.studio/v1",
+        compat: {},
+        reasoning: true,
+        input: ["text"],
+        cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+        contextWindow: 1_000_000,
+        maxTokens: 32_768,
+      };
+      const notifications: string[] = [];
+      const confirmationMessages: string[] = [];
+      let confirm = false;
+      const context = {
+        model: targetModel,
+        hasUI: true,
+        sessionManager: { getSessionId: () => "chinese-rejection-session" },
+        modelRegistry: { find: () => undefined, getAvailable: () => [], getAll: () => [] },
+        ui: {
+          confirm: async (_title: string, message: string) => { confirmationMessages.push(message); return confirm; },
+          notify: (message: string) => notifications.push(message),
+          setStatus() {},
+        },
+      };
+      const requestHook = handlers.get("before_provider_request");
+      const messageEndHook = handlers.get("message_end");
+      const fixCommand = commands.get("cache-optimizer");
+      assert.ok(requestHook && messageEndHook && fixCommand);
+
+      await fixCommand.handler("fix", context);
+      assert.equal(confirmationMessages.some((message) => /prompt.?cache.?key|omit/i.test(message)), false);
+      assert.equal(await readFile(configPath, "utf8"), originalConfig);
+      confirmationMessages.length = 0;
+
+      requestHook({ payload: {} }, context);
+      await messageEndHook({
+        message: {
+          role: "assistant",
+          stopReason: "error",
+          errorMessage: '400: {"code":"UNKNOWN_FIELD","message":"未知请求字段：prompt_cache_key","data":{"field":"prompt_cache_key"},"traceId":"trace_130aafe7-2e7b-4220-b137-27bf2b98ce22"}',
+        },
+      }, context);
+      assert.equal(notifications.some((message) => message.includes("jiyuanlvdong/glm-5.3-flash rejected prompt_cache_key")), true);
+      assert.equal(notifications.some((message) => message.includes("trace_130aafe7")), false);
+
+      await fixCommand.handler("fix", { ...context, model: { ...targetModel, id: "glm-other" } });
+      assert.equal(confirmationMessages.some((message) => /prompt.?cache.?key|omit/i.test(message)), false);
+      confirmationMessages.length = 0;
+
+      await fixCommand.handler("fix", context);
+      assert.match(confirmationMessages.at(-1) ?? "", /jiyuanlvdong\/glm-5\.3-flash/);
+      assert.match(confirmationMessages.at(-1) ?? "", /prompt.?cache.?key|omit/i);
+      assert.deepEqual(freshModule.__internals_for_tests.readPersistedCacheOptimizerConfig(), { version: 2, footerMode: "session" });
+      assert.equal(await readFile(configPath, "utf8"), originalConfig);
+
+      confirm = true;
+      await fixCommand.handler("fix", context);
+      assert.deepEqual(freshModule.__internals_for_tests.readPersistedCacheOptimizerConfig(), {
+        version: 2,
+        footerMode: "session",
+        promptCacheKey: { omit: ["jiyuanlvdong/glm-5.3-flash"] },
+      });
+      const payload = { prompt_cache_key: "pi-generated", promptCacheKey: "caller", keep: true };
+      assert.deepEqual(requestHook({ payload }, context), { keep: true });
+    } finally {
+      if (previousAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
+      else process.env.PI_CODING_AGENT_DIR = previousAgentDir;
+      if (previousRetention === undefined) delete process.env.PI_CACHE_RETENTION;
+      else process.env.PI_CACHE_RETENTION = previousRetention;
+      await rm(tempAgentDir, { recursive: true, force: true });
+    }
+  });
+
   test("parses v1 and v2 config without accepting malformed or private data", () => {
     assert.equal(internals.hasPromptCacheKeyUnsupportedSignal({ "x-error": "Unsupported parameter: prompt_cache_key" }), true);
     assert.equal(internals.hasPromptCacheKeyUnsupportedSignal({ "x-error": "Unknown field promptCacheKey" }), true);
     assert.equal(internals.hasPromptCacheKeyUnsupportedSignal({ "x-error": "prompt_cache_key is not supported" }), true);
+    const observedChineseError = '400: {"code":"UNKNOWN_FIELD","message":"未知请求字段：prompt_cache_key","data":{"field":"prompt_cache_key"},"traceId":"trace_130aafe7-2e7b-4220-b137-27bf2b98ce22"}';
+    assert.equal(internals.hasPromptCacheKeyUnsupportedText(observedChineseError), true);
+    assert.equal(internals.hasPromptCacheKeyUnsupportedSignal({ "x-error": observedChineseError }), true);
+    assert.equal(internals.hasPromptCacheKeyUnsupportedErrorMessage({
+      role: "assistant",
+      stopReason: "error",
+      errorMessage: observedChineseError,
+    }), true);
+    for (const message of [
+      "未识别请求参数: promptCacheKey",
+      "不支持字段：prompt_cache_key",
+      "不允许请求参数：prompt_cache_key",
+    ]) assert.equal(internals.hasPromptCacheKeyUnsupportedText(message), true, message);
+    for (const message of [
+      "流式模式下不允许请求字段：prompt_cache_key",
+      "当 stream=true 时，不允许请求字段：prompt_cache_key",
+      "当 temperature=0.5 时，不允许请求字段：prompt_cache_key",
+      "不允许请求字段：prompt_cache_key，仅在流式模式下",
+      "并非不支持字段：prompt_cache_key",
+    ]) assert.equal(internals.hasPromptCacheKeyUnsupportedText(message), false, message);
+    assert.equal(internals.hasPromptCacheKeyUnsupportedText("不支持参数值：prompt_cache_key"), false);
+    assert.equal(internals.hasPromptCacheKeyUnsupportedText("温度非零时不允许 prompt_cache_key"), false);
+    assert.equal(internals.hasPromptCacheKeyUnsupportedText("未知请求字段：temperature，prompt_cache_key"), false);
+    assert.equal(internals.hasPromptCacheKeyUnsupportedText(JSON.stringify({
+      code: "UNKNOWN_FIELD",
+      message: "未知请求字段：temperature",
+      data: { field: "prompt_cache_key" },
+    })), false);
     assert.equal(internals.hasPromptCacheKeyUnsupportedSignal({ "x-error": "Invalid parameter value for prompt_cache_key" }), false);
     assert.equal(internals.hasPromptCacheKeyUnsupportedSignal({ "x-error": "Unsupported parameter value for prompt_cache_key" }), false);
     assert.equal(internals.hasPromptCacheKeyUnsupportedSignal({ "x-error": "The prompt_cache_key value is not supported" }), false);

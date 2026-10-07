@@ -197,6 +197,7 @@ export const __internals_for_tests = {
   isOpenAISdkHeader403Applicable,
   hasPromptCacheRetentionUnsupportedSignal,
   hasPromptCacheRetentionUnsupportedErrorMessage,
+  hasPromptCacheKeyUnsupportedText,
   hasPromptCacheKeyUnsupportedSignal,
   hasPromptCacheKeyUnsupportedErrorMessage,
   isPromptCacheKeyUnsupportedApplicable,

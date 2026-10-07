@@ -62,7 +62,7 @@ Run `/reload` in Pi after install/update/remove so extension hooks refresh.
 
 On Pi 0.79.7 and newer, `pi update` updates Pi itself only. To update installed Pi packages such as this extension, run `pi update --extensions` (packages only) or `pi update --all` (Pi + packages).
 
-This extension requires Pi 0.82+ and is validated against Pi 1.0.2. It uses the official Pi package types directly for type-checking, along with extension hooks, `getAgentDir()`, and prompt options shared by those versions; it does not depend on Pi 0.83+ APIs such as `ctx.scopedModels` or the bundled TypeBox 1.3 aliases. Native virtual model support and codemode nested-call coalescing activate only on Pi 0.99+ hosts that produce them; older hosts keep the previous behavior. The local development baseline uses Node.js 22.19.0 or newer, matching Pi 1.0.2's engine requirement.
+This extension requires Pi 0.82+ and is validated against Pi 1.0.3. It uses the official Pi package types directly for type-checking, along with extension hooks, `getAgentDir()`, and prompt options shared by those versions; it does not depend on Pi 0.83+ APIs such as `ctx.scopedModels` or the bundled TypeBox 1.3 aliases. Native virtual model support and codemode nested-call coalescing activate only on Pi 0.99+ hosts that produce them; older hosts keep the previous behavior. The local development baseline uses Node.js 22.19.0 or newer, matching Pi 1.0.3's engine requirement.
 
 ## Commands
 
@@ -156,9 +156,9 @@ The explicit setting is stored in `pi-cache-optimizer-config.json` under Pi's ag
 
 ## Per-model `prompt_cache_key` opt-out
 
-Some OpenAI-compatible Completions endpoints reject `prompt_cache_key` with HTTP 400 even though the same field is valid for other providers. Pi 1.0.2 owns the key for Responses/Codex transports; this extension's key opt-out and fallback apply only to `openai-completions`. Pi 1.0.2 has no native `supportsPromptCacheKey` compat field; do **not** add that unknown field to `models.json`. `supportsLongCacheRetention` is not an equivalent switch and should not be used for this purpose.
+Some OpenAI-compatible Completions endpoints reject `prompt_cache_key` with HTTP 400 even though the same field is valid for other providers. Pi 1.0.3 owns the key for Responses/Codex transports; this extension's key opt-out and fallback apply only to `openai-completions`. Pi 1.0.3 has no native `supportsPromptCacheKey` compat field; do **not** add that unknown field to `models.json`. `supportsLongCacheRetention` is not an equivalent switch and should not be used for this purpose.
 
-When the extension observes an explicit field-level `prompt_cache_key` unsupported error for the exact provider/model, ordinary `/cache-optimizer fix` offers a confirmed model-scoped repair. Value-validation failures and conditional restrictions such as “not allowed when temperature is set” do not qualify. If concurrent responses from different models cannot be correlated because Pi provides no request ID, header-only evidence is ignored unless the finalized assistant message supplies exact provider/model identity. If you already know that the endpoint rejects the field, use the explicit command:
+When the extension observes an explicit field-level `prompt_cache_key` unsupported error for the exact provider/model (including recognized Chinese-localized forms such as `未知请求字段：prompt_cache_key`), ordinary `/cache-optimizer fix` offers a confirmed model-scoped repair. Value-validation failures and conditional restrictions such as “not allowed when temperature is set” do not qualify. If concurrent responses from different models cannot be correlated because Pi provides no request ID, header-only evidence is ignored unless the finalized assistant message supplies exact provider/model identity. If you already know that the endpoint rejects the field, use the explicit command:
 
 ```text
 /cache-optimizer fix prompt-cache-key
@@ -196,7 +196,7 @@ Notes:
 
 - `sendSessionAffinityHeaders: true` is the safe default when your proxy supports sticky routing.
 - `supportsLongCacheRetention: true` is optional. Add it only when the endpoint explicitly supports OpenAI long prompt cache retention.
-- Do not add `supportsPromptCacheKey` to `models.json`: Pi 1.0.2 does not define that compat field. Use `/cache-optimizer fix prompt-cache-key` to store an exact provider/model omit rule in the extension-owned config; it removes both key spellings, including a key supplied by Pi.
+- Do not add `supportsPromptCacheKey` to `models.json`: Pi 1.0.3 does not define that compat field. Use `/cache-optimizer fix prompt-cache-key` to store an exact provider/model omit rule in the extension-owned config; it removes both key spellings, including a key supplied by Pi.
 - If you see `400 Unsupported parameter: prompt_cache_retention`, remove/avoid `supportsLongCacheRetention` for that channel. Keep `sendSessionAffinityHeaders` if supported. The extension detects the explicit error from response headers or the finalized assistant error message and strips the parameter from subsequent requests in the current process.
 - Use `/cache-optimizer compat` or `/cache-optimizer doctor` to see model-specific advice.
 - DeepSeek model names select the `DS cache` adapter only; they do not prove a reasoning wire protocol. Generic cache/routing advice remains active for absent or non-DeepSeek formats. DeepSeek replay advice is shown only when effective `compat.thinkingFormat: "deepseek"` is explicitly configured; it never treats `thinkingFormat` as a missing fix key.
@@ -354,7 +354,7 @@ Pi's model-family name and its reasoning wire protocol are separate. A DeepSeek-
 The novice-safe workflow is staged:
 
 1. Run `/cache-optimizer fix` for protocol-neutral cache/routing repairs such as session affinity. It shows the exact placement and requires confirmation.
-2. Make a normal request. If an OpenAI-compatible DeepSeek-like model explicitly rejects the `thinking` parameter in favor of `reasoning_effort`, the extension keeps only a model-scoped, process-local category. It does not persist or display the complete provider error, send a hidden probe, or edit configuration from a response hook.
+2. Make a normal request. If an OpenAI-compatible DeepSeek-like model explicitly rejects the `thinking` parameter in favor of `reasoning_effort` (including recognized Chinese-localized rejection and recommendation text), the extension keeps only a model-scoped, process-local category. It does not persist or display the complete provider error, send a hidden probe, or edit configuration from a response hook.
 3. Run `/cache-optimizer fix` again to review an evidence-based model-level protocol repair. It is written through the highest-precedence `modelOverrides[modelId].compat` layer and validated against runtime compat, so an extension-provided model cannot silently shadow it. A provider-level change is never broadened from a model name alone. Explicit `openai`, `qwen`, `openrouter`, and `together` formats remain respected.
 4. If the latest confirmed fix caused the problem, run `/cache-optimizer rollback`. Rollback always requires UI confirmation.
 
