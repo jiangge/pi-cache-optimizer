@@ -1507,6 +1507,17 @@ describe("DeepSeek protocol-first compatibility", () => {
       'thinking is unsupported; reasoning_effort is not required.',
       'thinking is unsupported! do not use reasoning_effort.',
       '不支持 thinking 参数，请不要使用 reasoning_effort。',
+      'thinking 参数不支持；不建议使用 reasoning_effort。',
+      'thinking 参数不支持；不能使用 reasoning_effort。',
+      'thinking 参数不支持；reasoning_effort 不推荐使用。',
+      '不支持 thinking 参数值，请使用 reasoning_effort。',
+      'thinking 参数不支持流式请求，请使用 reasoning_effort。',
+      '流式模式下不支持 thinking 参数，请使用 reasoning_effort。',
+      '当 stream=true 时，不支持 thinking 参数，请使用 reasoning_effort。',
+      '当 temperature=0.5 时，不支持 thinking 参数，请使用 reasoning_effort。',
+      '不支持 thinking 参数，当 stream=true 时请使用 reasoning_effort。',
+      'thinking 参数不支持；不建议使用参数 reasoning_effort。',
+      '并非不支持 thinking 参数，请使用 reasoning_effort。',
       '未知请求参数：thinking；reasoning_effort 也不支持。',
       '未知请求参数：thinking；请不要传入 reasoning_effort。',
       '文档提到 thinking 和 reasoning_effort，但没有拒绝 thinking。',
@@ -2940,6 +2951,11 @@ describe("prompt_cache_key model opt-out", () => {
       const fixCommand = commands.get("cache-optimizer");
       assert.ok(requestHook && messageEndHook && fixCommand);
 
+      await fixCommand.handler("fix", context);
+      assert.equal(confirmationMessages.some((message) => /prompt.?cache.?key|omit/i.test(message)), false);
+      assert.equal(await readFile(configPath, "utf8"), originalConfig);
+      confirmationMessages.length = 0;
+
       requestHook({ payload: {} }, context);
       await messageEndHook({
         message: {
@@ -2951,13 +2967,18 @@ describe("prompt_cache_key model opt-out", () => {
       assert.equal(notifications.some((message) => message.includes("jiyuanlvdong/glm-5.3-flash rejected prompt_cache_key")), true);
       assert.equal(notifications.some((message) => message.includes("trace_130aafe7")), false);
 
-      await fixCommand.handler("fix prompt-cache-key", context);
+      await fixCommand.handler("fix", { ...context, model: { ...targetModel, id: "glm-other" } });
+      assert.equal(confirmationMessages.some((message) => /prompt.?cache.?key|omit/i.test(message)), false);
+      confirmationMessages.length = 0;
+
+      await fixCommand.handler("fix", context);
       assert.match(confirmationMessages.at(-1) ?? "", /jiyuanlvdong\/glm-5\.3-flash/);
+      assert.match(confirmationMessages.at(-1) ?? "", /prompt.?cache.?key|omit/i);
       assert.deepEqual(freshModule.__internals_for_tests.readPersistedCacheOptimizerConfig(), { version: 2, footerMode: "session" });
       assert.equal(await readFile(configPath, "utf8"), originalConfig);
 
       confirm = true;
-      await fixCommand.handler("fix prompt-cache-key", context);
+      await fixCommand.handler("fix", context);
       assert.deepEqual(freshModule.__internals_for_tests.readPersistedCacheOptimizerConfig(), {
         version: 2,
         footerMode: "session",
@@ -2991,6 +3012,13 @@ describe("prompt_cache_key model opt-out", () => {
       "不支持字段：prompt_cache_key",
       "不允许请求参数：prompt_cache_key",
     ]) assert.equal(internals.hasPromptCacheKeyUnsupportedText(message), true, message);
+    for (const message of [
+      "流式模式下不允许请求字段：prompt_cache_key",
+      "当 stream=true 时，不允许请求字段：prompt_cache_key",
+      "当 temperature=0.5 时，不允许请求字段：prompt_cache_key",
+      "不允许请求字段：prompt_cache_key，仅在流式模式下",
+      "并非不支持字段：prompt_cache_key",
+    ]) assert.equal(internals.hasPromptCacheKeyUnsupportedText(message), false, message);
     assert.equal(internals.hasPromptCacheKeyUnsupportedText("不支持参数值：prompt_cache_key"), false);
     assert.equal(internals.hasPromptCacheKeyUnsupportedText("温度非零时不允许 prompt_cache_key"), false);
     assert.equal(internals.hasPromptCacheKeyUnsupportedText("未知请求字段：temperature，prompt_cache_key"), false);

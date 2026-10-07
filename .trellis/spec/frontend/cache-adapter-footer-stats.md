@@ -370,12 +370,17 @@ localized text only when the rejected parameter and its role are explicit:
   rejection word, field/parameter noun, key, and terminal boundary must remain
   associated in one diagnostic string. Rejected values and conditional
   restrictions (for example, “not allowed when temperature is set”) MUST NOT
-  count as field-level unsupported evidence.
+  count as field-level unsupported evidence. Chinese matches must start a
+  diagnostic clause rather than inside a Chinese word/negation; preceding
+  sentence context such as `当 stream=true 时，` must disqualify the match.
 - For the DeepSeek-like `thinking` protocol, Chinese rejection text is evidence
   only when it attaches a supported rejection term to the `thinking` parameter
   and the same error/header diagnostic recommends `reasoning_effort`. A
   recommendation in a separate header, a rejection of `reasoning_effort`,
-  generic docs text, or negated guidance MUST NOT match.
+  generic docs text, or negated guidance MUST NOT match. Require a terminal
+  diagnostic boundary after the full Chinese rejection so `thinking 参数值`
+  and `thinking 参数不支持流式请求` cannot match a rejection prefix. Negated
+  recommendations include `不建议使用`, `不能使用`, and `不推荐使用`.
 - English and Chinese matches feed the same process-local, exact provider/model
   evidence gates. A response hook only records the rejection category and may
   notify; it MUST NOT edit config. `/cache-optimizer fix` remains user-invoked,
@@ -389,6 +394,8 @@ Required regression assertions:
 | Chinese rejection of `thinking` followed by `请使用 reasoning_effort` | Match reasoning protocol rejection |
 | Error rejects a key's value or says it is disallowed only under a condition | Do not match field-level unsupported evidence |
 | Recommendation and rejection are split across headers, or recommendation is negated | Do not match reasoning protocol rejection |
+| Ordinary `fix` before evidence and for another model after evidence | No prompt-cache-key opt-out preview; explicit `fix prompt-cache-key` is NOT a substitute for this test |
+| Ordinary `fix` after Chinese evidence | Offers the exact-model opt-out, but cancellation preserves config |
 | Confirmed exact-model omit | Remove `prompt_cache_key` and `promptCacheKey`; preserve unrelated payload fields and all other models |
 
 Wrong: match merely because `prompt_cache_key` and `不支持` occur somewhere in the same

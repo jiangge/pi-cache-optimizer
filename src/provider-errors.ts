@@ -84,6 +84,15 @@ export function hasPromptCacheRetentionUnsupportedErrorMessage(message: unknown)
     hasPromptCacheRetentionUnsupportedText(record.errorMessage);
 }
 
+// A Chinese rejection must start a diagnostic clause, not occur inside a
+// negation or condition. Keep comma-separated conditions in the same sentence.
+function hasChineseRejectionContext(value: string, index: number): boolean {
+  const prefix = value.slice(0, index).split(/[;!\n。；！]/).at(-1) ?? "";
+  const suffix = value.slice(index).split(/[;!\n。；！]/)[0];
+  return !/(?:如果|若|当|仅在|只有|模式下|情况下|设置.{0,40}时)/.test(prefix + suffix) &&
+    !/(?:并非|并不|并未|不是)/.test(prefix);
+}
+
 export function hasPromptCacheKeyUnsupportedText(value: unknown): boolean {
   const normalized = lower(value)
     .replace(/["'`]/g, "")
@@ -103,7 +112,8 @@ export function hasPromptCacheKeyUnsupportedText(value: unknown): boolean {
     new RegExp(String.raw`(?:unsupported|unknown|unrecognized|unexpected)\s+${field}\s*[:=]?\s*${key}${terminal}`).test(normalized) ||
     new RegExp(String.raw`(?:extra\s+inputs?|${field}\s+not\s+(?:allowed|permitted|supported))\s*[:=]\s*${key}${terminal}`).test(normalized) ||
     new RegExp(String.raw`${key}(?:\s+${field})?\s*[:=]?\s*(?:is\s+)?${unsupported}${terminal}`).test(normalized) ||
-    new RegExp(String.raw`(?:未知|未识别|不支持|不允许)(?:请求)?(?:字段|参数)\s*[：:]\s*${key}${terminal}`).test(normalized)
+    Array.from(normalized.matchAll(new RegExp(String.raw`(?:^|[^a-z0-9_\u4e00-\u9fff])(?:未知|未识别|不支持|不允许)(?:请求)?(?:字段|参数)\s*[：:]\s*${key}${terminal}`, "g")))
+      .some((match) => hasChineseRejectionContext(normalized, match.index))
   );
 }
 
@@ -126,15 +136,28 @@ export function hasReasoningProtocolRejectionText(value: unknown): boolean {
     /(?:^|[^a-z0-9_])["'`]?thinking["'`]?(?:\s+(?:parameter|field|argument))?\s*(?:is\s+)?(?:not supported|unsupported|unknown|unrecognized|not allowed|not permitted|rejected|invalid|not valid|not accepted|disallowed|not a valid(?:\s+(?:parameter|field|argument))?)(?![a-z0-9_])/,
     /(?:^|[^a-z0-9_])(?:unsupported|unknown|unrecognized|invalid|disallowed|rejected|not\s+(?:a\s+)?valid|not\s+accepted|not\s+allowed|not\s+permitted)(?:[_ ](?:parameter|field|argument))?\s*[:=]?\s*["'`]?thinking["'`]?(?![a-z0-9_])/,
     /(?:^|[^a-z0-9_])(?:extra\s+inputs?|additional\s+(?:inputs?|parameters?))\s+(?:are\s+)?(?:not permitted|not allowed|unsupported)\s*[:=]?\s*["'`]?thinking["'`]?(?![a-z0-9_])/,
-    /(?:^|[^a-z0-9_])(?:未知|未识别|无法识别|不支持|不被支持|不允许|不被允许|不接受|不被接受|无效|不合法|拒绝|被拒绝)(?:请求)?(?:参数|字段)\s*[：:]?\s*["'`]?thinking["'`]?(?![a-z0-9_])/,
-    /(?:^|[^a-z0-9_])(?:未知|未识别|无法识别|不支持|不被支持|不允许|不被允许|不接受|不被接受|无效|不合法|拒绝|被拒绝)\s*["'`]?thinking["'`]?(?:\s*(?:请求)?(?:参数|字段))?(?![a-z0-9_])/,
-    /(?:^|[^a-z0-9_])["'`]?thinking["'`]?\s*(?:(?:请求)?(?:参数|字段)\s*)?(?:未知|未识别|无法识别|不支持|不被支持|不允许|不被允许|不接受|不被接受|无效|不合法|拒绝|被拒绝)(?![a-z0-9_])/,
+  ];
+  const chineseStart = String.raw`(?:^|[^a-z0-9_\u4e00-\u9fff])`;
+  const chineseEnd = String.raw`(?=\s*(?:$|["'\x60}\]>,.;!?，。；！？]))`;
+  const chineseRejection = String.raw`(?:未知|未识别|无法识别|不支持|不被支持|不允许|不被允许|不接受|不被接受|无效|不合法|拒绝|被拒绝)`;
+  const chineseThinking = String.raw`["'\x60]?thinking["'\x60]?`;
+  const chinesePatterns = [
+    new RegExp(String.raw`${chineseStart}${chineseRejection}(?:请求)?(?:参数|字段)\s*[：:]?\s*${chineseThinking}${chineseEnd}`, "g"),
+    new RegExp(String.raw`${chineseStart}${chineseRejection}\s*${chineseThinking}(?:\s*(?:请求)?(?:参数|字段))?${chineseEnd}`, "g"),
+    new RegExp(String.raw`${chineseStart}${chineseThinking}\s*(?:(?:请求)?(?:参数|字段)\s*)?${chineseRejection}${chineseEnd}`, "g"),
   ];
   let rejectionEnd = -1;
   for (const pattern of thinkingParameterRejectionPatterns) {
     const match = pattern.exec(normalized);
     if (match && match.index + match[0].length > rejectionEnd) {
       rejectionEnd = match.index + match[0].length;
+    }
+  }
+  for (const pattern of chinesePatterns) {
+    for (const match of normalized.matchAll(pattern)) {
+      if (hasChineseRejectionContext(normalized, match.index)) {
+        rejectionEnd = Math.max(rejectionEnd, match.index + match[0].length);
+      }
     }
   }
   if (rejectionEnd < 0) return false;
@@ -155,8 +178,8 @@ export function hasReasoningProtocolRejectionText(value: unknown): boolean {
       /\b(?:do\s+not|don't|never|avoid)\s+(?:use|set|send|pass|provide)?\s*["'`]?reasoning[_\.]effort\b/.test(clause) ||
       /\breasoning[_\.]effort\b[^.;]{0,80}\b(?:must|should|may|do)\s+(?:not|never)\b/.test(clause) ||
       /\breasoning[_\.]effort\b[^.;]{0,80}\b(?:unsupported|disabled|unavailable|not\s+(?:supported|accepted|allowed|available|enabled|required|recommended|expected))\b/.test(clause) ||
-      /(?:请)?(?:不要|勿|不应|不该|不得|不可|禁止|无需|不必|不需要)\s*(?:再)?(?:使用|设置|发送|传入|提供|改用|采用|把)?\s*["'`]?reasoning[_\.]effort\b/.test(clause) ||
-      /\breasoning[_\.]effort\b[^.;，。；！？]{0,80}(?:不支持|不允许|不可用|不接受|不需要|无需|不必|不得|不应|不该|禁止)/.test(clause)
+      /(?:请)?(?:不要|勿|不应|不该|不得|不可|不能|不建议|不推荐|禁止|无需|不必|不需要)\s*(?:再)?(?:使用|设置|发送|传入|提供|改用|采用|把)?\s*(?:参数\s*)?["'`]?reasoning[_\.]effort\b/.test(clause) ||
+      /\breasoning[_\.]effort\b[^.;，。；！？]{0,80}(?:不支持|不允许|不可用|不接受|不能|不建议|不推荐|不需要|无需|不必|不得|不应|不该|禁止)/.test(clause)
     ) return false;
 
     return [
