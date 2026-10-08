@@ -545,6 +545,24 @@ describe("Pi 0.83 adaptive-thinking compatibility", () => {
     assert.deepEqual(internals.describeMissingCacheCompatForModel(model), []);
   });
 
+  test("reports missing adaptive compat for Claude Haiku 5.5 (Pi 1.1.0+)", () => {
+    for (const id of ["claude-haiku-5-5", "claude-haiku-5.5", "anthropic/claude-haiku-5-5-20261001"]) {
+      const model = claudeModel(id);
+      assert.equal(internals.isAdaptiveThinkingCompatApplicable(model), true, id);
+      assert.deepEqual(internals.describeMissingCacheCompatForModel(model), ["forceAdaptiveThinking"], id);
+    }
+    assert.deepEqual(
+      internals.describeMissingCacheCompatForModel(claudeModel("claude-haiku-5-5", { forceAdaptiveThinking: true })),
+      [],
+    );
+  });
+
+  test("keeps Claude Haiku 4.x as a non-adaptive negative case", () => {
+    for (const id of ["claude-haiku-4-5", "claude-3-5-haiku"]) {
+      assert.equal(internals.isAdaptiveThinkingCompatApplicable(claudeModel(id)), false, id);
+    }
+  });
+
   test("keeps older non-adaptive Claude models as a negative case", () => {
     const model = claudeModel("claude-opus-4-5");
 

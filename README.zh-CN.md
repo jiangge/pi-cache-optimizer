@@ -37,7 +37,7 @@
 - 在 Pi / provider compat 支持时请求长缓存保留。
 - 仅对 `openai-completions` 代理请求，在没有有效 key 时按会话保守补 `prompt_cache_key`；本扩展自己补的值（该 key、session-affinity 头补齐、cache hints）使用 Pi session id 的单向哈希（`pi-<32 位 hex>`）；Pi 核心自己设置的 key 和头保持不变，已有 key 也绝不覆盖；Pi 1.0+ 已负责 Responses/Codex transport 的 key。
 - 对缺少缓存 / session-affinity compat 的第三方 OpenAI-compatible 代理给出一次性提醒。
-- 检测 Claude（opus-4.6+ 含 Opus 5、sonnet-4.6+ 含 Sonnet 5、fable-5+）以及 Kimi Coding K3 / `kimi-for-coding` 自定义渠道的 adaptive-thinking compat。
+- 检测 Claude（opus-4.6+ 含 Opus 5、sonnet-4.6+ 含 Sonnet 5、fable-5+、haiku-5+ 含 Haiku 5.5）以及 Kimi Coding K3 / `kimi-for-coding` 自定义渠道的 adaptive-thinking compat。
 - 使用每个 extension instance 独占的原子 shard 保存缓存统计，避免父会话、子 Pi agent 和并行 Pi 进程互相覆盖。
 - Footer 默认显示当前 conversation session 的 provider/model 统计；`total` 可聚合同一精确 provider/model 的所有有效本地 shard。
 - 通过版本化全局协议（`Symbol.for("pi.routing.registry.v1")` 与 `Symbol.for("pi.cache.hints.v1")`）支持可选的 router extension 集成，而不导入任何 router 包。
@@ -62,7 +62,7 @@ pi remove npm:pi-deepseek-cache-optimizer && pi install npm:pi-cache-optimizer
 
 Pi 0.79.7 及之后，`pi update` 默认只更新 Pi 本体。若要更新已安装的 Pi package（包括本扩展），请运行 `pi update --extensions`（只更新 packages）或 `pi update --all`（Pi 与 packages 一起更新）。
 
-本扩展要求 Pi 0.82+，并已使用 Pi 1.0.3 验证。TypeScript 校验直接使用官方 Pi package 类型，同时只使用这些版本共有的 extension hooks、`getAgentDir()` 和 prompt options；不依赖 Pi 0.83+ 专有 API（例如 `ctx.scopedModels` 或 bundled TypeBox 1.3 aliases）。原生虚拟模型支持与 codemode 嵌套工具调用合并只在会产生它们的 Pi 0.99+ 上生效，较早版本保持原有行为。本地开发基线需要 Node.js 22.19.0 或更高版本，与 Pi 1.0.3 的 engine 要求一致。
+本扩展要求 Pi 0.82+，并已使用 Pi 1.1.0 验证。TypeScript 校验直接使用官方 Pi package 类型，同时只使用这些版本共有的 extension hooks、`getAgentDir()` 和 prompt options；不依赖 Pi 0.83+ 专有 API（例如 `ctx.scopedModels` 或 bundled TypeBox 1.3 aliases）。原生虚拟模型支持与 codemode 嵌套工具调用合并只在会产生它们的 Pi 0.99+ 上生效，较早版本保持原有行为。本地开发基线需要 Node.js 22.19.0 或更高版本，与 Pi 1.0.3 的 engine 要求一致。
 
 ## 命令
 
@@ -213,7 +213,7 @@ Anthropic 按 `tools → system → messages` 顺序处理 cache breakpoint，�
 
 ## Adaptive thinking 模型
 
-Claude 从 opus-4.6 / sonnet-4.6（含 Opus 5、Sonnet 5）/ fable-5 开始需要在 compat 中设置 `forceAdaptiveThinking: true`。Kimi Coding K3（`k3`）和 `kimi-for-coding` 也使用 adaptive thinking，并需要 `allowEmptySignature: true`，以正确重放空 signature 的 thinking block。缺少这些 compat 时，Pi 可能发送旧版 thinking payload 或错误重放 thinking。Pi 0.83+ 的原生 Opus 5 catalog 已覆盖在同一 adaptive-thinking 检测中；如果自定义 `anthropic-messages` 渠道没有继承该 compat，仍需手动设置。
+Claude 从 opus-4.6 / sonnet-4.6（含 Opus 5、Sonnet 5）/ fable-5 / haiku-5（Haiku 5.5，Pi 1.1.0+）开始需要在 compat 中设置 `forceAdaptiveThinking: true`。Kimi Coding K3（`k3`）和 `kimi-for-coding` 也使用 adaptive thinking，并需要 `allowEmptySignature: true`，以正确重放空 signature 的 thinking block。缺少这些 compat 时，Pi 可能发送旧版 thinking payload 或错误重放 thinking。Pi 0.83+ 的原生 Opus 5 catalog 已覆盖在同一 adaptive-thinking 检测中；如果自定义 `anthropic-messages` 渠道没有继承该 compat，仍需手动设置。
 
 Pi 内置 catalog 已为官方模型设置此 flag。`models.json` 中覆盖这些模型的自定义渠道必须包含该 flag：
 

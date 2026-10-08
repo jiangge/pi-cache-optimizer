@@ -37,7 +37,7 @@ Pi extension for improving provider-side KV / prompt cache hit rates. It keeps s
 - Requests long cache retention when Pi/provider compat supports it.
 - Adds a conservative per-session `prompt_cache_key` fallback for `openai-completions` proxy payloads when no effective key exists. The values this extension adds itself (that key fallback, the session-affinity header bridge, and cache hints) are a one-way hash of the Pi session id (`pi-<32 hex>`); keys and headers that Pi core sets on its own are left untouched, and an existing key is never overwritten. Pi 1.0+ owns this field for Responses/Codex transports.
 - Warns once for third-party OpenAI-compatible proxies missing cache/session-affinity compat flags.
-- Detects adaptive-thinking compat for Claude (opus-4.6+ including Opus 5, sonnet-4.6+ including Sonnet 5, fable-5+) and Kimi Coding K3 / `kimi-for-coding` custom channels.
+- Detects adaptive-thinking compat for Claude (opus-4.6+ including Opus 5, sonnet-4.6+ including Sonnet 5, fable-5+, haiku-5+ including Haiku 5.5) and Kimi Coding K3 / `kimi-for-coding` custom channels.
 - Stores cache statistics in per-extension-instance atomic shards, so parent sessions, child Pi agents, and parallel Pi processes cannot overwrite one another.
 - Shows current conversation-session provider/model footer stats by default; `total` aggregates all valid local shards for the exact provider/model.
 - Supports optional router-extension integration through versioned global protocols (`Symbol.for("pi.routing.registry.v1")` and `Symbol.for("pi.cache.hints.v1")`) without importing router packages.
@@ -62,7 +62,7 @@ Run `/reload` in Pi after install/update/remove so extension hooks refresh.
 
 On Pi 0.79.7 and newer, `pi update` updates Pi itself only. To update installed Pi packages such as this extension, run `pi update --extensions` (packages only) or `pi update --all` (Pi + packages).
 
-This extension requires Pi 0.82+ and is validated against Pi 1.0.3. It uses the official Pi package types directly for type-checking, along with extension hooks, `getAgentDir()`, and prompt options shared by those versions; it does not depend on Pi 0.83+ APIs such as `ctx.scopedModels` or the bundled TypeBox 1.3 aliases. Native virtual model support and codemode nested-call coalescing activate only on Pi 0.99+ hosts that produce them; older hosts keep the previous behavior. The local development baseline uses Node.js 22.19.0 or newer, matching Pi 1.0.3's engine requirement.
+This extension requires Pi 0.82+ and is validated against Pi 1.1.0. It uses the official Pi package types directly for type-checking, along with extension hooks, `getAgentDir()`, and prompt options shared by those versions; it does not depend on Pi 0.83+ APIs such as `ctx.scopedModels` or the bundled TypeBox 1.3 aliases. Native virtual model support and codemode nested-call coalescing activate only on Pi 0.99+ hosts that produce them; older hosts keep the previous behavior. The local development baseline uses Node.js 22.19.0 or newer, matching Pi 1.0.3's engine requirement.
 
 ## Commands
 
@@ -213,7 +213,7 @@ Some proxies rewrite or insert hidden 5-minute breakpoints after Pi's request ho
 
 ## Adaptive thinking models
 
-Claude models from opus-4.6 / sonnet-4.6 (including Opus 5 and Sonnet 5) / fable-5 onwards require `forceAdaptiveThinking: true` in compat. Kimi Coding K3 (`k3`) and `kimi-for-coding` also use adaptive thinking and need `allowEmptySignature: true` so replayed empty-signature thinking blocks remain valid. Without the required compat, Pi may send a legacy thinking payload or replay thinking incorrectly. Pi 0.83+ native Opus 5 catalogs are covered by the same adaptive-thinking detection; custom `anthropic-messages` channels still need the compat flag when Pi does not provide it.
+Claude models from opus-4.6 / sonnet-4.6 (including Opus 5 and Sonnet 5) / fable-5 / haiku-5 (Haiku 5.5, Pi 1.1.0+) onwards require `forceAdaptiveThinking: true` in compat. Kimi Coding K3 (`k3`) and `kimi-for-coding` also use adaptive thinking and need `allowEmptySignature: true` so replayed empty-signature thinking blocks remain valid. Without the required compat, Pi may send a legacy thinking payload or replay thinking incorrectly. Pi 0.83+ native Opus 5 catalogs are covered by the same adaptive-thinking detection; custom `anthropic-messages` channels still need the compat flag when Pi does not provide it.
 
 Pi's built-in catalog already sets this flag for official models. Custom channels in `models.json` that override these models must include the flag:
 
