@@ -21,7 +21,8 @@ import { type ProviderRequestState } from "./request-state.ts";
 import { type CacheStats, type ShardAggregate } from "./stats-store.ts";
 import { type CacheUsageSample } from "./stats-report.ts";
 import { describeSkillCompressionOutcome } from "./prompt-rewrite.ts";
-import { describePromptCacheRetentionDecision, getLastPromptCacheRetentionDecision } from "./retention.ts";
+import { describePromptCacheRetentionDecision, getLastPromptCacheRetentionDecision, LONG_CACHE_RETENTION_VALUE, PI_CACHE_RETENTION_ENV } from "./retention.ts";
+import { buildCacheWarmingDiagnosis, type CacheWarmingMode } from "./cache-warming.ts";
 
 /**
  * Everything the command needs from the extension instance. The extension keeps this state in closures
@@ -50,6 +51,8 @@ export type CommandRuntime = {
   getCurrentSessionHash(): string;
   getLastStatusText(): string | undefined;
   clearLastStatusText(): void;
+  /** Pi `cacheWarming` mode, or "unsupported" on hosts without the settings API. */
+  getCacheWarmingMode?(): CacheWarmingMode | "unsupported";
 };
 
 export function createCacheOptimizerCommandHandler(runtime: CommandRuntime) {
@@ -110,7 +113,13 @@ export function createCacheOptimizerCommandHandler(runtime: CommandRuntime) {
         const samples = sk ? getRecentSamples(sk) : [];
         const lowHitLines = buildLowHitDiagnosis(model, adapter, statsState, samples);
         const routeNote = describeNativeVirtualRouteNote(selectedModel, model);
-        const fullDiagnosis = [routeNote, diagnosis, describeSkillCompressionOutcome(), describePromptCacheRetentionDecision(getLastPromptCacheRetentionDecision()), ...lowHitLines].filter((line) => line !== undefined).join("\n");
+        const warmingLines = runtime.getCacheWarmingMode
+          ? buildCacheWarmingDiagnosis(model, {
+            mode: runtime.getCacheWarmingMode(),
+            tier: process.env[PI_CACHE_RETENTION_ENV] === LONG_CACHE_RETENTION_VALUE ? "long" : "short",
+          }).lines
+          : [];
+        const fullDiagnosis = [routeNote, diagnosis, describeSkillCompressionOutcome(), describePromptCacheRetentionDecision(getLastPromptCacheRetentionDecision()), ...warmingLines, ...lowHitLines].filter((line) => line !== undefined).join("\n");
         cmdCtx.ui.notify(fullDiagnosis, "info");
       } else if (subcommand === "stats") {
         const aggregate = await refreshShardAggregate();

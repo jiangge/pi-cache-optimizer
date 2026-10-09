@@ -21,6 +21,7 @@ Pi extension for improving provider-side KV / prompt cache hit rates. It keeps s
 - [Opt-in deterministic tool ordering](#opt-in-deterministic-tool-ordering)
 - [Footer cache stats mode](#footer-cache-stats-mode)
 - [OpenAI-compatible proxy setup](#openai-compatible-proxy-setup)
+- [Prompt cache warming (Pi 0.86+)](#prompt-cache-warming-pi-086)
 - [Adaptive thinking models](#adaptive-thinking-models)
 - [Auto-repair with `/cache-optimizer fix`](#auto-repair-with-cache-optimizer-fix)
 - [DeepSeek protocol safety and rollback](#deepseek-protocol-safety-and-rollback)
@@ -71,7 +72,7 @@ This extension requires Pi 0.82+ and is validated against Pi 1.1.0. It uses the 
 | `/cache-optimizer` | Interactive menu when UI supports it; otherwise prints help and current state. |
 | `/cache-optimizer enable` | Enables runtime optimizations for the current Pi process, resets local footer stats, and starts a fresh “enabled” measurement. |
 | `/cache-optimizer disable` | Disables optimization for the current Pi process, resets local footer stats, and keeps collecting footer stats in disabled comparison mode. Run `/reload` or restart Pi to return to startup behavior. |
-| `/cache-optimizer doctor` | Shows active model/provider/API/base URL/compat, whether the skill list was compressed on the last prompt (and why not, e.g. an unrecognised Pi format), plus low-hit diagnosis. |
+| `/cache-optimizer doctor` | Shows active model/provider/API/base URL/compat, whether the skill list was compressed on the last prompt (and why not, e.g. an unrecognised Pi format), plus Pi cache-warming eligibility and low-hit diagnosis. |
 | `/cache-optimizer compat` | Shows copyable compat advice for the active model, if applicable. |
 | `/cache-optimizer stats` | Shows detailed counters for every cache-adapter-matched model used by the current conversation session today. |
 | `/cache-optimizer stats all` | Shows detailed per-model totals across all valid local sessions/shards today, including request and token counts. |
@@ -202,6 +203,14 @@ Notes:
 - DeepSeek model names select the `DS cache` adapter only; they do not prove a reasoning wire protocol. Generic cache/routing advice remains active for absent or non-DeepSeek formats. DeepSeek replay advice is shown only when effective `compat.thinkingFormat: "deepseek"` is explicitly configured; it never treats `thinkingFormat` as a missing fix key.
 - Do not add `thinkingFormat: "deepseek"` merely because a model id contains `deepseek`; `openai`, `qwen`, `openrouter`, `together`, or no explicit format are all valid catalog cases.
 - This extension's `doctor` and `compat` commands only advise; they do not modify `models.json`.
+
+## Prompt cache warming (Pi 0.86+)
+
+Pi itself can keep a prompt cache alive by re-sending the last request with a one-token output cap shortly before the entry expires (the global `cacheWarming` setting: `off`, `streaming` (default), or `idle`; change it with `/settings` → Cache warming or `"cacheWarming"` in `~/.pi/agent/settings.json`). This extension does not run a keepalive timer of its own: a second warmer would pay for duplicate refreshes and cannot replay Pi's exact request.
+
+Pi only warms a model that declares a cache lifetime for the retention tier in use, has input/cache prices, and is replayable (Anthropic budget-based thinking is not). Custom proxy models in `models.json` often lack the first two, so warming never starts. `/cache-optimizer doctor` now reports the mode, the tier, and what is missing, with a snippet such as `"promptCache": {"short":300,"long":3600}` for `anthropic-messages` models. Put it on the model entry (custom models) or under the provider's `modelOverrides` (built-in models). It is advice only; the extension does not write it for you.
+
+Streaming warming stops 60 minutes after the real request and idle warming after 30 minutes. With this extension's 1-hour retention, the refresh would fire at 54 minutes, so `idle` adds nothing; the 1-hour lifetime already covers breaks under an hour. Keep the default `streaming` unless you use 5-minute caches and often return within half an hour.
 
 ## Anthropic cache TTL compatibility
 
