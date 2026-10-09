@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { describe, test } from "node:test";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 
-import { buildCacheWarmingDiagnosis, cacheWarmingRefreshDelayMs, readCacheWarmingMode, suggestedPromptCacheLifetimes } from "../src/cache-warming.ts";
+import { buildCacheWarmingDiagnosis, cacheWarmingRefreshDelayMs, decideZeroPriceWarming, readCacheWarmingMode, suggestedPromptCacheLifetimes } from "../src/cache-warming.ts";
 
 type PiModel = NonNullable<ExtensionContext["model"]>;
 
@@ -76,5 +76,36 @@ describe("cache warming diagnostics", () => {
   test("off mode and unsupported hosts are not eligible", () => {
     assert.equal(buildCacheWarmingDiagnosis(model({ promptCache: { long: 3600 } }), { mode: "off", tier: "long" }).eligible, false);
     assert.deepEqual(buildCacheWarmingDiagnosis(model(), { mode: "unsupported", tier: "long" }).issues, ["unsupported"]);
+  });
+});
+
+describe("zero-price warming override", () => {
+  const zero = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 };
+
+  test("turns Pi's unpriced stop into warm for zero-price models", () => {
+    assert.equal(decideZeroPriceWarming({ action: "stop", warmCost: 0, missCost: 0 }, model({ cost: zero })), "warm");
+  });
+
+  test("does not override when only the output price is set", () => {
+    const outputOnly = { input: 0, output: 15, cacheRead: 0, cacheWrite: 0 };
+    assert.equal(decideZeroPriceWarming({ action: "stop", warmCost: 0, missCost: 0 }, model({ cost: outputOnly })), undefined);
+    const m = model({ promptCache: { short: 300, long: 3600 }, cost: outputOnly });
+    assert.deepEqual(buildCacheWarmingDiagnosis(m, { mode: "streaming", tier: "long", zeroPriceWarming: true }).issues, ["pricing_missing"]);
+  });
+
+  test("respects Pi when the model has prices or Pi already warms", () => {
+    assert.equal(decideZeroPriceWarming({ action: "stop", warmCost: 0, missCost: 0 }, model()), undefined);
+    assert.equal(decideZeroPriceWarming({ action: "stop", warmCost: 0.01, missCost: 0.02 }, model({ cost: zero })), undefined);
+    assert.equal(decideZeroPriceWarming({ action: "warm", warmCost: 0, missCost: 0 }, model({ cost: zero })), undefined);
+    assert.equal(decideZeroPriceWarming({ action: "stop", warmCost: 0, missCost: 0 }, undefined), undefined);
+  });
+
+  test("doctor treats zero pricing as covered when the override is on", () => {
+    const m = model({ promptCache: { short: 300, long: 3600 }, cost: zero });
+    const on = buildCacheWarmingDiagnosis(m, { mode: "streaming", tier: "long", zeroPriceWarming: true });
+    assert.equal(on.eligible, true);
+    assert.ok(on.lines.some((line) => line.includes("overrides")));
+    const off = buildCacheWarmingDiagnosis(m, { mode: "streaming", tier: "long", zeroPriceWarming: false });
+    assert.deepEqual(off.issues, ["pricing_missing"]);
   });
 });

@@ -1,16 +1,17 @@
 import { type ExtensionCommandContext, type ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { readFile } from "node:fs/promises";
 import { selectAdapterForModel } from "./adapters.ts";
-import { backupTimestamp, hashText } from "./atomic-fs.ts";
+import { backupTimestamp, hashText, readRegularTextFile } from "./atomic-fs.ts";
+import { choosePromptCacheLifetimes, planPromptCacheFix, validateWrittenPromptCacheFix } from "./prompt-cache-fix.ts";
 import { FEATURE_COMMAND_MAP } from "./command-completion.ts";
 import { type PiModel, asRecord } from "./common.ts";
 import { describeMissingCacheCompatForModel, getModelsJsonDisplayPath, isAdaptiveThinkingCompatApplicable } from "./compat-advice.ts";
 import { resolveEffectiveCompatFromConfig } from "./compat-config.ts";
-import { FOOTER_MODE_ENV, type FooterStatsMode, formatOptimizerRuntimeMode, formatPersistentFeatureConfig, persistedFooterStatsMode, readPersistedCacheOptimizerConfig, resetPersistedFeatures, resolveFooterStatsMode, setPersistedCacheOptimizerConfig, setRuntimeOptimizerEnabled, writePersistedFeature, writePersistedFooterMode } from "./config.ts";
+import { isZeroPriceWarmingEnabled, FOOTER_MODE_ENV, type FooterStatsMode, formatOptimizerRuntimeMode, formatPersistentFeatureConfig, persistedFooterStatsMode, readPersistedCacheOptimizerConfig, resetPersistedFeatures, resolveFooterStatsMode, setPersistedCacheOptimizerConfig, setRuntimeOptimizerEnabled, writePersistedFeature, writePersistedFooterMode } from "./config.ts";
 import { buildCompatDiagnosis, buildDoctorDiagnosis, buildLowHitDiagnosis, getCompatCheckNotApplicableLines, isCompatCheckApplicable, isDeepSeekCompatCheckApplicable, isPromptCacheKeyUnsupportedApplicable } from "./diagnostics.ts";
 import { locateModelOverrideInJsonc, parseJsonc } from "./jsonc.ts";
 import { invalidateModelsConfigCache, isValidModelsConfigForEffectiveCompat, modelKey } from "./model-identity.ts";
-import { analyzeModelsJsonForMissingEntry, applyModelsJsonFixTransaction, chooseFixPlacement, composeFixInsertion, composeModelOverrideInsertion, composeProviderAffinityInsertion, createModelsJsonFixReceipt, formatCompatKeysForInsertion, formatMissingEntryManualSnippet, isActionableModelsJsonFixReceipt, locateModelInJsonc, markModelsJsonFixReceiptRolledBack, prepareModelsJsonRollback, readModelsJsonFixReceipt, readModelsJsonFixReceiptSnapshot, resolveExplicitCompatValue, selfCheckFix, selfCheckMissingEntryInsertion, validateModelsJsonRollback, writeModelsJsonFixReceipt } from "./models-json-fix.ts";
+import { analyzeModelsJsonForMissingEntry, applyModelsJsonFixTransaction, chooseFixPlacement, composeFixInsertion, composeModelOverrideInsertion, composeProviderAffinityInsertion, createModelsJsonFixReceipt, createPromptCacheFixReceipt, formatCompatKeysForInsertion, formatMissingEntryManualSnippet, isActionableModelsJsonFixReceipt, locateModelInJsonc, markModelsJsonFixReceiptRolledBack, prepareModelsJsonRollback, readModelsJsonFixReceipt, readModelsJsonFixReceiptSnapshot, resolveExplicitCompatValue, selfCheckFix, selfCheckMissingEntryInsertion, validateModelsJsonRollback, writeModelsJsonFixReceipt } from "./models-json-fix.ts";
 import { MODELS_JSON_PATH } from "./paths.ts";
 import { applyPromptCacheKeyConfigFix, isActionablePromptCacheKeyConfigReceipt, readPromptCacheKeyConfigReceiptSnapshot, rollbackPromptCacheKeyConfig } from "./prompt-cache-key-config.ts";
 import { getEffectiveCompatValueSource, isPromptCacheKeyOmittedForModel } from "./request-payload.ts";
@@ -117,6 +118,7 @@ export function createCacheOptimizerCommandHandler(runtime: CommandRuntime) {
           ? buildCacheWarmingDiagnosis(model, {
             mode: runtime.getCacheWarmingMode(),
             tier: process.env[PI_CACHE_RETENTION_ENV] === LONG_CACHE_RETENTION_VALUE ? "long" : "short",
+            zeroPriceWarming: isZeroPriceWarmingEnabled(),
           }).lines
           : [];
         const fullDiagnosis = [routeNote, diagnosis, describeSkillCompressionOutcome(), describePromptCacheRetentionDecision(getLastPromptCacheRetentionDecision()), ...warmingLines, ...lowHitLines].filter((line) => line !== undefined).join("\n");
@@ -169,7 +171,7 @@ export function createCacheOptimizerCommandHandler(runtime: CommandRuntime) {
           const resolved = resolveFooterStatsMode(persistedFooterStatsMode);
           cmdCtx.ui.notify(
             `Usage: /cache-optimizer config footer-mode total|session|process\n` +
-            `       /cache-optimizer config prompt-rewrite|virtual-rewrite|skill-compression|openai-cache-key|tool-order on|off\n` +
+            `       /cache-optimizer config prompt-rewrite|virtual-rewrite|skill-compression|openai-cache-key|tool-order|zero-price-warming on|off\n` +
             `       /cache-optimizer config reset\n` +
             `Current footer mode: ${resolved.mode} (${resolved.source})`,
             "info",
@@ -284,7 +286,9 @@ export function createCacheOptimizerCommandHandler(runtime: CommandRuntime) {
 
         const rollbackScope = rollback.mode === "exact"
           ? "restore the exact pre-fix models.json because the file is unchanged since the fix"
-          : "restore only the receipt-owned compat scalar keys and preserve subsequent user changes";
+          : rollback.receipt.promptCacheAdded
+            ? "remove only the promptCache object the fix added (and restore any receipt-owned compat keys), preserving subsequent user changes"
+            : "restore only the receipt-owned compat scalar keys and preserve subsequent user changes";
         const rollbackPreview = [
           `Rollback transaction ${rollback.receipt.transactionId}:`,
           `Model: ${rollback.receipt.provider}/${rollback.receipt.modelId}`,
@@ -375,6 +379,11 @@ export function createCacheOptimizerCommandHandler(runtime: CommandRuntime) {
       } else if (subcommand === "fix") {
         if (!model) {
           cmdCtx.ui.notify("No active model selected. Select a model first with /model or pi --model.", "warning");
+          return;
+        }
+
+        if (commandParts[1] === "prompt-cache") {
+          await runPromptCacheFix(cmdCtx, model);
           return;
         }
 
@@ -987,10 +996,11 @@ export function createCacheOptimizerCommandHandler(runtime: CommandRuntime) {
         diagnosis.push("  stats all — Show detailed totals for every model across all local sessions");
         diagnosis.push("  stats contributors — Show per-session contributors for the active model");
         diagnosis.push("  compat  — Show compat suggestion with edit location");
-        diagnosis.push("  config prompt-rewrite|virtual-rewrite|skill-compression|openai-cache-key|tool-order on|off — Persist feature settings");
+        diagnosis.push("  config prompt-rewrite|virtual-rewrite|skill-compression|openai-cache-key|tool-order|zero-price-warming on|off — Persist feature settings");
         diagnosis.push("  config footer-mode total|session|process — Persist the footer stats mode");
         diagnosis.push("  config reset — Remove persistent feature overrides");
         diagnosis.push("  fix     — Auto-fix compat issues (writes models.json or extension config, requires UI)");
+        diagnosis.push("  fix prompt-cache — Add promptCache lifetimes so Pi's cache warming can run");
         diagnosis.push("  fix prompt-cache-key — Explicitly omit prompt_cache_key for the active model");
         diagnosis.push("  rollback — Undo the latest confirmed fix (requires UI confirmation)");
         diagnosis.push("  reset   — Reset local provider/model stats for current model (does not affect upstream)");
@@ -1017,5 +1027,116 @@ export function createCacheOptimizerCommandHandler(runtime: CommandRuntime) {
         }
         cmdCtx.ui.notify(diagnosis.join("\n"), "info");
       }
+  }
+}
+
+function declaredPromptCacheTier(model: PiModel, tier: "short" | "long"): number | undefined {
+  const value = asRecord(asRecord(model as unknown)?.promptCache)?.[tier];
+  return typeof value === "number" && Number.isFinite(value) && value > 0 ? value : undefined;
+}
+
+/**
+ * `/cache-optimizer fix prompt-cache`: add Pi's model-level promptCache
+ * lifetimes so native cache warming can run. Same safety model as the compat
+ * fix: preview + confirmation, timestamped backup, guarded atomic write,
+ * post-write check, and a receipt that /cache-optimizer rollback understands.
+ */
+async function runPromptCacheFix(cmdCtx: ExtensionCommandContext, model: PiModel): Promise<void> {
+  const tier: "short" | "long" = process.env[PI_CACHE_RETENTION_ENV] === LONG_CACHE_RETENTION_VALUE ? "long" : "short";
+  const declared = declaredPromptCacheTier(model, tier);
+  if (declared !== undefined) {
+    cmdCtx.ui.notify(`✅ ${modelKey(model)} already declares promptCache.${tier} (${declared}s). Nothing to fix.`, "info");
+    return;
+  }
+  const choice = choosePromptCacheLifetimes(model, tier);
+  if ("error" in choice) {
+    cmdCtx.ui.notify(`ℹ️ ${choice.error} No changes were made.`, "warning");
+    return;
+  }
+  const snippet = `"promptCache": ${JSON.stringify(choice.promptCache)}`;
+  const manual = (reason: string): string => [
+    `❌ ${reason}. No changes were made.`,
+    "",
+    `Add this to the model entry in ${getModelsJsonDisplayPath()} (custom models) or under`,
+    `providers["${model.provider}"].modelOverrides["${model.id}"] (built-in models), then run /reload:`,
+    `  ${snippet}`,
+  ].join("\n");
+
+  if (!cmdCtx.hasUI) {
+    cmdCtx.ui.notify(manual("Non-interactive terminal detected. The fix requires UI confirmation"), "warning");
+    return;
+  }
+
+  let current: { text: string; mode: number };
+  try {
+    current = await readRegularTextFile(MODELS_JSON_PATH);
+  } catch {
+    cmdCtx.ui.notify(manual(`Could not read ${getModelsJsonDisplayPath()} as a regular file`), "error");
+    return;
+  }
+  const plan = planPromptCacheFix(current.text, model.provider, model.id, choice.promptCache);
+  if ("error" in plan) {
+    cmdCtx.ui.notify(manual(`Cannot edit models.json safely: ${plan.error}`), "error");
+    return;
+  }
+
+  const backupPath = `${MODELS_JSON_PATH}.backup-cache-optimizer-${backupTimestamp()}`;
+  const pendingReceipt = await readModelsJsonFixReceipt();
+  const confirmed = await cmdCtx.ui.confirm("Cache Optimizer — Add promptCache lifetimes", [
+    `📝 Preview of changes to ${getModelsJsonDisplayPath()}:`,
+    `Location: ${plan.locationLabel}`,
+    `JSON to write: ${snippet}`,
+    plan.targetExistedBefore ? "" : "A new modelOverrides entry will be created for this model.",
+    "",
+    "Why: Pi only warms a prompt cache when the model declares its lifetime for the retention tier in use",
+    `(${tier} here). ${model.api === "anthropic-messages" ? "300s/3600s are Anthropic's documented 5m and 1h lifetimes, the values Pi ships for its own Claude models." : "300s is the conservative short lifetime."}`,
+    "",
+    `A timestamped backup will be written to: ${backupPath}`,
+    "Comments and unrelated fields are preserved. Undo with /cache-optimizer rollback.",
+    isActionableModelsJsonFixReceipt(pendingReceipt)
+      ? `⚠️ This replaces the rollback receipt of the earlier fix for ${pendingReceipt.provider}/${pendingReceipt.modelId}; its backup ${pendingReceipt.backupFile} stays on disk.`
+      : "",
+    "Run /reload or restart Pi for the change to take effect.",
+    "",
+    "Apply this change?",
+  ].filter((line, index, lines) => line !== "" || lines[index - 1] !== "").join("\n"));
+  if (!confirmed) {
+    cmdCtx.ui.notify("No changes were made. Canceled by user.", "info");
+    return;
+  }
+
+  const receipt = createPromptCacheFixReceipt(
+    current.text, plan.modifiedText, model.provider, model.id,
+    plan.placement, plan.promptCache, plan.targetExistedBefore, backupPath,
+  );
+  if (!receipt) {
+    cmdCtx.ui.notify("❌ Could not create a fix receipt for rollback. No changes were made.", "error");
+    return;
+  }
+  try {
+    const result = await applyModelsJsonFixTransaction(
+      plan.modifiedText,
+      backupPath,
+      (writtenText) => validateWrittenPromptCacheFix(writtenText, plan),
+      {
+        expectedCurrentHash: hashText(current.text),
+        expectedCurrentMode: current.mode,
+        purpose: "fix",
+        onCommitted: async () => writeModelsJsonFixReceipt(receipt),
+      },
+    );
+    if ("postCheckError" in result) {
+      cmdCtx.ui.notify(`❌ Post-write self-check failed: ${result.postCheckError}. Backup restored.`, "error");
+      return;
+    }
+    invalidateModelsConfigCache();
+    cmdCtx.ui.notify(
+      `✅ promptCache ${JSON.stringify(plan.promptCache)} added for ${modelKey(model)}.\n` +
+      `Backup saved to: ${backupPath}\n` +
+      "Run /reload or restart Pi, then /cache-optimizer doctor to confirm warming is eligible.",
+      "info",
+    );
+  } catch (error) {
+    cmdCtx.ui.notify(`❌ Write failed: ${error instanceof Error ? error.message : String(error)}. No changes were kept.`, "error");
   }
 }

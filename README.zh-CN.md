@@ -80,6 +80,7 @@ Pi 0.79.7 及之后，`pi update` 默认只更新 Pi 本体。若要更新已安
 | `/cache-optimizer reset` | 重置当前 provider/model 的本地 footer 统计；不会修改上游 provider 缓存。 |
 | `/cache-optimizer config footer-mode total\|session\|process` | 持久设置 footer 统计模式；持久命令配置优先于环境变量。 |
 | `/cache-optimizer fix` | 为当前模型自动修复安全的 compat 问题。展示预览 + 风险提示，需要用户确认；原生 compat 修复写 `models.json`，已观测到的 `prompt_cache_key` 问题写扩展配置。 |
+| `/cache-optimizer fix prompt-cache` | 为当前模型写入 `promptCache` 缓存时长，让 Pi 原生保温生效。带预览、备份、receipt 和回滚。需要确认。 |
 | `/cache-optimizer fix prompt-cache-key` | 明确把当前 OpenAI-compatible provider/model 配置为从最终请求体移除 `prompt_cache_key` 与 `promptCacheKey`。需要确认。 |
 | `/cache-optimizer rollback` | 查看最近一次匹配的已确认修复；经 UI 确认后安全恢复扩展配置或 `models.json` 修复。 |
 
@@ -208,7 +209,7 @@ Pi 0.84.1 还修复了内置 Fireworks 渠道对拒绝 `prompt_cache_retention` 
 
 Pi 自带缓存保温：在缓存条目过期前，用一个 token 的输出上限原样重放上一次请求（全局设置 `cacheWarming`：`off`、`streaming`（默认）或 `idle`；在 `/settings` → Cache warming 中修改，或在 `~/.pi/agent/settings.json` 中设置 `"cacheWarming"`）。本扩展不自行运行保活定时器：第二个保温器会重复计费，而且无法精确重放 Pi 的请求。
 
-Pi 只会为满足以下条件的模型保温：为当前保留档位声明了缓存时长、有输入/缓存价格、请求可重放（Anthropic 基于 budget 的 thinking 不可重放）。`models.json` 里的自定义代理模型常常缺前两项，保温根本不会启动。`/cache-optimizer doctor` 现在会显示保温模式、档位和缺失项，并给出片段，例如 `anthropic-messages` 模型的 `"promptCache": {"short":300,"long":3600}`。自定义模型写在该模型条目中，内置模型写在 provider 的 `modelOverrides` 下。这只是建议，扩展不会替你写入。
+Pi 只会为满足以下条件的模型保温：为当前保留档位声明了缓存时长、有输入/缓存价格、请求可重放（Anthropic 基于 budget 的 thinking 不可重放）。`models.json` 里的自定义代理模型常常缺前两项，保温根本不会启动。对价格全为 0 的模型，Pi 会以 “cache economics unavailable” 停止保温；本扩展仅在这种情况下通过 `cache_warming_decision` 返回 `warm`，因为一次刷新只是一次缓存读取加一个输出 token。有真实价格的模型仍按 Pi 自己的判断，Pi 的模式、缓存时长、可重放性和时间上限也照常生效。每次刷新都是一次真实请求，若渠道价格写 0 但实际计费，会产生费用。刷新间隔里 Pi 的 `/session` 仍会显示 “cache economics unavailable”；若其他扩展也处理 `cache_warming_decision`，以 Pi 最后执行的那个为准。可用 `/cache-optimizer config zero-price-warming off` 或 `PI_CACHE_OPTIMIZER_NO_ZERO_PRICE_WARMING=1` 关闭。`/cache-optimizer doctor` 现在会显示保温模式、档位和缺失项，并给出片段，例如 `anthropic-messages` 模型的 `"promptCache": {"short":300,"long":3600}`。自定义模型写在该模型条目中，内置模型写在 provider 的 `modelOverrides` 下；也可以运行 `/cache-optimizer fix prompt-cache` 一键写入：先预览、需确认、保留带时间戳的备份和注释，并记录 receipt，`/cache-optimizer rollback` 只会删除这次加入的 `promptCache` 对象（若文件之后没有改动则整文件恢复）。`anthropic-messages` 模型写入 `{"short":300,"long":3600}`（Anthropic 文档的 5 分钟/1 小时，与 Pi 内置 Claude 模型一致），其他 API 写入 `{"short":300}`；若当前使用长档位而该 API 没有文档化的长时长，则拒绝写入而不是猜测。已有 `promptCache` 时不会合并或覆盖，models.json 中不存在的 provider 条目也不会被创建。
 
 streaming 保温在真实请求后 60 分钟停止，idle 保温在 30 分钟后停止。本扩展使用 1 小时保留时，刷新会在第 54 分钟才触发，所以 `idle` 没有额外作用；1 小时的缓存本身已覆盖一小时内的中断。除非你使用 5 分钟缓存且经常在半小时内回来，否则保持默认的 `streaming` 即可。
 

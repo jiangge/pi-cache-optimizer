@@ -113,7 +113,7 @@ describe("footer status separation and command completion", () => {
     );
     assert.deepEqual(
       internals.getCacheOptimizerArgumentCompletions("config "),
-      ["footer-mode", "prompt-rewrite", "virtual-rewrite", "skill-compression", "openai-cache-key", "tool-order", "reset"].map((value) => ({ value: `config ${value}`, label: value })),
+      ["footer-mode", "prompt-rewrite", "virtual-rewrite", "skill-compression", "openai-cache-key", "tool-order", "zero-price-warming", "reset"].map((value) => ({ value: `config ${value}`, label: value })),
     );
     assert.deepEqual(
       internals.getCacheOptimizerArgumentCompletions("stats "),
@@ -133,7 +133,7 @@ describe("footer status separation and command completion", () => {
     );
     assert.deepEqual(
       internals.getCacheOptimizerArgumentCompletions("fix p"),
-      [{ value: "fix prompt-cache-key", label: "prompt-cache-key" }],
+      [{ value: "fix prompt-cache", label: "prompt-cache" }, { value: "fix prompt-cache-key", label: "prompt-cache-key" }],
     );
     assert.equal(internals.getCacheOptimizerArgumentCompletions("unknown "), null);
     assert.equal(internals.getCacheOptimizerArgumentCompletions("config unknown "), null);

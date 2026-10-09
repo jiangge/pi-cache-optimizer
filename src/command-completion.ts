@@ -18,9 +18,9 @@ export const CACHE_OPTIMIZER_COMMANDS = [
   "rollback",
 ] as const;
 
-export const CACHE_OPTIMIZER_CONFIG_ARGUMENTS = ["footer-mode", "prompt-rewrite", "virtual-rewrite", "skill-compression", "openai-cache-key", "tool-order", "reset"] as const;
+export const CACHE_OPTIMIZER_CONFIG_ARGUMENTS = ["footer-mode", "prompt-rewrite", "virtual-rewrite", "skill-compression", "openai-cache-key", "tool-order", "zero-price-warming", "reset"] as const;
 
-export const CACHE_OPTIMIZER_FEATURE_COMMANDS = ["prompt-rewrite", "virtual-rewrite", "skill-compression", "openai-cache-key", "tool-order"] as const;
+export const CACHE_OPTIMIZER_FEATURE_COMMANDS = ["prompt-rewrite", "virtual-rewrite", "skill-compression", "openai-cache-key", "tool-order", "zero-price-warming"] as const;
 
 export const CACHE_OPTIMIZER_FEATURE_VALUES = ["on", "off"] as const;
 
@@ -32,11 +32,12 @@ export const FEATURE_COMMAND_MAP: Record<string, PersistedCacheOptimizerFeature>
   "skill-compression": "skillCompression",
   "openai-cache-key": "openAICacheKey",
   "tool-order": "toolOrder",
+  "zero-price-warming": "zeroPriceWarming",
 };
 
 export const CACHE_OPTIMIZER_STATS_ARGUMENTS = ["all", "contributors"] as const;
 
-export const CACHE_OPTIMIZER_FIX_ARGUMENTS = ["prompt-cache-key"] as const;
+export const CACHE_OPTIMIZER_FIX_ARGUMENTS = ["prompt-cache", "prompt-cache-key"] as const;
 
 export function filterCommandCompletionItems(
   values: readonly string[],

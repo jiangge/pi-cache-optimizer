@@ -54,6 +54,7 @@ export function suggestedPromptCacheLifetimes(model: PiModel): { short: number; 
   // other APIs only the conservative short lifetime is suggested; extended
   // retention differs per provider and deployment.
   if (model.api === "anthropic-messages") return { short: 300, long: 3600 };
+  // Elsewhere only the short tier has a value the extension can stand behind.
   return { short: 300 };
 }
 
@@ -69,6 +70,13 @@ function hasPricing(model: PiModel): boolean {
   return ["input", "cacheRead", "cacheWrite"].some((key) => typeof cost[key] === "number" && (cost[key] as number) > 0);
 }
 
+/** Every price Pi uses for warming economics is zero or missing. */
+function isZeroPriced(model: PiModel): boolean {
+  const cost = asRecord((model as unknown as Record<string, unknown>).cost);
+  if (!cost) return true;
+  return ["input", "output", "cacheRead", "cacheWrite"].every((key) => !(typeof cost[key] === "number" && (cost[key] as number) > 0));
+}
+
 function isReplayableForWarming(model: PiModel): boolean {
   if (!model.reasoning || model.api !== "anthropic-messages") return true;
   return asRecord(asRecord(model as unknown)?.compat)?.forceAdaptiveThinking === true;
@@ -78,6 +86,8 @@ export type CacheWarmingDiagnosisInput = {
   mode: CacheWarmingMode | "unsupported";
   /** Retention tier Pi uses for this request ("long" when PI_CACHE_RETENTION=long). */
   tier: "short" | "long";
+  /** Whether the extension keeps warming running for zero-price models. */
+  zeroPriceWarming?: boolean;
 };
 
 export type CacheWarmingDiagnosis = {
@@ -118,6 +128,9 @@ export function buildCacheWarmingDiagnosis(model: PiModel, input: CacheWarmingDi
     lines.push(`- ⚠️ The model declares no promptCache.${input.tier} lifetime, so Pi never warms its cache.`);
     lines.push(`  Add to this model's entry in models.json (custom models) or under the provider's modelOverrides.${JSON.stringify(model.id)} (built-in models):`);
     lines.push(`  "promptCache": ${JSON.stringify(snippet)}`);
+    if (input.tier === "short" || suggested.long !== undefined) {
+      lines.push("  Or run /cache-optimizer fix prompt-cache to add it with a preview, backup and rollback.");
+    }
     if (input.tier === "long" && suggested.long === undefined) {
       lines.push("  Only add a long lifetime your provider documents; use the conservative end of any range.");
     }
@@ -126,8 +139,12 @@ export function buildCacheWarmingDiagnosis(model: PiModel, input: CacheWarmingDi
   }
 
   if (!hasPricing(model)) {
-    issues.push("pricing_missing");
-    lines.push("- ⚠️ The model has no input/cache prices, so Pi cannot estimate savings and skips warming. Add a cost block to the model entry.");
+    if (input.zeroPriceWarming && isZeroPriced(model)) {
+      lines.push("- The model has no input/cache prices. Pi would skip warming; this extension overrides that (config zero-price-warming on).");
+    } else {
+      issues.push("pricing_missing");
+      lines.push("- ⚠️ The model has no input/cache prices, so Pi cannot estimate savings and skips warming. Add a cost block, or turn on /cache-optimizer config zero-price-warming.");
+    }
   }
 
   if (!isReplayableForWarming(model)) {
@@ -147,4 +164,26 @@ export function buildCacheWarmingDiagnosis(model: PiModel, input: CacheWarmingDi
     lines.push(`- ✓ Eligible: Pi keeps this cache warm ${input.mode === "idle" ? "during runs and briefly between runs" : "during agent runs"} when the expected savings are at least $0.05.`);
   }
   return { eligible, issues, lines };
+}
+
+export type CacheWarmingDecisionLike = {
+  action?: unknown;
+  warmCost?: unknown;
+  missCost?: unknown;
+};
+
+/**
+ * `cache_warming_decision` policy: Pi stops warming when it cannot price the
+ * refresh ("cache economics unavailable"), which is every model whose cost
+ * block is all zero, the common case for custom proxy channels. A refresh is a
+ * cache read of the prompt plus one output token, far cheaper than rewriting
+ * the cache, so keep warming for those models. Pi's own decision stands
+ * whenever the model has real prices, and Pi's mode, lifetime, replayability
+ * and 60m/30m safety limits still apply.
+ */
+export function decideZeroPriceWarming(event: CacheWarmingDecisionLike, model: PiModel | undefined): "warm" | undefined {
+  if (!model || event.action !== "stop") return undefined;
+  if (event.warmCost !== 0 || event.missCost !== 0) return undefined;
+  if (!isZeroPriced(model)) return undefined;
+  return "warm";
 }

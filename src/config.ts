@@ -15,6 +15,8 @@ export const NO_OPENAI_CACHE_KEY_ENV = "PI_CACHE_OPTIMIZER_NO_OPENAI_CACHE_KEY";
 
 export const TOOL_ORDER_ENV = "PI_CACHE_OPTIMIZER_TOOL_ORDER";
 
+export const NO_ZERO_PRICE_WARMING_ENV = "PI_CACHE_OPTIMIZER_NO_ZERO_PRICE_WARMING";
+
 export const FOOTER_MODE_ENV = "PI_CACHE_OPTIMIZER_FOOTER_MODE";
 
 export type FooterStatsMode = "session" | "total" | "process";
@@ -26,7 +28,7 @@ export type PersistedCacheOptimizerConfigV1 = {
   footerMode?: FooterStatsMode;
 };
 
-export type PersistedCacheOptimizerFeature = "promptRewrite" | "virtualRewrite" | "skillCompression" | "openAICacheKey" | "toolOrder";
+export type PersistedCacheOptimizerFeature = "promptRewrite" | "virtualRewrite" | "skillCompression" | "openAICacheKey" | "toolOrder" | "zeroPriceWarming";
 
 export type PersistedCacheOptimizerConfigV2 = {
   version: 2;
@@ -66,10 +68,15 @@ export function featureEnabled(
   if (feature === "openAICacheKey") {
     return !isEnabledEnv(env[envName]) && !isDisabledEnv(env[OPENAI_CACHE_KEY_ENV]);
   }
-  if (feature === "promptRewrite" || feature === "skillCompression") {
+  if (feature === "promptRewrite" || feature === "skillCompression" || feature === "zeroPriceWarming") {
     return !isEnabledEnv(env[envName]);
   }
   return isEnabledEnv(env[envName]) || defaultValue;
+}
+
+/** Keep Pi's cache warming running for models whose prices are unknown (all zero). */
+export function isZeroPriceWarmingEnabled(): boolean {
+  return runtimeOptimizerEnabled && featureEnabled("zeroPriceWarming", NO_ZERO_PRICE_WARMING_ENV, true);
 }
 
 export function isToolOrderEnabled(env: MutableEnv = process.env): boolean {
@@ -94,7 +101,7 @@ export function parsePersistedCacheOptimizerConfig(value: unknown): PersistedCac
   const rawFeatures = record.version === 3 ? record.features : undefined;
   if (rawFeatures !== undefined && !asRecord(rawFeatures)) return undefined;
   const featuresRecord = asRecord(rawFeatures);
-  const featureNames = new Set<PersistedCacheOptimizerFeature>(["promptRewrite", "virtualRewrite", "skillCompression", "openAICacheKey", "toolOrder"]);
+  const featureNames = new Set<PersistedCacheOptimizerFeature>(["promptRewrite", "virtualRewrite", "skillCompression", "openAICacheKey", "toolOrder", "zeroPriceWarming"]);
   if (featuresRecord && Object.keys(featuresRecord).some((key) => !featureNames.has(key as PersistedCacheOptimizerFeature) || typeof featuresRecord[key] !== "boolean")) return undefined;
 
   const rawPromptCacheKey = record.promptCacheKey;
@@ -354,6 +361,7 @@ export function formatPersistentFeatureConfig(): string {
     ["Skill compression", "skillCompression", NO_SKILL_COMPRESSION_ENV, true],
     ["OpenAI cache key", "openAICacheKey", NO_OPENAI_CACHE_KEY_ENV, true],
     ["Tool ordering", "toolOrder", TOOL_ORDER_ENV, false],
+    ["Zero-price cache warming", "zeroPriceWarming", NO_ZERO_PRICE_WARMING_ENV, true],
   ];
   for (const [label, feature, envName, defaultValue] of entries) {
     const hasEnv = process.env[envName] !== undefined || (feature === "openAICacheKey" && process.env[OPENAI_CACHE_KEY_ENV] !== undefined);
