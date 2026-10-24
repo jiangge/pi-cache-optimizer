@@ -24,7 +24,7 @@ import {
 } from "../src/models-json-lint.ts";
 
 const ISSUE_30_HINT =
-  '⚠️ providers["opencode-go"].model0verrides is not a known Pi 1.3 key and looks like a typo of "modelOverrides"; Pi ignores unknown keys, so it most likely has no effect.';
+  '⚠️ providers["opencode-go"].model0verrides is not a known Pi key and looks like a typo of "modelOverrides"; Pi ignores unknown keys, so it most likely has no effect.';
 
 describe("models.json near-miss key lint (issue #30)", () => {
   test("known key sets match the installed Pi schema exactly", async () => {
@@ -222,7 +222,7 @@ describe("models.json lint file reads", () => {
     const lines = buildModelsJsonLintDoctorLines(path);
     assert.match(lines[1], /2 suspected typos/);
     assert.ok(lines.some((line) => line.includes(ISSUE_30_HINT)));
-    assert.ok(lines.some((line) => line.includes('compat.sendSessionAfinityHeaders is not a known Pi 1.3 key and looks like a typo of "sendSessionAffinityHeaders"')));
+    assert.ok(lines.some((line) => line.includes('compat.sendSessionAfinityHeaders is not a known Pi key and looks like a typo of "sendSessionAffinityHeaders"')));
     await writeFile(path, JSON.stringify({ providers: { "opencode-go": { modelOverrides: {} } } }));
     assert.deepEqual(buildModelsJsonLintDoctorLines(path), []);
   });
@@ -370,7 +370,7 @@ describe("issue #30 hints in warnings, doctor and fix", () => {
     assert.ok(/declares no promptCache\.(short|long)/.test(doctor), "warming reports the missing lifetime");
     assert.ok(doctor.includes("models.json key check: 2 suspected typos"));
     assert.equal(doctor.split(ISSUE_30_HINT).length - 1, 1);
-    assert.equal(doctor.split('promptcache is not a known Pi 1.3 key and looks like a typo of "promptCache"').length - 1, 1);
+    assert.equal(doctor.split('promptcache is not a known Pi key and looks like a typo of "promptCache"').length - 1, 1);
   });
 
   test("doctor stays quiet about keys when models.json is clean", async () => {
@@ -404,7 +404,7 @@ describe("issue #30 hints in warnings, doctor and fix", () => {
 
   test("model-override and models[] fix previews mention the typo and never rename it", async () => {
     const path = join(agentDir, "models.json");
-    const hint = 'compat.sendSessionAfinityHeaders is not a known Pi 1.3 key and looks like a typo of "sendSessionAffinityHeaders"';
+    const hint = 'compat.sendSessionAfinityHeaders is not a known Pi key and looks like a typo of "sendSessionAffinityHeaders"';
 
     // Existing modelOverrides entry: the model-override repair path.
     const overrideConfig = JSON.stringify({
@@ -449,7 +449,7 @@ describe("issue #30 hints in warnings, doctor and fix", () => {
     await hooks.get("model_select")?.({ model: current }, context(current));
     const warning = notifications.find((text) => text.includes('lacks cacheControlFormat: "anthropic"'));
     assert.ok(warning, "Claude warning still fires");
-    assert.ok(warning.includes('providers["claude-proxy"].compat.cacheControlFormt is not a known Pi 1.3 key and looks like a typo of "cacheControlFormat"'));
+    assert.ok(warning.includes('providers["claude-proxy"].compat.cacheControlFormt is not a known Pi key and looks like a typo of "cacheControlFormat"'));
   });
 
   test("fix prompt-cache preview mentions a misspelled promptCache key", async () => {
@@ -467,7 +467,7 @@ describe("issue #30 hints in warnings, doctor and fix", () => {
         const { commands, context, previews, notifications } = setup();
         await commands.get("cache-optimizer")!.handler("fix prompt-cache", context(model("glm-5"), false));
         const shown = retention === "long" ? notifications.at(-1) ?? "" : previews.at(-1) ?? "";
-        assert.ok(shown.includes('promptcache is not a known Pi 1.3 key and looks like a typo of "promptCache"'), `${retention}: ${shown}`);
+        assert.ok(shown.includes('promptcache is not a known Pi key and looks like a typo of "promptCache"'), `${retention}: ${shown}`);
         assert.equal(await readFile(path, "utf8"), config);
       }
     } finally {
@@ -485,7 +485,7 @@ describe("issue #30 hints in warnings, doctor and fix", () => {
       tier: "short",
       zeroPriceWarming: false,
     });
-    assert.ok(diagnosis.lines.some((line) => line.includes('modelOverrides["glm-5"].promptcache is not a known Pi 1.3 key and looks like a typo of "promptCache"')));
+    assert.ok(diagnosis.lines.some((line) => line.includes('modelOverrides["glm-5"].promptcache is not a known Pi key and looks like a typo of "promptCache"')));
     const quiet = cacheWarming.buildCacheWarmingDiagnosis(model("glm-5") as any, {
       mode: "streaming" as any,
       tier: "short",

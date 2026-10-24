@@ -253,7 +253,7 @@ test("issue #30: misspelled provider compat key is named in the affinity warning
     },
   });
   await writeFile(path, original);
-  const hint = '⚠️ providers["proxy"].compat.sendSessionAfinityHeaders is not a known Pi 1.3 key and looks like a typo of "sendSessionAffinityHeaders"; Pi ignores unknown keys, so it most likely has no effect.';
+  const hint = '⚠️ providers["proxy"].compat.sendSessionAfinityHeaders is not a known Pi key and looks like a typo of "sendSessionAffinityHeaders"; Pi ignores unknown keys, so it most likely has no effect.';
   const { hooks, commands, context, notifications, previews } = setup();
   const current = model("mimo-typo");
   await hooks.get("model_select")?.({ model: current }, context(current));
