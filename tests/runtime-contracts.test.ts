@@ -351,6 +351,35 @@ describe("OpenAI-compatible request contracts", () => {
       assert.ok(out.endsWith("\n\nCurrent working directory: /work"));
     });
 
+    test("still compresses a list rendered with the pre-1.5 Pi path-rule wording, keeping that wording", () => {
+      const [current, legacyRule] = internals.SKILL_PATH_RULE_WORDINGS;
+      for (const tool of ["read", "bash", "indirect"] as const) {
+        const selectedTools = tool === "read" ? ["read"] : tool === "bash" ? ["bash"] : ["codemode", "read"];
+        const hiddenTools = tool === "indirect" ? ["read"] : [];
+        const block = internals.formatSkillsForPrompt(skills, tool, legacyRule).trim();
+        assert.ok(block.includes(legacyRule) && !block.includes(current));
+        const prompt = `base\n\n<skills>\n${block}\n</skills>\n\nCurrent working directory: /work`;
+        const opts = { skills, selectedTools, hiddenTools } as any;
+        const out = internals.compressSkillsInSystemPrompt(prompt, opts);
+        assert.ok(!out.includes("<available_skills>"), `${tool}: legacy list is compressed`);
+        assert.ok(out.includes(legacyRule) && !out.includes(current), `${tool}: the legacy wording is kept`);
+        assert.equal(internals.compressSkillsInSystemPrompt(out, opts), out);
+        assert.notEqual(internals.explainSkillCompressionSkip(prompt, opts),
+          "Pi's skill list format was not recognised; Pi may have changed it (please report this)", `${tool}: doctor recognises the legacy wording`);
+      }
+    });
+
+    test("compresses via the skills section when Pi renders the pre-1.5 wording", () => {
+      const legacyRule = internals.SKILL_PATH_RULE_WORDINGS[1];
+      const block = internals.formatSkillsForPrompt(skills, "read", legacyRule).trim();
+      const compressed = internals.formatSkillsForPromptCompressed(skills, "read", legacyRule).trim();
+      const options: any = { skills, sections: {} };
+      const event = { get systemPrompt() { return `base\n\n<skills>\n${options.sections.skills ?? block}\n</skills>`; }, systemPromptOptions: options };
+      assert.equal(internals.compressSkillsViaSection(event), true);
+      assert.equal(options.sections.skills, compressed);
+      assert.ok(compressed.includes(legacyRule));
+    });
+
     test("no-ops below the minimum count, when Pi's text differs, and when opted out", async () => {
       const build = await loadPiPrompt();
       const prompt = build(["read"]);

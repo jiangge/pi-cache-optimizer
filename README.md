@@ -64,7 +64,7 @@ Run `/reload` in Pi after install/update/remove so extension hooks refresh.
 
 On Pi 0.79.7 and newer, `pi update` updates Pi itself only. To update installed Pi packages such as this extension, run `pi update --extensions` (packages only) or `pi update --all` (Pi + packages).
 
-This extension requires Pi 0.82+ and is validated against Pi 1.4.0. It uses the official Pi package types directly for type-checking, along with extension hooks, `getAgentDir()`, and prompt options shared by those versions; it does not depend on Pi 0.83+ APIs such as `ctx.scopedModels` or the bundled TypeBox 1.3 aliases. Native virtual model support and codemode nested-call coalescing activate only on Pi 0.99+ hosts that produce them; older hosts keep the previous behavior. The local development baseline uses Node.js 22.19.0 or newer, matching Pi 1.0.3's engine requirement.
+This extension requires Pi 0.82+ and is validated against Pi 1.5.0. It uses the official Pi package types directly for type-checking, along with extension hooks, `getAgentDir()`, and prompt options shared by those versions; it does not depend on Pi 0.83+ APIs such as `ctx.scopedModels` or the bundled TypeBox 1.3 aliases. Native virtual model support and codemode nested-call coalescing activate only on Pi 0.99+ hosts that produce them; older hosts keep the previous behavior. The local development baseline uses Node.js 22.19.0 or newer, matching Pi 1.0.3's engine requirement.
 
 ## Commands
 

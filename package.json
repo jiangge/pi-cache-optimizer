@@ -37,7 +37,7 @@
     "check:modules": "node scripts/check-module-graph.mjs"
   },
   "devDependencies": {
-    "@earendil-works/pi-coding-agent": "^1.4.0",
+    "@earendil-works/pi-coding-agent": "^1.5.0",
     "@earendil-works/pi-server": "^1.1.0",
     "@types/node": "^22.0.0",
     "jiti": "^2.7.0",
