@@ -46,8 +46,9 @@ export const SKILL_PATH_RULE_WORDINGS = [
 export type SkillPathRuleWording = (typeof SKILL_PATH_RULE_WORDINGS)[number];
 
 /**
- * Byte-for-byte copy of Pi's formatter (contract-tested against the installed Pi for every tool wording).
- * `pathRule` defaults to the newest Pi wording; pass a legacy entry of SKILL_PATH_RULE_WORDINGS for older Pi.
+ * Byte-for-byte copy of Pi's formatter (contract-tested against the installed Pi for every tool wording, and
+ * against a Pi 1.4.0 fixture for the legacy wording). `pathRule` defaults to the newest Pi wording for tests;
+ * production callers always pass the wording they matched (see skillListVariants).
  */
 export function formatSkillsForPrompt(
   skills: NonNullable<BuildSystemPromptOptions["skills"]>,
@@ -152,21 +153,37 @@ export function formatSkillsForPromptCompressed(
   return lines.join("\n");
 }
 
+/** Pi's verbose skill list and our compressed form of it, both trimmed, under one known Pi wording. */
+export type SkillListVariant = { pathRule: SkillPathRuleWording; verbose: string; compressed: string };
+
 /**
- * Pi's verbose skill list as it appears in `prompt`, under whichever known Pi wording matches (trimmed), with
- * that wording; undefined when no known wording is present. `sources` lets a caller also accept a match found
- * only in another text (an inherited customPrompt).
+ * The verbose/compressed pair for every known Pi wording, newest first, keeping only pairs where compression
+ * actually shortens the list. A prompt can hold copies in more than one wording (an inherited customPrompt
+ * rendered by another Pi version), so callers handle every variant rather than the first match.
  */
-export function findVerboseSkillList(
-  sources: readonly (string | undefined)[],
+export function skillListVariants(
   skills: NonNullable<BuildSystemPromptOptions["skills"]>,
   fileReadTool: SkillFileReadTool,
-): { verbose: string; pathRule: SkillPathRuleWording } | undefined {
-  for (const pathRule of SKILL_PATH_RULE_WORDINGS) {
-    const verbose = formatSkillsForPrompt(skills, fileReadTool, pathRule).trim();
-    if (verbose && sources.some((text) => typeof text === "string" && text.includes(verbose))) return { verbose, pathRule };
+): SkillListVariant[] {
+  return SKILL_PATH_RULE_WORDINGS
+    .map((pathRule) => ({
+      pathRule,
+      verbose: formatSkillsForPrompt(skills, fileReadTool, pathRule).trim(),
+      compressed: formatSkillsForPromptCompressed(skills, fileReadTool, pathRule).trim(),
+    }))
+    .filter((variant) => variant.verbose.length > 0 && variant.compressed.length > 0);
+}
+
+function containsAnyVerbose(text: string, variants: readonly SkillListVariant[]): boolean {
+  return variants.some((variant) => text.includes(variant.verbose));
+}
+
+function replaceEveryVerbose(text: string, variants: readonly SkillListVariant[]): string {
+  let out = text;
+  for (const variant of variants) {
+    if (variant.compressed.length < variant.verbose.length) out = out.split(variant.verbose).join(variant.compressed);
   }
-  return undefined;
+  return out;
 }
 
 /**
@@ -199,15 +216,9 @@ export function compressSkillsInSystemPrompt(
   const visible = opts.skills.filter((skill) => !skill.disableModelInvocation);
   if (visible.length < SKILL_COMPRESSION_MIN_COUNT) return prompt;
 
-  const tool = skillFileReadTool(opts) ?? "read";
-  const match = findVerboseSkillList([prompt], opts.skills, tool);
-  if (!match) return prompt;
-  const { verbose, pathRule } = match;
-
-  const compressed = formatSkillsForPromptCompressed(opts.skills, tool, pathRule).trim();
-  if (!compressed || compressed.length >= verbose.length) return prompt;
-
-  return prompt.replace(verbose, () => compressed);
+  const variants = skillListVariants(opts.skills, skillFileReadTool(opts) ?? "read");
+  // Every copy under every known wording; split/join is literal, so `$` in a description is safe.
+  return replaceEveryVerbose(prompt, variants);
 }
 
 /**
@@ -239,27 +250,33 @@ export function compressSkillsViaSection(event: {
   if (!sections || typeof sections !== "object" || options.forceSystemPrompt !== undefined) return false;
   if (!options.skills || options.skills.filter((skill) => !skill.disableModelInvocation).length < SKILL_COMPRESSION_MIN_COUNT) return false;
 
-  const tool = skillFileReadTool(options) ?? "read";
-  const match = findVerboseSkillList([event.systemPrompt], options.skills, tool);
-  if (!match) return false;
-  const { verbose, pathRule } = match;
-  const compressed = formatSkillsForPromptCompressed(options.skills, tool, pathRule).trim();
-  if (!compressed || compressed.length >= verbose.length) return false;
+  const variants = skillListVariants(options.skills, skillFileReadTool(options) ?? "read");
+  const shrinking = variants.filter((variant) => variant.compressed.length < variant.verbose.length);
+  if (shrinking.length === 0 || !containsAnyVerbose(event.systemPrompt, shrinking)) return false;
+  // Success means no verbose copy under ANY wording is left; otherwise the string fallback would still force the prompt.
+  const done = (): boolean => !containsAnyVerbose(event.systemPrompt, shrinking) &&
+    shrinking.some((variant) => event.systemPrompt.includes(variant.compressed));
 
   const previousCustom = options.customPrompt;
-  const customHasVerbose = typeof previousCustom === "string" && previousCustom.includes(verbose);
-  if (customHasVerbose) options.customPrompt = previousCustom.split(verbose).join(compressed);
-  // Only the custom prompt held the list (Pi renders no skills section of its own, e.g. no
-  // read/bash tool): done, and no `<skills>` section is added where Pi renders none.
-  if (customHasVerbose && !event.systemPrompt.includes(verbose)) {
-    if (event.systemPrompt.includes(compressed)) return true;
+  if (typeof previousCustom === "string") {
+    const nextCustom = replaceEveryVerbose(previousCustom, shrinking);
+    if (nextCustom !== previousCustom) options.customPrompt = nextCustom;
+  }
+  // Only the custom prompt held lists (Pi renders no skills section of its own, e.g. no read/bash tool): done,
+  // and no `<skills>` section is added where Pi renders none.
+  if (options.customPrompt !== previousCustom && !containsAnyVerbose(event.systemPrompt, shrinking)) {
+    if (done()) return true;
     options.customPrompt = previousCustom;
     return false;
   }
 
+  // What remains is Pi's own section; compress it under the wording it was rendered with.
+  const remaining = shrinking.find((variant) => event.systemPrompt.includes(variant.verbose));
   const previous = sections.skills;
-  sections.skills = compressed;
-  if (event.systemPrompt.includes(compressed) && !event.systemPrompt.includes(verbose)) return true;
+  if (remaining) {
+    sections.skills = remaining.compressed;
+    if (done()) return true;
+  }
   if (previous === undefined) delete sections.skills;
   else sections.skills = previous;
   options.customPrompt = previousCustom;
@@ -346,7 +363,7 @@ export function explainSkillCompressionSkip(prompt: string, opts: BuildSystemPro
   if (!prompt.includes("<available_skills>")) {
     return "the prompt has no skill list (no read tool selected, or another extension replaced it)";
   }
-  if (!findVerboseSkillList([prompt], opts.skills ?? [], skillFileReadTool(opts) ?? "read")) {
+  if (!containsAnyVerbose(prompt, skillListVariants(opts.skills ?? [], skillFileReadTool(opts) ?? "read"))) {
     return "Pi's skill list format was not recognised; Pi may have changed it (please report this)";
   }
   return "the compressed list would not be shorter";

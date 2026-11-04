@@ -283,6 +283,22 @@ describe("OpenAI-compatible request contracts", () => {
     assert.equal(internals.formatSkillsForPrompt(skills, "indirect"), piSkills.formatSkillsForPrompt(skills, "indirect"));
   });
 
+  test("the legacy skill-list wording is byte-exact with Pi 1.4.0", async () => {
+    // Pinned output of Pi 1.4.0's formatSkillsForPrompt (the last release with the legacy path rule), so the
+    // legacy entry of SKILL_PATH_RULE_WORDINGS cannot drift once the installed Pi only emits the new wording.
+    const fixture = JSON.parse(await readFile(join(process.cwd(), "tests", "fixtures", "pi-1.4.0-skills-format.json"), "utf8"));
+    const sourceInfo = { path: "/skills/alpha/SKILL.md", source: "local", scope: "user", origin: "top-level" };
+    const skills = [
+      { name: "alpha", description: "Alpha <xml> & \"quotes\"", filePath: "/skills/alpha/SKILL.md", baseDir: "/skills/alpha", sourceInfo, disableModelInvocation: false },
+      { name: "beta", description: "Beta", filePath: "/project/.pi/skills/beta/SKILL.md", baseDir: "/project/.pi/skills/beta", sourceInfo, disableModelInvocation: false },
+      { name: "hidden", description: "Hidden", filePath: "/skills/hidden/SKILL.md", baseDir: "/skills/hidden", sourceInfo, disableModelInvocation: true },
+    ] as any;
+    const legacyRule = internals.SKILL_PATH_RULE_WORDINGS[1];
+    for (const tool of ["read", "bash", "indirect"] as const) {
+      assert.equal(internals.formatSkillsForPrompt(skills, tool, legacyRule), fixture[tool], tool);
+    }
+  });
+
   describe("skill compression on Pi's real system prompt", () => {
     const sourceInfo = { path: "", source: "local", scope: "user", origin: "top-level" };
     const skill = (name: string, description: string, filePath: string, disableModelInvocation = false) =>

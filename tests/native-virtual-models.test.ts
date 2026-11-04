@@ -777,6 +777,29 @@ describe("native virtual model hooks", () => {
       assert.equal(twice.split(compressed).length, 4, "two inherited copies plus the child's own section");
     });
 
+    test("compresses inherited and own lists in different Pi wordings without forcing the prompt", async () => {
+      const pi = await loadPi();
+      const { hooks } = setup();
+      const [current, legacyRule] = t.SKILL_PATH_RULE_WORDINGS;
+      const listIn = (rule: string) => t.formatSkillsForPrompt(skills as any, "read", rule as any).trim();
+
+      // A: Pi 1.5 renders its own section; the inherited parent prompt was rendered by Pi <= 1.4.
+      const a = piEvent(pi, { customPrompt: `parent\n${listIn(legacyRule)}\n<sub/>` });
+      assert.equal(a.event.systemPrompt.split("<available_skills>").length - 1, 2);
+      assert.deepEqual(await hooks.get("before_agent_start")!(a.event, context(physical("proxy", "kimi-k3"))), {}, "A: no forced prompt");
+      assert.ok(!a.event.systemPrompt.includes("<available_skills>"), "A: both copies compressed");
+      assert.ok(a.options.customPrompt!.includes(legacyRule) && a.options.sections.skills.includes(current), "A: each copy keeps its own wording");
+      assert.equal(t.getLastSkillCompressionOutcome()?.applied, "section");
+
+      // B: the section carries the legacy wording (older Pi), the inherited prompt the new one.
+      const b = piEvent(pi, { customPrompt: `parent\n${listIn(current)}\n<sub/>` });
+      b.options.sections.skills = listIn(legacyRule);
+      assert.deepEqual(await hooks.get("before_agent_start")!(b.event, context(physical("proxy", "kimi-k3"))), {}, "B: no forced prompt");
+      assert.ok(!b.event.systemPrompt.includes("<available_skills>"), "B: both copies compressed");
+      assert.ok(b.options.sections.skills.includes(legacyRule) && b.options.customPrompt!.includes(current), "B: each copy keeps its own wording");
+      assert.equal(t.getLastSkillCompressionOutcome()?.applied, "section");
+    });
+
     test("falls back to the string substitution after a forced prompt or without sections support", async () => {
       const pi = await loadPi();
       const { hooks } = setup();
