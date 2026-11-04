@@ -17,7 +17,8 @@
   "license": "MIT",
   "files": [
     "index.ts",
-    "src"
+    "src",
+    "CHANGELOG.md"
   ],
   "pi": {
     "extensions": [

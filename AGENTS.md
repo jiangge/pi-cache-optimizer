@@ -34,3 +34,6 @@ Triage labels map to the default triage vocabulary. See `docs/agents/triage-labe
 
 This repository uses a single-context domain layout with a global `CONTEXT.md`. See `docs/agents/domain.md`.
 
+## Releases
+
+Every version bump needs a `## [x.y.z] - YYYY-MM-DD` entry at the top of `CHANGELOG.md` (Pi 1.5+ shows it to users as the extension's update notes). `npm run check:pack` fails without it.
