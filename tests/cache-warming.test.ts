@@ -164,12 +164,20 @@ describe("zero-price warming override", () => {
     // Unreadable global settings: fall back to the merged view.
     assert.deepEqual(readCacheWarmingSetting({ getSettings: merged("idle"), readGlobalSettings: () => undefined, piVersion: "1.5.2" }), { mode: "idle", explicit: true });
     assert.deepEqual(readCacheWarmingSetting({ getSettings: merged(undefined), readGlobalSettings: () => { throw new Error("boom"); }, piVersion: "1.5.2" }), { mode: "idle", explicit: false });
+    // The host's own default wins over the version comparison.
+    assert.deepEqual(readCacheWarmingSetting({ getSettings: merged(undefined), readGlobalSettings: () => ({}), hostDefaultMode: () => "streaming", piVersion: "1.5.2" }), { mode: "streaming", explicit: false });
+    assert.deepEqual(readCacheWarmingSetting({ getSettings: merged(undefined), readGlobalSettings: () => ({}), hostDefaultMode: () => { throw new Error("x"); }, piVersion: "1.5.2" }), { mode: "idle", explicit: false });
   });
 
   test("zero-price override reaches idle phases only when the user chose idle", () => {
     const zero = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 };
     const m = model({ cost: zero });
     const stop = { action: "stop", warmCost: 0, missCost: 0 };
+    // Pi 1.5.x hook events carry no phase: continuationProbability is 1 while streaming, below 1 between runs.
+    assert.equal(decideZeroPriceWarming({ ...stop, continuationProbability: 1 }, m), "warm");
+    assert.equal(decideZeroPriceWarming({ ...stop, continuationProbability: 0.15 }, m), undefined);
+    assert.equal(decideZeroPriceWarming({ ...stop, continuationProbability: 0.15 }, m, { idleExplicit: true }), "warm");
+    assert.equal(decideZeroPriceWarming(stop, m), "warm");
     assert.equal(decideZeroPriceWarming({ ...stop, phase: "streaming" }, m), "warm");
     assert.equal(decideZeroPriceWarming({ ...stop, phase: "idle" }, m), undefined);
     assert.equal(decideZeroPriceWarming({ ...stop, phase: "idle" }, m, { idleExplicit: false }), undefined);
@@ -187,6 +195,6 @@ describe("zero-price warming override", () => {
     assert.ok(chosen.lines.some((line) => line === "- Mode: idle — global setting, change with /settings → Cache warming or ~/.pi/agent/settings.json"));
     assert.equal(chosen.lines.some((line) => line.includes("covers agent runs only")), false);
     const ignored = buildCacheWarmingDiagnosis(m, { mode: "streaming", explicit: true, ignoredProjectMode: "off", tier: "short" });
-    assert.ok(ignored.lines.some((line) => line.includes("project settings set cacheWarming to \"off\"")));
+    assert.ok(ignored.lines.some((line) => line.includes("set cacheWarming to \"off\"")));
   });
 });

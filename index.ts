@@ -21,7 +21,7 @@ import { countingStatsReadFs, setStatsReadFsForTests, statsReadFs } from "./src/
 import { PI_VIRTUAL_MODEL_API, getCompat, isAnthropicMessagesApi, isKimiCodingEmptySignatureModel, isKnownThirdPartyOpenAIEndpoint, isMistralConversationsApi, isNativeVirtualModel, isOfficialOpenAIBaseUrl, isOpenAICompatibleApi, isOpenAICompatibleProxyApi, isOpenAIFamilyAssistantMessage, isOpenAIFamilyModel, isOpenAIFamilyToken, isPiBuiltInLlamaCppModel, isResponsesPromptRewriteBypassApi, isRoutedFallbackModel, isValidModelsConfigForEffectiveCompat, modelKey, readEffectiveCompatConfig } from "./src/model-identity.ts";
 import { STATS_INCREMENTAL_ENV, STATS_TIMING_ENV, STATS_VERIFY_ENV, isStatsIncrementalEnabled, isStatsVerifyEnabled, statsTimingLogPath } from "./src/config.ts";
 import { CONFIG_FILE_PATH, VIRTUAL_REWRITE_ENV, FOOTER_MODE_ENV, TOOL_ORDER_ENV, featureEnabled, footerStatsMode, isEnabledEnv, isToolOrderEnabled, parseFooterStatsMode, parsePersistedCacheOptimizerConfig, readPersistedCacheOptimizerConfig, resolveFooterStatsMode, runtimeOptimizerEnabled, setPersistedCacheOptimizerConfig, shouldInjectOpenAIPromptCacheKey, writePersistedCacheOptimizerConfig, writePersistedFeature, writePersistedFooterMode } from "./src/config.ts";
-import { decideZeroPriceWarming, readCacheWarmingSetting } from "./src/cache-warming.ts";
+import { decideZeroPriceWarming, isIdleWarmingDecision, readCacheWarmingSetting } from "./src/cache-warming.ts";
 import { LONG_CACHE_RETENTION_VALUE, PI_CACHE_RETENTION_BASELINE_SYMBOL, PI_CACHE_RETENTION_ENV, STARTUP_CACHE_RETENTION_ENV, captureCacheRetentionEnv, getOrCaptureCacheRetentionBaseline, decidePromptCacheRetention, recordPromptCacheRetentionDecision, requestLongCacheRetention, restoreCacheRetentionEnv, userRequestedLongCacheRetention } from "./src/retention.ts";
 import { isRuntimeOptimizerEnabled, isZeroPriceWarmingEnabled, setRuntimeOptimizerEnabled } from "./src/config.ts";
 import { compareToolOrderEntries, getToolNameForPayload, isKnownToolOrderApi, isToolOrderingEligibleModel, isVerifiedToolForApi, normalizeToolsInPayload, sortToolsInPayload } from "./src/tool-ordering.ts";
@@ -116,6 +116,8 @@ let latestStatsRestoreForTests: Promise<void> = Promise.resolve();
 const statsRefreshSettledForTests = new Set<() => Promise<void>>();
 
 export const __internals_for_tests = {
+  parseGlobalPiSettingsText: (text: string): unknown => parseGlobalPiSettingsText(text),
+  readHostCacheWarmingDefault: (): unknown => readHostCacheWarmingDefault(),
   waitForStatsRestore: (): Promise<void> => latestStatsRestoreForTests,
   /**
    * Footer refreshes after tool_execution_end, agent_settled and message_end
@@ -456,7 +458,12 @@ const HOST_PI_VERSION: string | undefined = (() => {
   return typeof version === "string" ? version : undefined;
 })();
 
-/** Pi's global settings, the only source it reads `cacheWarming` from; undefined when unreadable. */
+/**
+ * Pi's global settings, the only source it reads `cacheWarming` from, parsed
+ * the way Pi parses them: strict JSON after stripping a BOM; a missing, empty
+ * or unparsable file counts as no settings, so Pi's default applies. Undefined
+ * only when the file exists but cannot be read (then the merged view is used).
+ */
 function readGlobalPiSettings(): unknown {
   let text: string;
   try {
@@ -464,17 +471,35 @@ function readGlobalPiSettings(): unknown {
   } catch (error) {
     return getErrorCode(error) === "ENOENT" ? {} : undefined;
   }
+  return parseGlobalPiSettingsText(text);
+}
+
+function parseGlobalPiSettingsText(text: string): unknown {
+  const body = text.charCodeAt(0) === 0xfeff ? text.slice(1) : text;
+  if (body.trim() === "") return {};
   try {
-    return JSON.parse(stripJsoncTrailingCommas(stripJsoncComments(text)));
+    const parsed: unknown = JSON.parse(body);
+    return asRecord(parsed) ?? {};
   } catch {
-    return undefined;
+    return {};
   }
+}
+
+/** Pi's own `cacheWarming` default from the host, independent of version strings. */
+function readHostCacheWarmingDefault(): unknown {
+  const settingsManager: unknown = (piCodingAgent as Record<string, unknown>).SettingsManager;
+  const inMemory = typeof settingsManager === "function" ? (settingsManager as { inMemory?: unknown }).inMemory : undefined;
+  if (typeof inMemory !== "function") return undefined;
+  const instance = asRecord(inMemory.call(settingsManager, {}));
+  const getMode = instance?.getCacheWarmingMode;
+  return typeof getMode === "function" ? getMode.call(instance) : undefined;
 }
 
 export default function (pi: ExtensionAPI) {
   const readHostCacheWarmingSetting = () => readCacheWarmingSetting({
     getSettings: typeof pi.getSettings === "function" ? () => pi.getSettings() : undefined,
     readGlobalSettings: readGlobalPiSettings,
+    hostDefaultMode: readHostCacheWarmingDefault,
     piVersion: HOST_PI_VERSION,
   });
   const warnedModels = new Set<string>();
@@ -1746,7 +1771,7 @@ export default function (pi: ExtensionAPI) {
     if (!isZeroPriceWarmingEnabled()) return undefined;
     // Between runs, only a user-chosen idle mode extends the override (Pi 1.5.1 made idle the default).
     let idleExplicit = false;
-    if ((event as { phase?: unknown }).phase === "idle") {
+    if (isIdleWarmingDecision(event)) {
       const setting = readHostCacheWarmingSetting();
       idleExplicit = setting !== "unsupported" && setting.explicit && setting.mode === "idle";
     }

@@ -464,8 +464,10 @@ describe("OpenAI-compatible request contracts", () => {
         internals.resolveEffectiveCompatFromConfig(registered as PiModel, JSON.parse(await readFile(modelsPath, "utf8"))).sendSessionAffinityHeaders,
         true,
       );
+      // Pi 1.5.2 writes auth.json in the background; let it finish before the directory is removed.
+      await (runtime as { settleCredentialWrites?: () => Promise<void> }).settleCredentialWrites?.();
     } finally {
-      await rm(tempAgentDir, { recursive: true, force: true });
+      await rm(tempAgentDir, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 });
     }
   });
 

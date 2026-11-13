@@ -16,7 +16,7 @@ import { analyzeModelsJsonForMissingEntry, applyModelsJsonFixTransaction, choose
 import { MODELS_JSON_PATH } from "./paths.ts";
 import { buildModelsJsonLintDoctorLines, buildModelsJsonTypoHintLines } from "./models-json-lint.ts";
 import { applyPromptCacheKeyConfigFix, isActionablePromptCacheKeyConfigReceipt, readPromptCacheKeyConfigReceiptSnapshot, rollbackPromptCacheKeyConfig } from "./prompt-cache-key-config.ts";
-import { getEffectiveCompatValueSource, isPromptCacheKeyOmittedForModel } from "./request-payload.ts";
+import { getEffectiveCompatValueSource, getPromptCacheKeyMode, isPromptCacheKeyOmittedForModel } from "./request-payload.ts";
 import { describeNativeVirtualRouteNote, resolveRouteModel } from "./routing.ts";
 import { buildAllStatsOutput, buildContributorsStatsOutput, buildSessionStatsOutput } from "./stats-report.ts";
 import { type FixSuggestion } from "./fix-types.ts";
@@ -415,6 +415,10 @@ export function createCacheOptimizerCommandHandler(runtime: CommandRuntime) {
         if (promptCacheKeyFixRequested) {
           if (isPromptCacheKeyOmittedForModel(model)) {
             cmdCtx.ui.notify(`✅ prompt_cache_key is already omitted for "${modelKey(model)}".`, "info");
+            return;
+          }
+          if (getPromptCacheKeyMode(model) === "disabled") {
+            cmdCtx.ui.notify(`✅ prompt_cache_key is already omitted for "${modelKey(model)}": its compat.promptCacheKeyMode is "disabled" (Pi 1.5.1+), and this extension does not add the key back. No changes were made.`, "info");
             return;
           }
           if (!cmdCtx.hasUI) {

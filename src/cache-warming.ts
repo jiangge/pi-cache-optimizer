@@ -65,13 +65,18 @@ export type CacheWarmingSetting = {
   /** True when the user's global settings name a valid mode; false when Pi falls back to its default. */
   explicit: boolean;
   /**
-   * A valid `cacheWarming` that only project settings carry. Pi reads warming
-   * from global settings only (warming costs money), so it is ignored.
+   * A valid `cacheWarming` that only project settings (or SDK overrides) carry.
+   * Pi reads warming from global settings only (warming costs money), so it is ignored.
    */
   ignoredProjectMode?: CacheWarmingMode;
 };
 
 export type CacheWarmingSettingsSources = {
+  /**
+   * Pi's own default, from the host (`SettingsManager.inMemory().getCacheWarmingMode()`).
+   * Preferred over the version comparison, which is the fallback.
+   */
+  hostDefaultMode?: () => unknown;
   /** `pi.getSettings()`: global and project settings merged (Pi 0.86+). */
   getSettings?: CacheWarmingSettingsReader;
   /**
@@ -96,7 +101,13 @@ export function readCacheWarmingSetting(sources: CacheWarmingSettingsSources): C
   } catch {
     return "unsupported";
   }
-  const fallback = cacheWarmingDefaultMode(sources.piVersion);
+  let hostDefault: CacheWarmingMode | undefined;
+  try {
+    hostDefault = parseMode(sources.hostDefaultMode?.());
+  } catch {
+    hostDefault = undefined;
+  }
+  const fallback = hostDefault ?? cacheWarmingDefaultMode(sources.piVersion);
   const mergedMode = parseMode(asRecord(merged)?.cacheWarming);
 
   let global: unknown;
@@ -233,7 +244,7 @@ export function buildCacheWarmingDiagnosis(model: PiModel, input: CacheWarmingDi
   const isDefault = input.explicit === undefined ? input.mode === CACHE_WARMING_DEFAULT_MODE : !input.explicit;
   lines.push(`- Mode: ${input.mode}${isDefault ? " (Pi default)" : ""} — global setting, change with /settings → Cache warming or ~/.pi/agent/settings.json`);
   if (input.ignoredProjectMode !== undefined) {
-    lines.push(`- Note: project settings set cacheWarming to "${input.ignoredProjectMode}", but Pi reads warming from global settings only, so it has no effect.`);
+    lines.push(`- Note: project settings (or SDK overrides) set cacheWarming to "${input.ignoredProjectMode}", but Pi reads warming from global settings only, so it has no effect.`);
   }
   lines.push(`- Retention tier in use: ${input.tier}`);
 
@@ -304,11 +315,24 @@ export function buildCacheWarmingDiagnosis(model: PiModel, input: CacheWarmingDi
 
 export type CacheWarmingDecisionLike = {
   action?: unknown;
-  /** "streaming" during an agent run, "idle" between runs (Pi 1.5.1+ default mode). */
+  /** Not sent by Pi 1.5.x hooks; honoured if a future Pi adds it. */
   phase?: unknown;
+  /** 1 during an agent run; Pi's idle estimate (below 1) between runs. */
+  continuationProbability?: unknown;
   warmCost?: unknown;
   missCost?: unknown;
 };
+
+/**
+ * Whether a `cache_warming_decision` event is for a refresh between runs.
+ * Pi's hook event carries no phase; Pi sets continuationProbability to exactly
+ * 1 while streaming and to its idle estimate (below 1) between runs.
+ */
+export function isIdleWarmingDecision(event: CacheWarmingDecisionLike): boolean {
+  if (event.phase === "idle") return true;
+  if (event.phase === "streaming") return false;
+  return typeof event.continuationProbability === "number" && event.continuationProbability < 1;
+}
 
 /**
  * `cache_warming_decision` policy: Pi stops warming when it cannot price the
@@ -328,7 +352,7 @@ export type CacheWarmingDecisionLike = {
  */
 export function decideZeroPriceWarming(event: CacheWarmingDecisionLike, model: PiModel | undefined, options: { idleExplicit?: boolean } = {}): "warm" | undefined {
   if (!model || event.action !== "stop") return undefined;
-  if (event.phase === "idle" && options.idleExplicit !== true) return undefined;
+  if (isIdleWarmingDecision(event) && options.idleExplicit !== true) return undefined;
   if (event.warmCost !== 0 || event.missCost !== 0) return undefined;
   if (!isZeroPriced(model)) return undefined;
   return "warm";
