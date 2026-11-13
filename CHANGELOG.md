@@ -5,6 +5,17 @@ last version Pi recorded for this package under "Extension Updates". Pi records 
 it sees this file, so notes start with the update after that.
 Older history is in the [git log](https://github.com/jiangge/pi-cache-optimizer/commits/master).
 
+## [2.10.6] - 2026-11-13
+
+### Changed
+
+- Supports Pi 1.5.1 and 1.5.2, whose default `cacheWarming` is now `idle`. `/cache-optimizer doctor` reports Pi's actual default, reads the mode from global settings as Pi does, and notes when only project settings set `cacheWarming` (Pi ignores it there).
+- Zero-price warming (the `warm` answer for models whose prices are all zero) now covers refreshes between agent runs only when you set `"cacheWarming": "idle"` in global settings yourself. With Pi's new idle default it covers agent runs only, as before, so upgrading Pi does not start paid idle refreshes on channels that bill despite zero prices.
+- A model whose `compat.promptCacheKeyMode` is `"disabled"` (Pi 1.5.1+) no longer gets a `prompt_cache_key` from this extension, and the 400-error hint recommends that setting. `/cache-optimizer fix prompt-cache-key` makes no change for such a model.
+- Pi's global `settings.json` is read the way Pi reads it (strict JSON, BOM stripped; an unreadable or invalid file means Pi's defaults), so a comment in the file no longer counts as an explicit `cacheWarming` choice.
+- `models.json` key hints know the Pi 1.5.1 compat keys `promptCacheKeyMode`, `requiresNonNullAssistantContent`, `requiresToolsWithToolHistory` and `supportsMessageThreads`.
+- Validated against Pi 1.5.2.
+
 ## [2.10.5] - 2026-11-04
 
 ### Fixed
