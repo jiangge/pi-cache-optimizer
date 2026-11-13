@@ -2,7 +2,6 @@ import { randomUUID } from "node:crypto";
 import { appendFile, lstat, mkdir } from "node:fs/promises";
 import { basename, join } from "node:path";
 import { readFileSync } from "node:fs";
-import * as piCodingAgent from "@earendil-works/pi-coding-agent";
 import {
   type ExtensionAPI, type ExtensionContext
 } from "@earendil-works/pi-coding-agent";
@@ -21,6 +20,7 @@ import { countingStatsReadFs, setStatsReadFsForTests, statsReadFs } from "./src/
 import { PI_VIRTUAL_MODEL_API, getCompat, isAnthropicMessagesApi, isKimiCodingEmptySignatureModel, isKnownThirdPartyOpenAIEndpoint, isMistralConversationsApi, isNativeVirtualModel, isOfficialOpenAIBaseUrl, isOpenAICompatibleApi, isOpenAICompatibleProxyApi, isOpenAIFamilyAssistantMessage, isOpenAIFamilyModel, isOpenAIFamilyToken, isPiBuiltInLlamaCppModel, isResponsesPromptRewriteBypassApi, isRoutedFallbackModel, isValidModelsConfigForEffectiveCompat, modelKey, readEffectiveCompatConfig } from "./src/model-identity.ts";
 import { STATS_INCREMENTAL_ENV, STATS_TIMING_ENV, STATS_VERIFY_ENV, isStatsIncrementalEnabled, isStatsVerifyEnabled, statsTimingLogPath } from "./src/config.ts";
 import { CONFIG_FILE_PATH, VIRTUAL_REWRITE_ENV, FOOTER_MODE_ENV, TOOL_ORDER_ENV, featureEnabled, footerStatsMode, isEnabledEnv, isToolOrderEnabled, parseFooterStatsMode, parsePersistedCacheOptimizerConfig, readPersistedCacheOptimizerConfig, resolveFooterStatsMode, runtimeOptimizerEnabled, setPersistedCacheOptimizerConfig, shouldInjectOpenAIPromptCacheKey, writePersistedCacheOptimizerConfig, writePersistedFeature, writePersistedFooterMode } from "./src/config.ts";
+import { HOST_PI_VERSION, readHostCacheWarmingDefault } from "./src/host-pi.ts";
 import { decideZeroPriceWarming, isIdleWarmingDecision, readCacheWarmingSetting } from "./src/cache-warming.ts";
 import { LONG_CACHE_RETENTION_VALUE, PI_CACHE_RETENTION_BASELINE_SYMBOL, PI_CACHE_RETENTION_ENV, STARTUP_CACHE_RETENTION_ENV, captureCacheRetentionEnv, getOrCaptureCacheRetentionBaseline, decidePromptCacheRetention, recordPromptCacheRetentionDecision, requestLongCacheRetention, restoreCacheRetentionEnv, userRequestedLongCacheRetention } from "./src/retention.ts";
 import { isRuntimeOptimizerEnabled, isZeroPriceWarmingEnabled, setRuntimeOptimizerEnabled } from "./src/config.ts";
@@ -452,24 +452,18 @@ export const __internals_for_tests = {
   appendAdaptiveThinkingCompatAdviceLines,
 };
 
-/** Host Pi version, which decides Pi's `cacheWarming` default; undefined when the host does not export it. */
-const HOST_PI_VERSION: string | undefined = (() => {
-  const version = (piCodingAgent as Record<string, unknown>).VERSION;
-  return typeof version === "string" ? version : undefined;
-})();
-
 /**
  * Pi's global settings, the only source it reads `cacheWarming` from, parsed
  * the way Pi parses them: strict JSON after stripping a BOM; a missing, empty
- * or unparsable file counts as no settings, so Pi's default applies. Undefined
- * only when the file exists but cannot be read (then the merged view is used).
+ * unreadable or unparsable file counts as no settings, so Pi's default applies.
  */
 function readGlobalPiSettings(): unknown {
   let text: string;
   try {
     text = readFileSync(join(STATE_DIR, "settings.json"), "utf8");
-  } catch (error) {
-    return getErrorCode(error) === "ENOENT" ? {} : undefined;
+  } catch {
+    // Pi treats an unreadable global settings file as no settings, so its default applies.
+    return {};
   }
   return parseGlobalPiSettingsText(text);
 }
@@ -485,15 +479,6 @@ function parseGlobalPiSettingsText(text: string): unknown {
   }
 }
 
-/** Pi's own `cacheWarming` default from the host, independent of version strings. */
-function readHostCacheWarmingDefault(): unknown {
-  const settingsManager: unknown = (piCodingAgent as Record<string, unknown>).SettingsManager;
-  const inMemory = typeof settingsManager === "function" ? (settingsManager as { inMemory?: unknown }).inMemory : undefined;
-  if (typeof inMemory !== "function") return undefined;
-  const instance = asRecord(inMemory.call(settingsManager, {}));
-  const getMode = instance?.getCacheWarmingMode;
-  return typeof getMode === "function" ? getMode.call(instance) : undefined;
-}
 
 export default function (pi: ExtensionAPI) {
   const readHostCacheWarmingSetting = () => readCacheWarmingSetting({

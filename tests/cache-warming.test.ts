@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { describe, test } from "node:test";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 
-import { buildCacheWarmingDiagnosis, cacheWarmingDefaultMode, cacheWarmingRefreshDelayMs, decideZeroPriceWarming, isOpenRouterRouterModel, isZeroPriced, readCacheWarmingMode, readCacheWarmingSetting, suggestedPromptCacheLifetimes } from "../src/cache-warming.ts";
+import { buildCacheWarmingDiagnosis, cacheWarmingDefaultMode, cacheWarmingRefreshDelayMs, decideZeroPriceWarming, isOpenRouterRouterModel, isPiVersionAtLeast, isZeroPriced, readCacheWarmingMode, readCacheWarmingSetting, suggestedPromptCacheLifetimes } from "../src/cache-warming.ts";
 
 type PiModel = NonNullable<ExtensionContext["model"]>;
 
@@ -196,5 +196,17 @@ describe("zero-price warming override", () => {
     assert.equal(chosen.lines.some((line) => line.includes("covers agent runs only")), false);
     const ignored = buildCacheWarmingDiagnosis(m, { mode: "streaming", explicit: true, ignoredProjectMode: "off", tier: "short" });
     assert.ok(ignored.lines.some((line) => line.includes("set cacheWarming to \"off\"")));
+  });
+});
+
+describe("isPiVersionAtLeast", () => {
+  test("compares major.minor.patch and ignores prerelease tags", () => {
+    assert.equal(isPiVersionAtLeast("1.5.2", "1.5.1"), true);
+    assert.equal(isPiVersionAtLeast("1.5.1", "1.5.1"), true);
+    assert.equal(isPiVersionAtLeast("1.5.0", "1.5.1"), false);
+    assert.equal(isPiVersionAtLeast("2.0.0", "1.5.1"), true);
+    assert.equal(isPiVersionAtLeast("1.5.1-beta.1", "1.5.1"), true);
+    assert.equal(isPiVersionAtLeast(undefined, "1.5.1"), undefined);
+    assert.equal(isPiVersionAtLeast("fork", "1.5.1"), undefined);
   });
 });

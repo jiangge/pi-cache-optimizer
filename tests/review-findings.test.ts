@@ -3293,6 +3293,44 @@ describe("prompt_cache_key model opt-out", () => {
     }
   });
 
+  test("fix prompt-cache-key makes no change when Pi 1.5.1+ already omits the key via promptCacheKeyMode", async () => {
+    const tempAgentDir = await mkdtemp(join(tmpdir(), "pi-cache-key-mode-command-test-"));
+    const previousAgentDir = process.env.PI_CODING_AGENT_DIR;
+    try {
+      process.env.PI_CODING_AGENT_DIR = tempAgentDir;
+      await writeFile(join(tempAgentDir, "pi-cache-optimizer-config.json"), JSON.stringify({ version: 1, footerMode: "process" }) + "\n");
+      const jiti = createJiti(join(process.cwd(), "tests", "review-findings.test.ts"), { interopDefault: false, moduleCache: false });
+      const freshModule = await jiti.import<typeof import("../index.ts")>(join(process.cwd(), "index.ts"));
+      const commands = new Map<string, { handler: (args: string, context: any) => unknown }>();
+      freshModule.default({
+        on() {},
+        registerCommand(name: string, command: { handler: (args: string, context: any) => unknown }) { commands.set(name, command); },
+      } as any);
+      const notifications: string[] = [];
+      let confirmations = 0;
+      const disabledModel = { ...model, compat: { ...(model.compat ?? {}), promptCacheKeyMode: "disabled" } };
+      const context = {
+        model: disabledModel,
+        hasUI: true,
+        sessionManager: { getSessionId: () => "fixture-session" },
+        modelRegistry: { find: () => undefined, getAvailable: () => [], getAll: () => [] },
+        ui: {
+          confirm: async () => { confirmations++; return true; },
+          notify: (message: string) => notifications.push(message),
+          setStatus() {},
+        },
+      };
+      await commands.get("cache-optimizer")?.handler("fix prompt-cache-key", context);
+      assert.equal(confirmations, 0);
+      assert.match(notifications.at(-1) ?? "", /promptCacheKeyMode is "disabled"/);
+      assert.deepEqual(freshModule.__internals_for_tests.readPersistedCacheOptimizerConfig(), { version: 2, footerMode: "process" });
+    } finally {
+      if (previousAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
+      else process.env.PI_CODING_AGENT_DIR = previousAgentDir;
+      await rm(tempAgentDir, { recursive: true, force: true });
+    }
+  });
+
   test("active fix requires confirmation and removes a Pi-provided key after reload", async () => {
     const tempAgentDir = await mkdtemp(join(tmpdir(), "pi-cache-key-command-test-"));
     const previousAgentDir = process.env.PI_CODING_AGENT_DIR;

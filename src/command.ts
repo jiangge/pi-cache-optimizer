@@ -14,6 +14,8 @@ import { locateModelOverrideInJsonc, parseJsonc } from "./jsonc.ts";
 import { invalidateModelsConfigCache, isValidModelsConfigForEffectiveCompat, modelKey } from "./model-identity.ts";
 import { analyzeModelsJsonForMissingEntry, applyModelsJsonFixTransaction, chooseFixPlacement, composeFixInsertion, composeModelOverrideInsertion, composeProviderAffinityInsertion, createBaseUrlFixReceipt, createModelsJsonFixReceipt, createPromptCacheFixReceipt, formatCompatKeysForInsertion, formatMissingEntryManualSnippet, isActionableModelsJsonFixReceipt, locateModelInJsonc, markModelsJsonFixReceiptRolledBack, prepareModelsJsonRollback, readModelsJsonFixReceipt, readModelsJsonFixReceiptSnapshot, resolveExplicitCompatValue, selfCheckFix, selfCheckMissingEntryInsertion, validateModelsJsonRollback, writeModelsJsonFixReceipt } from "./models-json-fix.ts";
 import { MODELS_JSON_PATH } from "./paths.ts";
+import { isPiVersionAtLeast } from "./cache-warming.ts";
+import { HOST_PI_VERSION } from "./host-pi.ts";
 import { buildModelsJsonLintDoctorLines, buildModelsJsonTypoHintLines } from "./models-json-lint.ts";
 import { applyPromptCacheKeyConfigFix, isActionablePromptCacheKeyConfigReceipt, readPromptCacheKeyConfigReceiptSnapshot, rollbackPromptCacheKeyConfig } from "./prompt-cache-key-config.ts";
 import { getEffectiveCompatValueSource, getPromptCacheKeyMode, isPromptCacheKeyOmittedForModel } from "./request-payload.ts";
@@ -26,6 +28,9 @@ import { type CacheUsageSample } from "./stats-report.ts";
 import { describeSkillCompressionOutcome } from "./prompt-rewrite.ts";
 import { describePromptCacheRetentionDecision, getLastPromptCacheRetentionDecision, LONG_CACHE_RETENTION_VALUE, PI_CACHE_RETENTION_ENV } from "./retention.ts";
 import { buildCacheWarmingDiagnosis, type CacheWarmingSetting } from "./cache-warming.ts";
+
+/** First Pi version that honours compat.promptCacheKeyMode. */
+const PROMPT_CACHE_KEY_MODE_SINCE = "1.5.1";
 
 /**
  * Everything the command needs from the extension instance. The extension keeps this state in closures
@@ -417,7 +422,8 @@ export function createCacheOptimizerCommandHandler(runtime: CommandRuntime) {
             cmdCtx.ui.notify(`✅ prompt_cache_key is already omitted for "${modelKey(model)}".`, "info");
             return;
           }
-          if (getPromptCacheKeyMode(model) === "disabled") {
+          // Only Pi 1.5.1+ honours promptCacheKeyMode; older hosts still send the key themselves.
+          if (getPromptCacheKeyMode(model) === "disabled" && isPiVersionAtLeast(HOST_PI_VERSION, PROMPT_CACHE_KEY_MODE_SINCE) === true) {
             cmdCtx.ui.notify(`✅ prompt_cache_key is already omitted for "${modelKey(model)}": its compat.promptCacheKeyMode is "disabled" (Pi 1.5.1+), and this extension does not add the key back. No changes were made.`, "info");
             return;
           }

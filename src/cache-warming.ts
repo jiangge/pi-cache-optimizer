@@ -44,13 +44,20 @@ function parseVersionCore(version: string | undefined): [number, number, number]
  * "streaming" before. An unknown host version keeps the older default.
  */
 export function cacheWarmingDefaultMode(piVersion: string | undefined): CacheWarmingMode {
+  const atLeast = isPiVersionAtLeast(piVersion, CACHE_WARMING_IDLE_DEFAULT_SINCE);
+  if (atLeast === undefined) return CACHE_WARMING_DEFAULT_MODE;
+  return atLeast ? "idle" : "streaming";
+}
+
+/** Whether `piVersion` is at least `minimum` (major.minor.patch); undefined when it cannot be parsed. */
+export function isPiVersionAtLeast(piVersion: string | undefined, minimum: string): boolean | undefined {
   const host = parseVersionCore(piVersion);
-  const since = parseVersionCore(CACHE_WARMING_IDLE_DEFAULT_SINCE)!;
-  if (!host) return CACHE_WARMING_DEFAULT_MODE;
+  const since = parseVersionCore(minimum);
+  if (!host || !since) return undefined;
   for (let i = 0; i < 3; i++) {
-    if (host[i] !== since[i]) return host[i] > since[i] ? "idle" : "streaming";
+    if (host[i] !== since[i]) return host[i] > since[i];
   }
-  return "idle";
+  return true;
 }
 
 export type CacheWarmingSettingsReader = () => unknown;
