@@ -25,7 +25,7 @@ import { type CacheStats, type ShardAggregate } from "./stats-store.ts";
 import { type CacheUsageSample } from "./stats-report.ts";
 import { describeSkillCompressionOutcome } from "./prompt-rewrite.ts";
 import { describePromptCacheRetentionDecision, getLastPromptCacheRetentionDecision, LONG_CACHE_RETENTION_VALUE, PI_CACHE_RETENTION_ENV } from "./retention.ts";
-import { buildCacheWarmingDiagnosis, type CacheWarmingMode } from "./cache-warming.ts";
+import { buildCacheWarmingDiagnosis, type CacheWarmingSetting } from "./cache-warming.ts";
 
 /**
  * Everything the command needs from the extension instance. The extension keeps this state in closures
@@ -55,7 +55,7 @@ export type CommandRuntime = {
   getLastStatusText(): string | undefined;
   clearLastStatusText(): void;
   /** Pi `cacheWarming` mode, or "unsupported" on hosts without the settings API. */
-  getCacheWarmingMode?(): CacheWarmingMode | "unsupported";
+  getCacheWarmingSetting?(): CacheWarmingSetting | "unsupported";
 };
 
 export function createCacheOptimizerCommandHandler(runtime: CommandRuntime) {
@@ -116,9 +116,12 @@ export function createCacheOptimizerCommandHandler(runtime: CommandRuntime) {
         const samples = sk ? getRecentSamples(sk) : [];
         const lowHitLines = buildLowHitDiagnosis(model, adapter, statsState, samples);
         const routeNote = describeNativeVirtualRouteNote(selectedModel, model);
-        const warmingLines = runtime.getCacheWarmingMode
+        const warmingSetting = runtime.getCacheWarmingSetting?.();
+        const warmingLines = warmingSetting !== undefined
           ? buildCacheWarmingDiagnosis(model, {
-            mode: runtime.getCacheWarmingMode(),
+            mode: warmingSetting === "unsupported" ? "unsupported" : warmingSetting.mode,
+            explicit: warmingSetting === "unsupported" ? undefined : warmingSetting.explicit,
+            ignoredProjectMode: warmingSetting === "unsupported" ? undefined : warmingSetting.ignoredProjectMode,
             tier: process.env[PI_CACHE_RETENTION_ENV] === LONG_CACHE_RETENTION_VALUE ? "long" : "short",
             zeroPriceWarming: isZeroPriceWarmingEnabled(),
             typoHints: false,

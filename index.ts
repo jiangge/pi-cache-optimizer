@@ -1,6 +1,8 @@
 import { randomUUID } from "node:crypto";
 import { appendFile, lstat, mkdir } from "node:fs/promises";
 import { basename, join } from "node:path";
+import { readFileSync } from "node:fs";
+import * as piCodingAgent from "@earendil-works/pi-coding-agent";
 import {
   type ExtensionAPI, type ExtensionContext
 } from "@earendil-works/pi-coding-agent";
@@ -19,7 +21,7 @@ import { countingStatsReadFs, setStatsReadFsForTests, statsReadFs } from "./src/
 import { PI_VIRTUAL_MODEL_API, getCompat, isAnthropicMessagesApi, isKimiCodingEmptySignatureModel, isKnownThirdPartyOpenAIEndpoint, isMistralConversationsApi, isNativeVirtualModel, isOfficialOpenAIBaseUrl, isOpenAICompatibleApi, isOpenAICompatibleProxyApi, isOpenAIFamilyAssistantMessage, isOpenAIFamilyModel, isOpenAIFamilyToken, isPiBuiltInLlamaCppModel, isResponsesPromptRewriteBypassApi, isRoutedFallbackModel, isValidModelsConfigForEffectiveCompat, modelKey, readEffectiveCompatConfig } from "./src/model-identity.ts";
 import { STATS_INCREMENTAL_ENV, STATS_TIMING_ENV, STATS_VERIFY_ENV, isStatsIncrementalEnabled, isStatsVerifyEnabled, statsTimingLogPath } from "./src/config.ts";
 import { CONFIG_FILE_PATH, VIRTUAL_REWRITE_ENV, FOOTER_MODE_ENV, TOOL_ORDER_ENV, featureEnabled, footerStatsMode, isEnabledEnv, isToolOrderEnabled, parseFooterStatsMode, parsePersistedCacheOptimizerConfig, readPersistedCacheOptimizerConfig, resolveFooterStatsMode, runtimeOptimizerEnabled, setPersistedCacheOptimizerConfig, shouldInjectOpenAIPromptCacheKey, writePersistedCacheOptimizerConfig, writePersistedFeature, writePersistedFooterMode } from "./src/config.ts";
-import { decideZeroPriceWarming, readCacheWarmingMode } from "./src/cache-warming.ts";
+import { decideZeroPriceWarming, readCacheWarmingSetting } from "./src/cache-warming.ts";
 import { LONG_CACHE_RETENTION_VALUE, PI_CACHE_RETENTION_BASELINE_SYMBOL, PI_CACHE_RETENTION_ENV, STARTUP_CACHE_RETENTION_ENV, captureCacheRetentionEnv, getOrCaptureCacheRetentionBaseline, decidePromptCacheRetention, recordPromptCacheRetentionDecision, requestLongCacheRetention, restoreCacheRetentionEnv, userRequestedLongCacheRetention } from "./src/retention.ts";
 import { isRuntimeOptimizerEnabled, isZeroPriceWarmingEnabled, setRuntimeOptimizerEnabled } from "./src/config.ts";
 import { compareToolOrderEntries, getToolNameForPayload, isKnownToolOrderApi, isToolOrderingEligibleModel, isVerifiedToolForApi, normalizeToolsInPayload, sortToolsInPayload } from "./src/tool-ordering.ts";
@@ -448,7 +450,33 @@ export const __internals_for_tests = {
   appendAdaptiveThinkingCompatAdviceLines,
 };
 
+/** Host Pi version, which decides Pi's `cacheWarming` default; undefined when the host does not export it. */
+const HOST_PI_VERSION: string | undefined = (() => {
+  const version = (piCodingAgent as Record<string, unknown>).VERSION;
+  return typeof version === "string" ? version : undefined;
+})();
+
+/** Pi's global settings, the only source it reads `cacheWarming` from; undefined when unreadable. */
+function readGlobalPiSettings(): unknown {
+  let text: string;
+  try {
+    text = readFileSync(join(STATE_DIR, "settings.json"), "utf8");
+  } catch (error) {
+    return getErrorCode(error) === "ENOENT" ? {} : undefined;
+  }
+  try {
+    return JSON.parse(stripJsoncTrailingCommas(stripJsoncComments(text)));
+  } catch {
+    return undefined;
+  }
+}
+
 export default function (pi: ExtensionAPI) {
+  const readHostCacheWarmingSetting = () => readCacheWarmingSetting({
+    getSettings: typeof pi.getSettings === "function" ? () => pi.getSettings() : undefined,
+    readGlobalSettings: readGlobalPiSettings,
+    piVersion: HOST_PI_VERSION,
+  });
   const warnedModels = new Set<string>();
   const promptCacheRetention400Models = new Set<string>();
   const warnedPromptCacheRetention400Models = new Set<string>();
@@ -1716,7 +1744,13 @@ export default function (pi: ExtensionAPI) {
   // "cache economics unavailable". Older hosts never emit this event.
   pi.on("cache_warming_decision", (event, ctx) => {
     if (!isZeroPriceWarmingEnabled()) return undefined;
-    const action = decideZeroPriceWarming(event, ctx.model);
+    // Between runs, only a user-chosen idle mode extends the override (Pi 1.5.1 made idle the default).
+    let idleExplicit = false;
+    if ((event as { phase?: unknown }).phase === "idle") {
+      const setting = readHostCacheWarmingSetting();
+      idleExplicit = setting !== "unsupported" && setting.explicit && setting.mode === "idle";
+    }
+    const action = decideZeroPriceWarming(event, ctx.model, { idleExplicit });
     return action ? { action } : undefined;
   });
 
@@ -2021,7 +2055,7 @@ export default function (pi: ExtensionAPI) {
       if (!warnedPromptCacheKeyRejectedModels.has(key)) {
         warnedPromptCacheKeyRejectedModels.add(key);
         ctx.ui.notify(
-          `⚠️ ${LOG_PREFIX}: ${key} rejected prompt_cache_key. Run /cache-optimizer fix to review a precise model-scoped repair. No configuration was changed automatically.`,
+          `⚠️ ${LOG_PREFIX}: ${key} rejected prompt_cache_key. Run /cache-optimizer fix to review a precise model-scoped repair (on Pi 1.5.1+ you can instead set compat.promptCacheKeyMode to \"disabled\" for this model in models.json). No configuration was changed automatically.`,
           "warning",
         );
       }
@@ -2149,7 +2183,7 @@ export default function (pi: ExtensionAPI) {
         if (!warnedPromptCacheKeyRejectedModels.has(key)) {
           warnedPromptCacheKeyRejectedModels.add(key);
           ctx.ui.notify(
-            `⚠️ ${LOG_PREFIX}: ${key} rejected prompt_cache_key. Run /cache-optimizer fix to review a precise model-scoped repair. No configuration was changed automatically.`,
+            `⚠️ ${LOG_PREFIX}: ${key} rejected prompt_cache_key. Run /cache-optimizer fix to review a precise model-scoped repair (on Pi 1.5.1+ you can instead set compat.promptCacheKeyMode to \"disabled\" for this model in models.json). No configuration was changed automatically.`,
             "warning",
           );
         }
@@ -2359,7 +2393,7 @@ export default function (pi: ExtensionAPI) {
     getCurrentSessionHash: () => currentSessionHash,
     getLastStatusText: () => lastStatusText,
     clearLastStatusText: () => { lastStatusText = undefined; },
-    getCacheWarmingMode: () => readCacheWarmingMode(typeof pi.getSettings === "function" ? () => pi.getSettings() : undefined),
+    getCacheWarmingSetting: () => readHostCacheWarmingSetting(),
   });
 
   pi.registerCommand("cache-optimizer", {

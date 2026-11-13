@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { describe, test } from "node:test";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 
-import { buildCacheWarmingDiagnosis, cacheWarmingRefreshDelayMs, decideZeroPriceWarming, isOpenRouterRouterModel, isZeroPriced, readCacheWarmingMode, suggestedPromptCacheLifetimes } from "../src/cache-warming.ts";
+import { buildCacheWarmingDiagnosis, cacheWarmingDefaultMode, cacheWarmingRefreshDelayMs, decideZeroPriceWarming, isOpenRouterRouterModel, isZeroPriced, readCacheWarmingMode, readCacheWarmingSetting, suggestedPromptCacheLifetimes } from "../src/cache-warming.ts";
 
 type PiModel = NonNullable<ExtensionContext["model"]>;
 
@@ -133,5 +133,60 @@ describe("zero-price warming override", () => {
     assert.ok(diagnosis.lines.some((line) => line.includes("price tiers")));
     const allZeroTiers = model({ cost: { ...zero, tiers: [{ ...zero, inputTokensAbove: 200_000 }] } });
     assert.equal(isZeroPriced(allZeroTiers), true);
+  });
+
+  test("Pi 1.5.1 made idle the default cacheWarming mode", () => {
+    assert.equal(cacheWarmingDefaultMode(undefined), "streaming");
+    assert.equal(cacheWarmingDefaultMode("garbage"), "streaming");
+    assert.equal(cacheWarmingDefaultMode("1.5.0"), "streaming");
+    assert.equal(cacheWarmingDefaultMode("0.99.3"), "streaming");
+    assert.equal(cacheWarmingDefaultMode("1.5.1"), "idle");
+    assert.equal(cacheWarmingDefaultMode("1.5.2"), "idle");
+    assert.equal(cacheWarmingDefaultMode("1.6.0-beta.1"), "idle");
+    assert.equal(cacheWarmingDefaultMode("2.0.0"), "idle");
+    assert.equal(readCacheWarmingMode(() => ({}), "1.5.2"), "idle");
+  });
+
+  test("resolves the mode from global settings the way Pi does", () => {
+    const merged = (value: unknown) => () => (value === undefined ? {} : { cacheWarming: value });
+    assert.equal(readCacheWarmingSetting({ getSettings: undefined }), "unsupported");
+    // No global setting: Pi's default for the host version, not explicit.
+    assert.deepEqual(readCacheWarmingSetting({ getSettings: merged(undefined), readGlobalSettings: () => ({}), piVersion: "1.5.2" }), { mode: "idle", explicit: false });
+    assert.deepEqual(readCacheWarmingSetting({ getSettings: merged(undefined), readGlobalSettings: () => ({}), piVersion: "1.5.0" }), { mode: "streaming", explicit: false });
+    // Global setting wins and is explicit.
+    assert.deepEqual(readCacheWarmingSetting({ getSettings: merged("idle"), readGlobalSettings: () => ({ cacheWarming: "idle" }), piVersion: "1.5.2" }), { mode: "idle", explicit: true });
+    assert.deepEqual(readCacheWarmingSetting({ getSettings: merged("streaming"), readGlobalSettings: () => ({ cacheWarming: "streaming" }), piVersion: "1.5.2" }), { mode: "streaming", explicit: true });
+    // An invalid global value falls back to the default, as Pi does.
+    assert.deepEqual(readCacheWarmingSetting({ getSettings: merged(undefined), readGlobalSettings: () => ({ cacheWarming: "bogus" }), piVersion: "1.5.2" }), { mode: "idle", explicit: false });
+    // A project-only value is ignored by Pi and reported.
+    assert.deepEqual(readCacheWarmingSetting({ getSettings: merged("off"), readGlobalSettings: () => ({}), piVersion: "1.5.2" }), { mode: "idle", explicit: false, ignoredProjectMode: "off" });
+    assert.deepEqual(readCacheWarmingSetting({ getSettings: merged("off"), readGlobalSettings: () => ({ cacheWarming: "streaming" }), piVersion: "1.5.2" }), { mode: "streaming", explicit: true, ignoredProjectMode: "off" });
+    // Unreadable global settings: fall back to the merged view.
+    assert.deepEqual(readCacheWarmingSetting({ getSettings: merged("idle"), readGlobalSettings: () => undefined, piVersion: "1.5.2" }), { mode: "idle", explicit: true });
+    assert.deepEqual(readCacheWarmingSetting({ getSettings: merged(undefined), readGlobalSettings: () => { throw new Error("boom"); }, piVersion: "1.5.2" }), { mode: "idle", explicit: false });
+  });
+
+  test("zero-price override reaches idle phases only when the user chose idle", () => {
+    const zero = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 };
+    const m = model({ cost: zero });
+    const stop = { action: "stop", warmCost: 0, missCost: 0 };
+    assert.equal(decideZeroPriceWarming({ ...stop, phase: "streaming" }, m), "warm");
+    assert.equal(decideZeroPriceWarming({ ...stop, phase: "idle" }, m), undefined);
+    assert.equal(decideZeroPriceWarming({ ...stop, phase: "idle" }, m, { idleExplicit: false }), undefined);
+    assert.equal(decideZeroPriceWarming({ ...stop, phase: "idle" }, m, { idleExplicit: true }), "warm");
+    assert.equal(decideZeroPriceWarming({ ...stop, phase: "streaming" }, m, { idleExplicit: false }), "warm");
+  });
+
+  test("doctor labels Pi's default and project-only settings", () => {
+    const zero = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 };
+    const m = model({ promptCache: { short: 300 }, cost: zero });
+    const implicit = buildCacheWarmingDiagnosis(m, { mode: "idle", explicit: false, tier: "short", zeroPriceWarming: true });
+    assert.ok(implicit.lines.some((line) => line.startsWith("- Mode: idle (Pi default)")));
+    assert.ok(implicit.lines.some((line) => line.includes("covers agent runs only")));
+    const chosen = buildCacheWarmingDiagnosis(m, { mode: "idle", explicit: true, tier: "short", zeroPriceWarming: true });
+    assert.ok(chosen.lines.some((line) => line === "- Mode: idle — global setting, change with /settings → Cache warming or ~/.pi/agent/settings.json"));
+    assert.equal(chosen.lines.some((line) => line.includes("covers agent runs only")), false);
+    const ignored = buildCacheWarmingDiagnosis(m, { mode: "streaming", explicit: true, ignoredProjectMode: "off", tier: "short" });
+    assert.ok(ignored.lines.some((line) => line.includes("project settings set cacheWarming to \"off\"")));
   });
 });

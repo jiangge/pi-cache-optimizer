@@ -727,7 +727,17 @@ describe("OpenAI-compatible request contracts", () => {
         undefined,
       );
 
-      // The extension-owned config is the only per-model opt-out. It removes
+      // Pi 1.5.1+ compat.promptCacheKeyMode "disabled" is the user's own opt-out:
+      // Pi omits the key and the fallback must not put it back.
+      const disabledModel = { ...runtimeModel, compat: { promptCacheKeyMode: "disabled" } } as any;
+      assert.equal(fresh.__internals_for_tests.shouldInjectOpenAIPromptCacheKeyForModel(disabledModel), false);
+      assert.equal(request({ payload: { messages: [] } }, { ...context, model: disabledModel }), undefined);
+      for (const mode of ["auto", "enabled"]) {
+        const other = { ...runtimeModel, compat: { promptCacheKeyMode: mode } } as any;
+        assert.equal(fresh.__internals_for_tests.shouldInjectOpenAIPromptCacheKeyForModel(other), true);
+      }
+
+      // The extension-owned config also omits the key. It removes
       // both spellings after Pi/core request mutations have already run.
       fresh.__internals_for_tests.setPersistedCacheOptimizerConfig({
         version: 2,

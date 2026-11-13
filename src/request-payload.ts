@@ -98,11 +98,20 @@ export function addEffectiveSessionAffinityHeaders(
   return changed;
 }
 
+/** Pi 1.5.1+ `compat.promptCacheKeyMode` as merged into the model (provider compat, model compat, modelOverrides). */
+export function getPromptCacheKeyMode(model: PiModel | undefined): "auto" | "enabled" | "disabled" | undefined {
+  const mode = asRecord(asRecord(model as unknown)?.compat)?.promptCacheKeyMode;
+  return mode === "auto" || mode === "enabled" || mode === "disabled" ? mode : undefined;
+}
+
 export function shouldInjectOpenAIPromptCacheKeyForModel(model: PiModel | undefined): boolean {
   // Pi 1.0+ owns prompt_cache_key for Responses/Codex transports. Keep this
   // extension's fallback limited to openai-completions proxies, where Pi's
   // provider extensions may not supply the session key.
-  return isOpenAICompatibleProxyApi(model?.api);
+  if (!isOpenAICompatibleProxyApi(model?.api)) return false;
+  // Pi 1.5.1+: compat.promptCacheKeyMode "disabled" is the user's explicit
+  // choice for an endpoint that rejects the key; never put it back.
+  return getPromptCacheKeyMode(model) !== "disabled";
 }
 
 export function isPromptCacheKeyOmittedForModel(model: PiModel | undefined, config: PersistedCacheOptimizerConfig | PersistedCacheOptimizerConfigV3 = persistedCacheOptimizerConfig): boolean {
