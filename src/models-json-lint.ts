@@ -13,14 +13,14 @@ import { MODELS_JSON_PATH } from "./paths.ts";
  * key; unknown keys that resemble nothing are left alone so newer Pi fields
  * and personal annotations never produce noise. It never edits the file.
  *
- * Known key sets are copied from Pi 1.5.2 (1.4.0 added compat imageInput and sendImageOptInHeader; 1.5.0 changed no keys;
- * 1.5.1 added compat promptCacheKeyMode, requiresNonNullAssistantContent, requiresToolsWithToolHistory and supportsMessageThreads):
+ * Known key sets are copied from Pi 1.6.0 (1.4.0 added compat imageInput and sendImageOptInHeader; 1.5.0 changed no keys;
+ * 1.5.1 added compat promptCacheKeyMode, requiresNonNullAssistantContent, requiresToolsWithToolHistory and supportsMessageThreads; 1.6.0 changed no keys):
  * - @earendil-works/pi-coding-agent dist/core/model-config.js
  *   (ModelsConfigSchema, ProviderConfigSchema, ModelDefinitionSchema, ModelOverrideSchema)
  * - @earendil-works/pi-ai dist/providers/compat-schema.js
  *   (ProviderCompatSchema = merged properties of every per-API compat schema)
  */
-export const MODELS_JSON_SCHEMA_SOURCE_VERSION = "1.5.2";
+export const MODELS_JSON_SCHEMA_SOURCE_VERSION = "1.6.0";
 
 export const MODELS_JSON_ROOT_KEYS: readonly string[] = ["$schema", "providers"];
 
@@ -38,7 +38,7 @@ export const MODELS_JSON_MODEL_OVERRIDE_KEYS: readonly string[] = [
   "contextWindow", "maxTokens", "samplingParams", "samplingParamsByThinkingLevel", "headers", "compat",
 ];
 
-/** Object.keys(ProviderCompatSchema.properties) in Pi 1.5.2, sorted. */
+/** Object.keys(ProviderCompatSchema.properties) in Pi 1.6.0, sorted. */
 export const MODELS_JSON_COMPAT_KEYS: readonly string[] = [
   "allowEmptySignature", "allowedFallbackModels", "cacheControlFormat", "chatTemplateArgs", "chatTemplateKwargs",
   "forceAdaptiveThinking", "imageInput", "maxTokensField", "openRouterRouting", "promptCacheKeyMode",

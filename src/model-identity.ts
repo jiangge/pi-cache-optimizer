@@ -266,10 +266,12 @@ export function isPiBuiltInLlamaCppModel(model: PiModel | undefined): boolean {
   // cache/routing overrides, so provider id alone must never imply exemption.
   // supportsUsageInStreaming is deliberately not part of the fingerprint: Pi
   // 0.82.x sets it false and Pi 0.83+ sets it true after fixing streamed usage,
-  // and it carries no routing or cache configuration.
+  // and it carries no routing or cache configuration. supportsDeveloperRole is
+  // false up to Pi 1.5.x; Pi 1.6.0 dropped it (developer role became
+  // api.openai.com-only by default), so absent is accepted too, but true is not.
   const compat = getCompat(model);
   return compat.supportsStore === false
-    && compat.supportsDeveloperRole === false
+    && (compat.supportsDeveloperRole === false || compat.supportsDeveloperRole === undefined)
     && compat.supportsReasoningEffort === false
     && compat.supportsStrictMode === false
     && compat.maxTokensField === "max_tokens"

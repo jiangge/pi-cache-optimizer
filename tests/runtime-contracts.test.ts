@@ -245,6 +245,15 @@ describe("OpenAI-compatible request contracts", () => {
         );
       }
 
+      // Pi up to 1.5.x sets supportsDeveloperRole: false; Pi 1.6.0 omits it.
+      for (const supportsDeveloperRole of [false, undefined]) {
+        assert.equal(
+          t.isPiBuiltInLlamaCppModel({ ...builtIn, compat: { ...builtIn.compat, supportsDeveloperRole } } as PiModel),
+          true,
+          `supportsDeveloperRole: ${supportsDeveloperRole}`,
+        );
+      }
+
       // Same-id providers with routing/cache overrides or a different
       // transport fingerprint remain ordinary OpenAI-compatible channels.
       for (const [name, compat] of Object.entries({
