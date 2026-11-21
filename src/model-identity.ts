@@ -277,7 +277,12 @@ export function isPiBuiltInLlamaCppModel(model: PiModel | undefined): boolean {
     && compat.maxTokensField === "max_tokens"
     && compat.sendSessionAffinityHeaders === undefined
     && compat.sessionAffinityFormat === undefined
-    && compat.supportsLongCacheRetention === undefined;
+    && compat.supportsLongCacheRetention === undefined
+    // Cache/routing overrides Pi's built-in provider never sets.
+    && (compat as Record<string, unknown>).promptCacheKeyMode === undefined
+    && (compat as Record<string, unknown>).cacheControlFormat === undefined
+    && (compat as Record<string, unknown>).openRouterRouting === undefined
+    && (compat as Record<string, unknown>).vercelGatewayRouting === undefined;
 }
 
 export function isResponsesPromptRewriteBypassApi(api: unknown): boolean {

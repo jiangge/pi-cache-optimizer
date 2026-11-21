@@ -261,6 +261,10 @@ describe("OpenAI-compatible request contracts", () => {
         sessionAffinityFormat: { sessionAffinityFormat: "openai" },
         longRetention: { supportsLongCacheRetention: true },
         developerRole: { supportsDeveloperRole: true },
+        promptCacheKeyMode: { promptCacheKeyMode: "disabled" },
+        cacheControlFormat: { cacheControlFormat: "anthropic" },
+        openRouterRouting: { openRouterRouting: { only: ["x"] } },
+        vercelGatewayRouting: { vercelGatewayRouting: { only: ["x"] } },
       })) {
         assert.equal(t.isPiBuiltInLlamaCppModel({ ...builtIn, compat: { ...builtIn.compat, ...compat } } as PiModel), false, name);
       }
