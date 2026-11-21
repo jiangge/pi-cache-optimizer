@@ -5,6 +5,16 @@ last version Pi recorded for this package under "Extension Updates". Pi records 
 it sees this file, so notes start with the update after that.
 Older history is in the [git log](https://github.com/jiangge/pi-cache-optimizer/commits/master).
 
+## [2.10.7] - 2026-11-21
+
+### Fixed
+
+- Pi 1.6.0's built-in llama.cpp models are recognised again, so they no longer get proxy and session-affinity advice meant for third-party OpenAI-compatible gateways. Pi 1.6.0 stopped setting `compat.supportsDeveloperRole: false` on them. A same-id `llama.cpp` provider that sets cache or routing overrides (`promptCacheKeyMode`, `cacheControlFormat`, `openRouterRouting`, `vercelGatewayRouting`) is no longer treated as the built-in one.
+
+### Changed
+
+- Validated against Pi 1.6.0. Its `models.json` compat keys are unchanged.
+
 ## [2.10.6] - 2026-11-13
 
 ### Changed
