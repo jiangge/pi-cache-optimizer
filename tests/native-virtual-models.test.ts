@@ -443,6 +443,28 @@ describe("native virtual model hooks", () => {
     assert.equal(ambiguous.prompt_cache_key, undefined);
   });
 
+  test("native virtual request policy fails closed when same-id providers disagree on promptCacheKeyMode", async () => {
+    const { hooks } = setup();
+    const selected = virtualModel();
+    const enabledA = physical("proxy-a", "shared-chat", { compat: { promptCacheKeyMode: "enabled" } });
+    const enabledB = physical("proxy-b", "shared-chat", { compat: { promptCacheKeyMode: "enabled" } });
+    const disabledB = physical("proxy-b", "shared-chat", { compat: { promptCacheKeyMode: "disabled" } });
+    const disabledA = physical("proxy-a", "shared-chat", { compat: { promptCacheKeyMode: "disabled" } });
+    const send = async (available: TestModel[]) => {
+      const payload = { model: "shared-chat", messages: [] };
+      const result = await hooks.get("before_provider_request")!({ payload }, context(selected, { available }));
+      return (result ?? payload) as Record<string, unknown>;
+    };
+
+    assert.equal((await send([enabledA, disabledB])).prompt_cache_key, undefined);
+    assert.equal((await send([disabledB, enabledA])).prompt_cache_key, undefined);
+
+    const expectedKey = derivePromptCacheKey("native-virtual-session");
+    assert.equal((await send([enabledA, enabledB])).prompt_cache_key, expectedKey);
+    assert.equal((await send([enabledB, enabledA])).prompt_cache_key, expectedKey);
+    assert.equal((await send([disabledA, disabledB])).prompt_cache_key, undefined);
+  });
+
   test("session-affinity header bridge fails closed for native virtual selections", async () => {
     const modelsPath = join(agentDir, "models.json");
     await writeFile(modelsPath, JSON.stringify({ providers: { proxy: { compat: { sendSessionAffinityHeaders: true } } } }));
