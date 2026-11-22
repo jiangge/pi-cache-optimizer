@@ -26,7 +26,7 @@ import { LONG_CACHE_RETENTION_VALUE, PI_CACHE_RETENTION_BASELINE_SYMBOL, PI_CACH
 import { isRuntimeOptimizerEnabled, isZeroPriceWarmingEnabled, setRuntimeOptimizerEnabled } from "./src/config.ts";
 import { compareToolOrderEntries, getToolNameForPayload, isKnownToolOrderApi, isToolOrderingEligibleModel, isVerifiedToolForApi, normalizeToolsInPayload, sortToolsInPayload } from "./src/tool-ordering.ts";
 import { SKILL_COMPRESSION_MIN_COUNT, SKILL_PATH_RULE_WORDINGS, compressSkillsInSystemPrompt, compressSkillsViaSection, formatSkillsForPrompt, formatSkillsForPromptCompressed, stripSessionOverviewChurn, explainSkillCompressionSkip, recordSkillCompressionOutcome, getLastSkillCompressionOutcome, describeSkillCompressionOutcome } from "./src/prompt-rewrite.ts";
-import { addEffectiveSessionAffinityHeaders, addOpenAIPromptCacheKey, clampPromptCacheKey, collectAnthropicCacheControlsInWireOrder, downgradeAnthropicLongCacheControls, getEffectiveCompatValueSource, getPromptCacheKeyMode, hasAnthropicCacheTtlOrderError, hasEffectivePromptCacheKey, isPromptCacheKeyOmittedForModel, normalizeAnthropicCacheControlTtlOrder, omitOpenAIPromptCacheKeys, shouldInjectOpenAIPromptCacheKeyForModel, withAnthropicCacheTtlRepair, withoutPromptCacheRetention, derivePromptCacheKey } from "./src/request-payload.ts";
+import { addEffectiveSessionAffinityHeaders, addOpenAIPromptCacheKey, clampPromptCacheKey, collectAnthropicCacheControlsInWireOrder, downgradeAnthropicLongCacheControls, getEffectiveCompatValueSource, hasAnthropicCacheTtlOrderError, hasEffectivePromptCacheKey, isPromptCacheKeyOmittedForModel, normalizeAnthropicCacheControlTtlOrder, omitOpenAIPromptCacheKeys, shouldInjectOpenAIPromptCacheKeyForModel, withAnthropicCacheTtlRepair, withoutPromptCacheRetention, derivePromptCacheKey } from "./src/request-payload.ts";
 import { PI_CACHE_HINTS_SYMBOL, PI_ROUTING_REGISTRY_SYMBOL, type PiCacheHintsInput, type PiCacheHintsOutput, applyConfiguredTransportToModel, canRewriteNativeVirtualPrompt, describeNativeVirtualRouteNote, ensureRoutingRegistry, findModelInRegistry, findNativeVirtualDispatches, getProtocolGlobal, getProviderPayloadModelId, getRoutingRegistry, hashSessionId, installCacheHintsService, nativeVirtualDispatchFromMessage, nativeVirtualDispatchToModel, parseRouteSnapshot, resolveActiveRouteSnapshot, resolveNativeVirtualRequestModel, resolveNativeVirtualRouteModel, resolveRouteModel, routeSnapshotToPiModel, sessionHashFromContext } from "./src/routing.ts";
 import { CONFIG_RECEIPT_PATH, applyPromptCacheKeyConfigFix, configReceiptBackupPath, parsePromptCacheKeyConfigReceipt, rollbackPromptCacheKeyConfig, writePromptCacheKeyConfigReceipt } from "./src/prompt-cache-key-config.ts";
 import { buildDeepSeekCompatSuggestion, buildDeepSeekCompatWarningText, buildModelCompatOverride, buildOpenAIProxyCompatWarningText, buildProviderCompatOverride, buildSafeOpenAIProxyCompatSuggestion, describeMissingAdaptiveThinkingCompat, describeMissingCacheCompatForModel, describeMissingDeepSeekCompat, describeMissingOpenAICompatibleProxyCompat, getAgentDirDisplayPath, getModelsJsonDisplayPath, isAdaptiveThinkingCompatApplicable, isDeepSeekWireCompatApplicable } from "./src/compat-advice.ts";
@@ -1698,7 +1698,9 @@ export default function (pi: ExtensionAPI) {
       promptCacheRetention400Models.has(key),
       anthropicTtlOrderErrorModels.has(key),
       isPromptCacheKeyOmittedForModel(model),
-      getPromptCacheKeyMode(model) ?? "",
+      // The decision, not the raw compat.promptCacheKeyMode: "enabled",
+      // "auto" and an unset mode all inject, so only "disabled" may split
+      // otherwise-equal candidates (PR #32).
       shouldInjectOpenAIPromptCacheKeyForModel(model),
     ]);
   }

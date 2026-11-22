@@ -463,6 +463,15 @@ describe("native virtual model hooks", () => {
     assert.equal((await send([enabledA, enabledB])).prompt_cache_key, expectedKey);
     assert.equal((await send([enabledB, enabledA])).prompt_cache_key, expectedKey);
     assert.equal((await send([disabledA, disabledB])).prompt_cache_key, undefined);
+
+    // "enabled", "auto" and an unset mode all inject: they must not split candidates.
+    const unsetB = physical("proxy-b", "shared-chat");
+    const autoB = physical("proxy-b", "shared-chat", { compat: { promptCacheKeyMode: "auto" } });
+    assert.equal((await send([enabledA, unsetB])).prompt_cache_key, expectedKey);
+    assert.equal((await send([unsetB, enabledA])).prompt_cache_key, expectedKey);
+    assert.equal((await send([enabledA, autoB])).prompt_cache_key, expectedKey);
+    assert.equal((await send([disabledA, unsetB])).prompt_cache_key, undefined);
+    assert.equal((await send([unsetB, disabledA])).prompt_cache_key, undefined);
   });
 
   test("session-affinity header bridge fails closed for native virtual selections", async () => {
