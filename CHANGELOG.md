@@ -5,6 +5,12 @@ last version Pi recorded for this package under "Extension Updates". Pi records 
 it sees this file, so notes start with the update after that.
 Older history is in the [git log](https://github.com/jiangge/pi-cache-optimizer/commits/master).
 
+## [2.10.8] - 2026-11-22
+
+### Fixed
+
+- Native virtual models: when several credentialed providers share the routed model id and only some set `compat.promptCacheKeyMode: "disabled"`, the extension no longer adds a `prompt_cache_key` depending on catalog order; such requests are left unchanged. Providers whose mode is `"enabled"`, `"auto"` or unset are still treated alike. Thanks @qsgy-edge (#32).
+
 ## [2.10.7] - 2026-11-21
 
 ### Fixed
