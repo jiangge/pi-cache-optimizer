@@ -1279,4 +1279,41 @@ describe("kill switch and timing log", () => {
       });
     });
   });
+
+  test("session_shutdown releases statsRefreshSettledForTests and latestStatsCtx for GC", async () => {
+    await withAgentDir(async (dir) => {
+      const out = join(dir, "gc.json");
+      const script = `
+        const m = await import(${JSON.stringify(join(process.cwd(), "index.ts"))});
+        const ext = typeof m.default === "function" ? m.default : m.default.default;
+        const I = m.__internals_for_tests ?? m.default.__internals_for_tests;
+        const { writeFileSync } = await import("node:fs");
+        const refs = [];
+        for (let i = 0; i < 3; i++) {
+          let h = new Map();
+          let pi = { on(n, f) { h.set(n, f); }, registerCommand() {} };
+          ext(pi);
+          let ctx = { mode: "json", hasUI: false, sessionManager: { getSessionId: () => "s-" + i }, ui: { notify() {}, setStatus() {} } };
+          refs.push([new WeakRef(ctx), new WeakRef(pi)]);
+          for (const reason of i === 2 ? ["startup", "new"] : ["startup"]) {
+            await h.get("session_start")({ reason }, ctx);
+            await I.waitForStatsRestore();
+            await h.get("session_shutdown")({ reason: "quit" }, ctx);
+          }
+          h = pi = ctx = null;
+        }
+        for (let r = 0; r < 6; r++) { global.gc(); await new Promise((r) => setTimeout(r, 20)); }
+        writeFileSync(${JSON.stringify(out)}, JSON.stringify(refs.map(([c, p]) => [c.deref() !== undefined, p.deref() !== undefined])));
+      `;
+      const child = spawn(process.execPath, ["--expose-gc", "--import", "jiti/register", "--input-type=module", "-e", script], {
+        cwd: process.cwd(), stdio: "ignore", env: { ...process.env, PI_CODING_AGENT_DIR: dir },
+      });
+      const code = await new Promise<number | null | "killed">((resolve) => {
+        const kill = setTimeout(() => { child.kill("SIGKILL"); resolve("killed"); }, 30_000);
+        child.on("exit", (c) => { clearTimeout(kill); resolve(c); });
+      });
+      assert.equal(code, 0);
+      assert.deepEqual(JSON.parse(await readFile(out, "utf8")), [[false, false], [false, false], [false, false]]);
+    });
+  });
 });

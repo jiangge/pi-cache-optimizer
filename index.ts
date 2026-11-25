@@ -1717,6 +1717,7 @@ export default function (pi: ExtensionAPI) {
     // The same extension instance lives on across session switches
     // (shutdown, then start): reopen what the shutdown closed.
     refreshScheduler.open();
+    statsRefreshSettledForTests.add(drainStatsRefresh);
     latestStatsCtx = ctx;
     const tui = ctx.mode === "tui";
     if (sessionStartsHandled++ > 0) retireShardForSessionStart();
@@ -1793,6 +1794,8 @@ export default function (pi: ExtensionAPI) {
       }
     } finally {
       closeStatsRefreshGate();
+      statsRefreshSettledForTests.delete(drainStatsRefresh);
+      latestStatsCtx = undefined;
       latestCacheHint = undefined;
       providerRequestStates.length = 0;
       delete getProtocolGlobal().__piCacheOptimizerCacheKey__;
