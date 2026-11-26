@@ -150,6 +150,46 @@ describe("a second session_start on the same extension instance", () => {
     });
   });
 
+  test("the cache-hints service is published again by the next session_start after a shutdown", async () => {
+    await withAgentDir(async () => {
+      const h = await harness("hints-reinstall");
+      await h.handlers.get("session_start")!({ reason: "startup" }, h.ctx);
+      await h.I.waitForStatsRestore();
+      const service = h.I.getCacheHintsService();
+      assert.ok(service && h.I.isOptimizerOwnedCacheHintsService(service));
+      await h.handlers.get("session_shutdown")!({}, h.ctx);
+      assert.notEqual(h.I.getCacheHintsService(), service, "shutdown takes it out");
+      const next = ctxFor(h, "hints-two");
+      await h.handlers.get("session_start")!({ reason: "new" }, next);
+      await h.I.waitForStatsRestore();
+      assert.equal(h.I.getCacheHintsService(), service);
+      await h.handlers.get("session_shutdown")!({}, next);
+      assert.notEqual(h.I.getCacheHintsService(), service);
+    });
+  });
+
+  test("a session_start while the previous shutdown is still running keeps what it set up", async () => {
+    await withEnv({ PI_CACHE_OPTIMIZER_FOOTER_MODE: "total" }, async () => {
+      await withAgentDir(async () => {
+        const h = await harness("start-during-shutdown");
+        await h.handlers.get("session_start")!({ reason: "startup" }, h.ctx);
+        await h.I.waitForStatsRestore();
+        const service = h.I.getCacheHintsService();
+        const shutdown = h.handlers.get("session_shutdown")!({}, h.ctx);
+        const next = ctxFor(h, "overlap-two");
+        await h.handlers.get("session_start")!({ reason: "new" }, next);
+        await shutdown;
+        await h.I.waitForStatsRestore();
+        assert.equal(h.I.getCacheHintsService(), service, "the late shutdown cleanup does not take the new session's service out");
+        const before = h.statuses.length;
+        await usage(h, next, 1);
+        assert.ok(h.statuses.length > before, "the new session's background refreshes still publish");
+        await h.handlers.get("session_shutdown")!({}, next);
+        assert.notEqual(h.I.getCacheHintsService(), service);
+      });
+    });
+  });
+
   test("without a shutdown in between: the earlier usage is written as a closed shard, nothing is lost", async () => {
     await withEnv({ PI_CACHE_OPTIMIZER_FOOTER_MODE: "total" }, async () => {
       await withAgentDir(async () => {

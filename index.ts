@@ -637,7 +637,7 @@ export default function (pi: ExtensionAPI) {
     }
   }
 
-  const uninstallCacheHintsService = installCacheHintsService(markOptimizerOwnedCacheHintsService({
+  const cacheHintsService = markOptimizerOwnedCacheHintsService({
     version: 1,
     getHints(input: PiCacheHintsInput): PiCacheHintsOutput | undefined {
       if (!runtimeOptimizerEnabled || !featureEnabled("promptRewrite", NO_PROMPT_REWRITE_ENV, true)) return undefined;
@@ -656,7 +656,12 @@ export default function (pi: ExtensionAPI) {
         cacheRetention: hint.cacheRetention,
       };
     },
-  }), { discardPrevious: isOptimizerOwnedCacheHintsService });
+  });
+  /** Undefined once session_shutdown took the service out; the next session_start puts it back. */
+  let uninstallCacheHintsService: (() => void) | undefined = installCacheHints();
+  function installCacheHints(): () => void {
+    return installCacheHintsService(cacheHintsService, { discardPrevious: isOptimizerOwnedCacheHintsService });
+  }
 
   /**
    * Build a session-scoped stats key from the current session hash + model key.
@@ -1213,7 +1218,11 @@ export default function (pi: ExtensionAPI) {
       if (backgroundStatsTasks.size === 0 && refreshScheduler.idle && !shardIndex.fullScanInFlight) return;
     }
   }
+  // drainStatsRefresh stays strongly reachable while this instance is: the
+  // session_shutdown handler calls it, so it lives in the factory's shared
+  // closure context. Keep it referenced from a handler if that call moves.
   const drainStatsRefreshRef = new WeakRef(drainStatsRefresh);
+  for (const ref of statsRefreshSettledForTests) if (ref.deref() === undefined) statsRefreshSettledForTests.delete(ref);
   statsRefreshSettledForTests.add(drainStatsRefreshRef);
 
   function buildCurrentStatsShard(state: "active" | "closed" = "active"): PersistedStatsShardV7 {
@@ -1731,6 +1740,7 @@ export default function (pi: ExtensionAPI) {
     refreshScheduler.open();
     statsRefreshSettledForTests.add(drainStatsRefreshRef);
     latestStatsCtx = ctx;
+    uninstallCacheHintsService ??= installCacheHints();
     const tui = ctx.mode === "tui";
     if (sessionStartsHandled++ > 0) retireShardForSessionStart();
     resetStatsForSessionStart(event.reason, ctx);
@@ -1791,6 +1801,9 @@ export default function (pi: ExtensionAPI) {
   });
 
   pi.on("session_shutdown", async (_event, ctx) => {
+    // A session_start on this instance while the shutdown awaited owns the
+    // state from then on: the cleanup below must not undo it.
+    const shutdownGeneration = statsRestoreGeneration;
     try {
       // Close the gate first (no new background refresh, watcher event or
       // scan-triggered publish), then let what is in flight finish, then
@@ -1805,14 +1818,17 @@ export default function (pi: ExtensionAPI) {
         await retryUnpersistedRetiredShards();
       }
     } finally {
-      closeStatsRefreshGate();
-      statsRefreshSettledForTests.delete(drainStatsRefreshRef);
-      latestStatsCtx = undefined;
-      latestCacheHint = undefined;
-      providerRequestStates.length = 0;
-      delete getProtocolGlobal().__piCacheOptimizerCacheKey__;
-      uninstallCacheHintsService();
-      restoreCacheRetentionEnv(STARTUP_CACHE_RETENTION_ENV);
+      if (shutdownGeneration === statsRestoreGeneration) {
+        closeStatsRefreshGate();
+        statsRefreshSettledForTests.delete(drainStatsRefreshRef);
+        latestStatsCtx = undefined;
+        latestCacheHint = undefined;
+        providerRequestStates.length = 0;
+        delete getProtocolGlobal().__piCacheOptimizerCacheKey__;
+        uninstallCacheHintsService?.();
+        uninstallCacheHintsService = undefined;
+        restoreCacheRetentionEnv(STARTUP_CACHE_RETENTION_ENV);
+      }
     }
   });
 

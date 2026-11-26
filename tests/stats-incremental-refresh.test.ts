@@ -1280,7 +1280,7 @@ describe("kill switch and timing log", () => {
     });
   });
 
-  test("session_shutdown releases statsRefreshSettledForTests and latestStatsCtx for GC; an instance never started is not pinned", async () => {
+  test("an ended instance and its last ctx can be collected: session switches, overlapping sessions, a never-started instance", async () => {
     await withAgentDir(async (dir) => {
       const out = join(dir, "gc.json");
       const script = `
@@ -1288,46 +1288,81 @@ describe("kill switch and timing log", () => {
         const ext = typeof m.default === "function" ? m.default : m.default.default;
         const I = m.__internals_for_tests ?? m.default.__internals_for_tests;
         const { writeFileSync } = await import("node:fs");
-        const refs = [];
-        for (let i = 0; i < 3; i++) {
-          let h = new Map();
-          let pi = { on(n, f) { h.set(n, f); }, registerCommand() {} };
-          ext(pi);
-          let ctx = { mode: "json", hasUI: false, sessionManager: { getSessionId: () => "s-" + i }, ui: { notify() {}, setStatus() {} } };
-          refs.push([new WeakRef(ctx), new WeakRef(pi)]);
-          for (const reason of i === 2 ? ["startup", "new"] : ["startup"]) {
-            await h.get("session_start")({ reason }, ctx);
-            await I.waitForStatsRestore();
-            await h.get("session_shutdown")({ reason: "quit" }, ctx);
-          }
-          h = pi = ctx = null;
-        }
-        // An instance Pi created but never started or shut down (no handler
-        // ever ran) must not be pinned by the module-level test registry.
-        // Its cache-hints service is global by design (the live instance
-        // publishes it until session_shutdown), so take it out to look at
-        // the registry alone.
+        const settle = async () => { for (let r = 0; r < 6; r++) { global.gc(); await new Promise((r) => setTimeout(r, 20)); } };
+        const makeCtx = (id) => ({ mode: "json", hasUI: false, sessionManager: { getSessionId: () => id }, ui: { notify() {}, setStatus() {} } });
+        const create = () => { const h = new Map(); const pi = { on(n, f) { h.set(n, f); }, registerCommand() {} }; ext(pi); return { h, pi }; };
+        const start = async (x, ctx, reason = "startup") => { await x.h.get("session_start")({ reason }, ctx); await I.waitForStatsRestore(); };
+        const stop = (x, ctx) => x.h.get("session_shutdown")({ reason: "quit" }, ctx);
+        const result = {};
+
+        // Created first and never started: a later instance takes the global
+        // cache-hints slot without holding on to it.
         {
-          let pi = { on() {}, registerCommand() {} };
-          ext(pi);
-          delete globalThis[Symbol.for("pi.cache.hints.v1")];
-          refs.push([new WeakRef({}), new WeakRef(pi)]);
-          pi = null;
+          let x = create();
+          result.neverStarted = new WeakRef(x.pi);
+          x = null;
         }
-        for (let r = 0; r < 6; r++) { global.gc(); await new Promise((r) => setTimeout(r, 20)); }
-        // The registry still drains (and prunes) after the instances are gone.
+
+        // Session switches as Pi 1.6 makes them: a new instance per session,
+        // the previous one shut down first; the last one also switches
+        // sessions on the same instance.
+        const switched = [];
+        for (let i = 0; i < 3; i++) {
+          let x = create();
+          let ctx = makeCtx("s-" + i);
+          switched.push([new WeakRef(ctx), new WeakRef(x.pi)]);
+          for (const reason of i === 2 ? ["startup", "new"] : ["startup"]) {
+            await start(x, ctx, reason);
+            await stop(x, ctx);
+          }
+          x = ctx = null;
+        }
+
+        // Overlapping sessions (SDK hosts): the first ends while the second
+        // is still running and holds the global cache-hints slot.
+        let a = create(), b = create();
+        let ctxA = makeCtx("a"), ctxB = makeCtx("b");
+        await start(a, ctxA); await start(b, ctxB);
+        await stop(a, ctxA);
+        const overlapped = [new WeakRef(ctxA), new WeakRef(a.pi)];
+        a = ctxA = null;
+
+        // A shut-down instance its host still holds (handlers kept) lets go
+        // of its last ctx.
+        const kept = create();
+        let ctxK = makeCtx("k");
+        await start(kept, ctxK); await stop(kept, ctxK);
+        const keptCtx = new WeakRef(ctxK);
+        ctxK = null;
+
+        await settle();
+        result.switched = switched.map(([c, p]) => [c.deref() !== undefined, p.deref() !== undefined]);
+        result.overlapped = [overlapped[0].deref() !== undefined, overlapped[1].deref() !== undefined];
+        result.neverStarted = result.neverStarted.deref() !== undefined;
+        result.keptCtx = keptCtx.deref() !== undefined;
+        result.keptHandlers = kept.h.size > 0;
+        await stop(b, ctxB);
+        // The test registry still drains (and prunes) after instances are gone.
         await I.statsRefreshSettled();
-        writeFileSync(${JSON.stringify(out)}, JSON.stringify(refs.map(([c, p]) => [c.deref() !== undefined, p.deref() !== undefined])));
+        writeFileSync(${JSON.stringify(out)}, JSON.stringify(result));
       `;
       const child = spawn(process.execPath, ["--expose-gc", "--import", "jiti/register", "--input-type=module", "-e", script], {
-        cwd: process.cwd(), stdio: "ignore", env: { ...process.env, PI_CODING_AGENT_DIR: dir },
+        cwd: process.cwd(), stdio: ["ignore", "ignore", "pipe"], env: { ...process.env, PI_CODING_AGENT_DIR: dir },
       });
+      let stderr = "";
+      child.stderr!.on("data", (chunk) => { stderr += String(chunk); });
       const code = await new Promise<number | null | "killed">((resolve) => {
         const kill = setTimeout(() => { child.kill("SIGKILL"); resolve("killed"); }, 60_000);
         child.on("exit", (c) => { clearTimeout(kill); resolve(c); });
       });
-      assert.equal(code, 0);
-      assert.deepEqual(JSON.parse(await readFile(out, "utf8")), [[false, false], [false, false], [false, false], [false, false]]);
+      assert.equal(code, 0, stderr);
+      assert.deepEqual(JSON.parse(await readFile(out, "utf8")), {
+        neverStarted: false,
+        switched: [[false, false], [false, false], [false, false]],
+        overlapped: [false, false],
+        keptCtx: false,
+        keptHandlers: true,
+      });
     });
   });
 });

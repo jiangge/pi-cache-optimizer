@@ -502,12 +502,18 @@ export function installCacheHintsService(
   options: { discardPrevious?: (value: unknown) => boolean } = {},
 ): () => void {
   const globals = getProtocolGlobal();
-  const previous = globals[PI_CACHE_HINTS_SYMBOL];
+  // Never hold a previous service that would be discarded anyway: it is
+  // another optimizer instance, and holding it would pin that instance (and,
+  // transitively, every one before it) for this instance's lifetime.
+  let previous: unknown = globals[PI_CACHE_HINTS_SYMBOL];
+  if (previous !== undefined && options.discardPrevious?.(previous)) previous = undefined;
   globals[PI_CACHE_HINTS_SYMBOL] = service;
   return () => {
+    const restore = previous;
+    previous = undefined;
     if (globals[PI_CACHE_HINTS_SYMBOL] !== service) return;
-    if (previous !== undefined && !options.discardPrevious?.(previous)) {
-      globals[PI_CACHE_HINTS_SYMBOL] = previous;
+    if (restore !== undefined) {
+      globals[PI_CACHE_HINTS_SYMBOL] = restore;
     } else {
       delete globals[PI_CACHE_HINTS_SYMBOL];
     }
