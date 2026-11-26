@@ -5,6 +5,13 @@ last version Pi recorded for this package under "Extension Updates". Pi records 
 it sees this file, so notes start with the update after that.
 Older history is in the [git log](https://github.com/jiangge/pi-cache-optimizer/commits/master).
 
+## [2.10.9] - 2026-11-26
+
+### Fixed
+
+- Memory: the extension no longer keeps an ended session in memory (its extension instance and its last session context). Before, Pi kept every session ended by `/new`, `/resume` or `/fork` until `/reload`, and SDK hosts running several sessions kept every finished one. Thanks @o7w7o (#33).
+- When one extension instance serves a second session after a shutdown, it publishes its prompt-cache hints for other extensions again.
+
 ## [2.10.8] - 2026-11-22
 
 ### Fixed

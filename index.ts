@@ -1744,7 +1744,7 @@ export default function (pi: ExtensionAPI) {
     const tui = ctx.mode === "tui";
     if (sessionStartsHandled++ > 0) {
       // The previous session's per-request state: its shutdown normally
-      // clears it, but skips that cleanup when this start raced it.
+      // clears it, but a start without one, or racing one, would inherit it.
       latestCacheHint = undefined;
       providerRequestStates.length = 0;
       delete getProtocolGlobal().__piCacheOptimizerCacheKey__;
