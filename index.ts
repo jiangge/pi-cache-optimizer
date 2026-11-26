@@ -112,8 +112,15 @@ function notifyCacheCompatIfNeeded(
 // this module. Tests await it after session_start; runtime code uses the
 // per-instance promise instead.
 let latestStatsRestoreForTests: Promise<void> = Promise.resolve();
-/** Per extension instance in this module: resolves once no footer refresh (or its publish) is in flight. */
-const statsRefreshSettledForTests = new Set<() => Promise<void>>();
+/**
+ * Per extension instance in this module: resolves once no footer refresh (or
+ * its publish) is in flight. Held weakly: Pi can call one loaded module's
+ * factory again (its factory cache, SDK hosts), and a strong reference here
+ * would keep every instance (and its last ctx) alive for the module's
+ * lifetime, including one that never saw session_shutdown. The instance's
+ * own handlers keep its drain function alive while the instance is.
+ */
+const statsRefreshSettledForTests = new Set<WeakRef<() => Promise<void>>>();
 
 export const __internals_for_tests = {
   parseGlobalPiSettingsText: (text: string): unknown => parseGlobalPiSettingsText(text),
@@ -125,7 +132,11 @@ export const __internals_for_tests = {
    * asserting on what such a refresh publishes.
    */
   statsRefreshSettled: async (): Promise<void> => {
-    for (const settled of statsRefreshSettledForTests) await settled();
+    for (const ref of Array.from(statsRefreshSettledForTests)) {
+      const settled = ref.deref();
+      if (settled) await settled();
+      else statsRefreshSettledForTests.delete(ref);
+    }
   },
   setStatsRefreshTestHooks,
   setStatsReadFsForTests,
@@ -1202,7 +1213,8 @@ export default function (pi: ExtensionAPI) {
       if (backgroundStatsTasks.size === 0 && refreshScheduler.idle && !shardIndex.fullScanInFlight) return;
     }
   }
-  statsRefreshSettledForTests.add(drainStatsRefresh);
+  const drainStatsRefreshRef = new WeakRef(drainStatsRefresh);
+  statsRefreshSettledForTests.add(drainStatsRefreshRef);
 
   function buildCurrentStatsShard(state: "active" | "closed" = "active"): PersistedStatsShardV7 {
     const now = Date.now();
@@ -1717,7 +1729,7 @@ export default function (pi: ExtensionAPI) {
     // The same extension instance lives on across session switches
     // (shutdown, then start): reopen what the shutdown closed.
     refreshScheduler.open();
-    statsRefreshSettledForTests.add(drainStatsRefresh);
+    statsRefreshSettledForTests.add(drainStatsRefreshRef);
     latestStatsCtx = ctx;
     const tui = ctx.mode === "tui";
     if (sessionStartsHandled++ > 0) retireShardForSessionStart();
@@ -1794,7 +1806,7 @@ export default function (pi: ExtensionAPI) {
       }
     } finally {
       closeStatsRefreshGate();
-      statsRefreshSettledForTests.delete(drainStatsRefresh);
+      statsRefreshSettledForTests.delete(drainStatsRefreshRef);
       latestStatsCtx = undefined;
       latestCacheHint = undefined;
       providerRequestStates.length = 0;

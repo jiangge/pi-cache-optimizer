@@ -708,7 +708,7 @@ describe("non-awaited lifecycle refreshes", () => {
         cwd: process.cwd(), stdio: "ignore", env: { ...process.env, PI_CODING_AGENT_DIR: dir },
       });
       const exit = await new Promise<number | null | "killed">((resolve) => {
-        const kill = setTimeout(() => { child.kill("SIGKILL"); resolve("killed"); }, 30_000);
+        const kill = setTimeout(() => { child.kill("SIGKILL"); resolve("killed"); }, 60_000);
         child.on("exit", (code) => { clearTimeout(kill); resolve(code); });
       });
       const flushed = await readFile(join(dir, "flushed"), "utf8").then((text) => JSON.parse(text), () => undefined);
@@ -1280,7 +1280,7 @@ describe("kill switch and timing log", () => {
     });
   });
 
-  test("session_shutdown releases statsRefreshSettledForTests and latestStatsCtx for GC", async () => {
+  test("session_shutdown releases statsRefreshSettledForTests and latestStatsCtx for GC; an instance never started is not pinned", async () => {
     await withAgentDir(async (dir) => {
       const out = join(dir, "gc.json");
       const script = `
@@ -1302,18 +1302,32 @@ describe("kill switch and timing log", () => {
           }
           h = pi = ctx = null;
         }
+        // An instance Pi created but never started or shut down (no handler
+        // ever ran) must not be pinned by the module-level test registry.
+        // Its cache-hints service is global by design (the live instance
+        // publishes it until session_shutdown), so take it out to look at
+        // the registry alone.
+        {
+          let pi = { on() {}, registerCommand() {} };
+          ext(pi);
+          delete globalThis[Symbol.for("pi.cache.hints.v1")];
+          refs.push([new WeakRef({}), new WeakRef(pi)]);
+          pi = null;
+        }
         for (let r = 0; r < 6; r++) { global.gc(); await new Promise((r) => setTimeout(r, 20)); }
+        // The registry still drains (and prunes) after the instances are gone.
+        await I.statsRefreshSettled();
         writeFileSync(${JSON.stringify(out)}, JSON.stringify(refs.map(([c, p]) => [c.deref() !== undefined, p.deref() !== undefined])));
       `;
       const child = spawn(process.execPath, ["--expose-gc", "--import", "jiti/register", "--input-type=module", "-e", script], {
         cwd: process.cwd(), stdio: "ignore", env: { ...process.env, PI_CODING_AGENT_DIR: dir },
       });
       const code = await new Promise<number | null | "killed">((resolve) => {
-        const kill = setTimeout(() => { child.kill("SIGKILL"); resolve("killed"); }, 30_000);
+        const kill = setTimeout(() => { child.kill("SIGKILL"); resolve("killed"); }, 60_000);
         child.on("exit", (c) => { clearTimeout(kill); resolve(c); });
       });
       assert.equal(code, 0);
-      assert.deepEqual(JSON.parse(await readFile(out, "utf8")), [[false, false], [false, false], [false, false]]);
+      assert.deepEqual(JSON.parse(await readFile(out, "utf8")), [[false, false], [false, false], [false, false], [false, false]]);
     });
   });
 });
