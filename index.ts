@@ -1742,7 +1742,14 @@ export default function (pi: ExtensionAPI) {
     latestStatsCtx = ctx;
     uninstallCacheHintsService ??= installCacheHints();
     const tui = ctx.mode === "tui";
-    if (sessionStartsHandled++ > 0) retireShardForSessionStart();
+    if (sessionStartsHandled++ > 0) {
+      // The previous session's per-request state: its shutdown normally
+      // clears it, but skips that cleanup when this start raced it.
+      latestCacheHint = undefined;
+      providerRequestStates.length = 0;
+      delete getProtocolGlobal().__piCacheOptimizerCacheKey__;
+      retireShardForSessionStart();
+    }
     resetStatsForSessionStart(event.reason, ctx);
     const previousRestore = statsRestorePromise;
     statsRestorePromise = previousRestore

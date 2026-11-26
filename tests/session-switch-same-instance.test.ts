@@ -175,9 +175,11 @@ describe("a second session_start on the same extension instance", () => {
         await h.handlers.get("session_start")!({ reason: "startup" }, h.ctx);
         await h.I.waitForStatsRestore();
         const service = h.I.getCacheHintsService();
+        (globalThis as any).__piCacheOptimizerCacheKey__ = "previous-session-key";
         const shutdown = h.handlers.get("session_shutdown")!({}, h.ctx);
         const next = ctxFor(h, "overlap-two");
         await h.handlers.get("session_start")!({ reason: "new" }, next);
+        assert.equal((globalThis as any).__piCacheOptimizerCacheKey__, undefined, "the new session does not start with the previous session's key");
         await shutdown;
         await h.I.waitForStatsRestore();
         assert.equal(h.I.getCacheHintsService(), service, "the late shutdown cleanup does not take the new session's service out");
